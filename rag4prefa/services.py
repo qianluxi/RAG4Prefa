@@ -20,16 +20,7 @@ from .adapters.vectors import (
 )
 from .config import Settings, get_settings
 from .db import connect, init_db
-
-
-def _meta_get(conn: sqlite3.Connection, key: str) -> str | None:
-    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    return row["value"] if row else None
-
-
-def _meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
-    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
-    conn.commit()
+from .repo import get_meta, set_meta
 
 
 @dataclass
@@ -46,17 +37,17 @@ class Services:
     def remember_index_meta(self) -> None:
         """记下索引所用模型与维度；换模型时 reindex 会据此校验。"""
         if self.embedder and self.embedder.dim:
-            _meta_set(self.conn, "embedding_model", self.embedder.model)
-            _meta_set(self.conn, "embedding_dim", str(self.embedder.dim))
+            set_meta(self.conn, "embedding_model", self.embedder.model)
+            set_meta(self.conn, "embedding_dim", str(self.embedder.dim))
 
     @property
     def index_dim(self) -> int | None:
-        value = _meta_get(self.conn, "embedding_dim")
+        value = get_meta(self.conn, "embedding_dim")
         return int(value) if value else None
 
     @property
     def index_model(self) -> str | None:
-        return _meta_get(self.conn, "embedding_model")
+        return get_meta(self.conn, "embedding_model")
 
     def require_embedder(self) -> Embedder:
         if not self.embedder:
@@ -113,13 +104,17 @@ class Services:
 
 def open_store(settings: Settings, conn: sqlite3.Connection) -> tuple[VectorStore, list[str], bool]:
     notes: list[str] = []
-    dim = settings.embedding_dim or int(_meta_get(conn, "embedding_dim") or 0)
+    dim = settings.embedding_dim or int(get_meta(conn, "embedding_dim") or 0)
     if settings.vector_backend in ("auto", "milvus"):
         try:
             return MilvusStore(settings.milvus_uri, settings.milvus_collection, dim), notes, False
         except BackendUnavailable as exc:
             if settings.vector_backend == "milvus":
-                raise
+                raise BackendUnavailable(
+                    f"{exc}。当前显式指定了 R4P_VECTOR_BACKEND=milvus，不会自动回退。"
+                    "处理办法二选一：① 把 R4P_EMBEDDING_DIM 填成模型的真实维度"
+                    "（如 gte-base-chinese 为 768）；② 改用 R4P_VECTOR_BACKEND=auto。"
+                ) from exc
             notes.append(f"Milvus 不可用，已回退到 numpy 精确检索：{exc}")
             return NumpyStore(conn, dim), notes, True
     return NumpyStore(conn, dim), notes, False

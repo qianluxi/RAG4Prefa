@@ -29,6 +29,7 @@ class VectorItem:
     project_name: str
     project_code: str
     doc_year: int | None
+    model: str = ""  # 产生该向量的模型；numpy 后端的归档表也靠它记模型
 
 
 class VectorStore(Protocol):
@@ -42,6 +43,7 @@ class VectorStore(Protocol):
     ) -> list[tuple[str, float]]: ...
     def count(self) -> int: ...
     def clear(self) -> None: ...
+    def rebuild(self, items: Sequence[VectorItem]) -> None: ...
 
 
 def _normalize(vec: list[float]) -> np.ndarray:
@@ -108,13 +110,14 @@ class NumpyStore:
                 raise ValueError(f"向量维度 {arr.shape[0]} 与索引维度 {self.dim} 不一致")
             self._conn.execute(
                 "INSERT OR REPLACE INTO vectors (chunk_id, project_name, project_code, doc_year,"
-                " dim, model, vec) VALUES (?, ?, ?, ?, ?, '', ?)",
+                " dim, model, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     item.chunk_id,
                     item.project_name,
                     item.project_code,
                     item.doc_year,
                     self.dim,
+                    item.model,
                     array("f", arr.tolist()).tobytes(),
                 ),
             )
@@ -164,6 +167,40 @@ class NumpyStore:
         self._conn.commit()
         self._load()
 
+    def rebuild(self, items: Sequence[VectorItem]) -> None:
+        """整体替换全部向量，允许维度变化（换模型后用）。
+
+        与 clear() 的区别：clear() 是"清空"，rebuild() 是"换成另一套"。
+        先构造并校验全部行，再在一个事务里删旧写新，中途失败不会留下半套数据。
+        """
+        rows: list[tuple] = []
+        dim = len(items[0].vector) if items else self.dim
+        for item in items:
+            arr = _normalize(item.vector)
+            if arr.shape[0] != dim:
+                raise ValueError(f"向量维度 {arr.shape[0]} 与本次重建维度 {dim} 不一致")
+            rows.append(
+                (
+                    item.chunk_id,
+                    item.project_name,
+                    item.project_code,
+                    item.doc_year,
+                    dim,
+                    item.model,
+                    array("f", arr.tolist()).tobytes(),
+                )
+            )
+        with self._conn:
+            self._conn.execute("DELETE FROM vectors")
+            if rows:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO vectors (chunk_id, project_name, project_code,"
+                    " doc_year, dim, model, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+        self.dim = dim
+        self._load()
+
 
 class MilvusStore:
     """Milvus（Lite 或 standalone，同一个 pymilvus 客户端，只改 URI）。
@@ -176,7 +213,7 @@ class MilvusStore:
 
     def __init__(self, uri: str, collection: str, dim: int) -> None:
         try:
-            from pymilvus import DataType, MilvusClient
+            from pymilvus import MilvusClient
         except ImportError as exc:  # pragma: no cover - 环境相关
             raise BackendUnavailable("未安装 pymilvus：pip install 'rag4prefa[milvus]'") from exc
 
@@ -187,22 +224,37 @@ class MilvusStore:
         except Exception as exc:  # pragma: no cover - 平台相关
             raise BackendUnavailable(f"无法打开 Milvus 存储 {uri}: {exc}") from exc
 
-        if not self._client.has_collection(collection):
-            if not dim:
-                raise BackendUnavailable("首次创建 Milvus 集合需要已知向量维度")
-            schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
-            schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=64)
-            schema.add_field("vector", DataType.FLOAT_VECTOR, dim=dim)
-            schema.add_field("project_name", DataType.VARCHAR, max_length=256)
-            schema.add_field("project_code", DataType.VARCHAR, max_length=64)
-            schema.add_field("doc_year", DataType.INT32)
-            index_params = self._client.prepare_index_params()
-            index_params.add_index(
-                field_name="vector", index_type="AUTOINDEX", metric_type="COSINE"
-            )
-            self._client.create_collection(
-                collection_name=collection, schema=schema, index_params=index_params
-            )
+        self._ensure_collection(dim)
+        self._load_collection()
+
+    def _load_collection(self) -> None:
+        """新进程打开已有集合时它处于 released 状态，不 load 就无法 search。"""
+        try:
+            self._client.load_collection(self._collection)
+        except Exception as exc:  # pragma: no cover - 平台相关
+            message = str(exc)
+            if "already loaded" not in message.lower():
+                raise BackendUnavailable(f"无法加载 Milvus 集合：{message}") from exc
+
+    def _ensure_collection(self, dim: int) -> None:
+        if self._client.has_collection(self._collection):
+            return
+        if not dim:
+            raise BackendUnavailable("首次创建 Milvus 集合需要已知向量维度")
+        from pymilvus import DataType, MilvusClient
+
+        schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=64)
+        schema.add_field("vector", DataType.FLOAT_VECTOR, dim=dim)
+        schema.add_field("project_name", DataType.VARCHAR, max_length=256)
+        schema.add_field("project_code", DataType.VARCHAR, max_length=64)
+        schema.add_field("doc_year", DataType.INT32)
+        index_params = self._client.prepare_index_params()
+        index_params.add_index(field_name="vector", index_type="AUTOINDEX", metric_type="COSINE")
+        self._client.create_collection(
+            collection_name=self._collection, schema=schema, index_params=index_params
+        )
+        self.dim = dim
 
     def upsert(self, items: Sequence[VectorItem]) -> None:
         if not items:
@@ -244,8 +296,20 @@ class MilvusStore:
     def clear(self) -> None:
         self._client.delete(collection_name=self._collection, filter="id != ''")
 
+    def rebuild(self, items: Sequence[VectorItem]) -> None:
+        """整体替换：集合维度不可改，换模型后只能删掉重建。"""
+        if not items:
+            self.clear()
+            return
+        dim = len(items[0].vector)
+        self._client.drop_collection(self._collection)
+        self.dim = dim
+        self._ensure_collection(dim)
+        self._load_collection()
+        self.upsert(items)
 
-def to_archive_row(item: VectorItem, model: str) -> tuple:
+
+def to_archive_row(item: VectorItem, model: str = "") -> tuple:
     """归档行：归一化后以 float32 存，换后端重建时不必重新 embedding。"""
     arr = _normalize(item.vector)
     return (
@@ -254,7 +318,7 @@ def to_archive_row(item: VectorItem, model: str) -> tuple:
         item.project_code,
         item.doc_year,
         int(arr.shape[0]),
-        model,
+        item.model or model,
         array("f", arr.tolist()).tobytes(),
     )
 
@@ -268,6 +332,7 @@ def from_archive_row(row: dict) -> VectorItem:
         project_name=row["project_name"],
         project_code=row["project_code"],
         doc_year=row["doc_year"],
+        model=row.get("model") or "",
     )
 
 

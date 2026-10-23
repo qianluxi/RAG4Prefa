@@ -319,7 +319,7 @@ def archive_vectors(
 
 def iter_archived_vectors(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT chunk_id, project_name, project_code, doc_year, dim, vec FROM vectors"
+        "SELECT chunk_id, project_name, project_code, doc_year, dim, model, vec FROM vectors"
     ).fetchall()
     return [
         {
@@ -328,10 +328,58 @@ def iter_archived_vectors(conn: sqlite3.Connection) -> list[dict]:
             "project_code": r["project_code"],
             "doc_year": r["doc_year"],
             "dim": r["dim"],
+            "model": r["model"],
             "vec": r["vec"],
         }
         for r in rows
     ]
+
+
+def chunks_for_reindex(
+    conn: sqlite3.Connection, project_name: str | None = None
+) -> list[dict]:
+    """重建索引的输入：片段正文 + 归属信息。project_name 为空表示全量。"""
+    where, params = "", []
+    if project_name:
+        where = "WHERE d.project_name = ?"
+        params.append(project_name)
+    rows = conn.execute(
+        f"""
+        SELECT c.id, c.text, c.title, c.chapter_path, d.project_name,
+               COALESCE(p.code, '') AS project_code, d.doc_year
+        FROM chunks c
+        JOIN documents d ON d.id = c.doc_id
+        JOIN projects  p ON p.name = d.project_name
+        {where}
+        ORDER BY c.doc_id, c.ordinal
+        """,
+        params,
+    ).fetchall()
+    return [
+        {
+            "chunk_id": r["id"],
+            "text": r["text"],
+            "title": r["title"],
+            "chapter_path": r["chapter_path"],
+            "project_name": r["project_name"],
+            "project_code": r["project_code"],
+            "doc_year": r["doc_year"],
+        }
+        for r in rows
+    ]
+
+
+# ── meta / 索引元信息 ──────────────────────────────────────
+
+
+def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    with transaction(conn):
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
 
 
 # ── jobs ────────────────────────────────────────────────────
