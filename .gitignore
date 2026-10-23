@@ -13,3 +13,5 @@ __pycache__/
 # 编辑器
 .vscode/
 .idea/
+# agent 工作记忆与本地会话数据，不入库
+.workbuddy/
