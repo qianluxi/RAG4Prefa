@@ -17,8 +17,9 @@
 | 多人使用时筛选条件互相串 | 筛选条件随请求传入，无全局状态 |
 | "流式"其实是先跑完再逐词播放 | 大模型 token 流直通 SSE |
 | 绑死 Windows + Word，进不了容器 | 纯 python-docx 解析，Linux/Docker 可跑 |
-| 换模型后新旧向量混在一个索引里，检索静默变差 | 模型 / 维度 / 归档三方校验，不一致就拒绝写入与检索 |
-| 更新文档时 embedding 失败，旧版本被顺手删掉 | 先算完新向量再切换；失败时旧版本照常可检索 |
+| 换模型后新旧向量混在一个索引里，检索静默变差 | 模型 / 维度 / 归档 / 后端条数四方校验，不一致就拒绝写入与检索 |
+| 更新文档时 embedding 失败，旧版本被顺手删掉 | 先算完新向量、**先写索引再切事实**；失败时撤回新增向量，旧版本照常可检索 |
+| 索引残缺时系统照常返回"看起来正常"的答案 | `/api/chat` 在开流之前就 503；`/api/search` 明确报错；`verify` 能逐 id 定位差异 |
 
 ## 快速开始
 
@@ -41,12 +42,16 @@ python -m rag4prefa serve --port 8000
 python -m rag4prefa ask "缓粘结预应力的张拉控制要点" --project 立体聚落 --answer
 python -m rag4prefa reindex                  # 换 embedding 模型后全量重建
 python -m rag4prefa reindex --project 立体聚落  # 只重建一个项目（维度不变时可用）
+python -m rag4prefa verify                   # 逐 id 核对「片段 / 归档 / 索引」，出问题返回值非 0
 ```
 
-`reindex` 的语义：**先算完整个范围的新向量，再写 SQLite 归档，最后写向量索引**；
+`reindex` 的语义：**先算完整个范围的新向量，再写 SQLite 归档，最后整体替换向量索引**；
 中途失败不会留下半成品。只重建单个项目时不会清空其他项目的索引，但**必须沿用索引现有的模型**——
 维度相同也不算数，两个模型的向量空间不能混。换模型走不带 `--project` 的全量重建，
 维度变化会明确拒绝局部执行。详见下面「索引一致性」。
+
+`verify` 与 `/api/health` 的分工：health 做廉价的条数比对（每次请求前都跑），
+verify 做逐 id 的精确比对（要把索引主键全拉一遍，慢但能发现"条数相同、内容不同"）。
 
 ## 架构
 
@@ -71,8 +76,11 @@ api.py        FastAPI 路由（只做协议转换）
 
 - `auto`（默认）：能用 Milvus 就用 Milvus，否则退化到 `numpy` 精确检索（结果可复现，靠 SQLite 里的向量归档）。
 - `milvus`：Milvus Lite（单文件，无需 Docker）或 standalone，只改 `R4P_MILVUS_URI`。
-  - 已验证：Windows + `pymilvus 3.0` + `milvus-lite 3.2` 可用。
   - Lite 不支持 HNSW 参数，统一 `AUTOINDEX`；切 standalone 后可自行换 `HNSW` 调参。
+  - ⚠️ **Windows 上路径必须是纯 ASCII**：faiss 用窄字符 `fopen` 打开索引文件，中文目录名会让
+    任何一次 `flush` / `release+load`（重建、换维度、重启后重开）直接失败。程序在打开集合前
+    就会拒绝并说明原因，`auto` 会自动回退 numpy。要用 Milvus 就把 `R4P_DATA_DIR` 指到
+    `C:/rag4prefa-data` 这类纯 ASCII 路径。Linux 没有这个限制。
 - `numpy`：零依赖暴力余弦，十万级片段内延迟仍在毫秒级。
 
 ## API
@@ -93,7 +101,7 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 89 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
+pytest -q                                  # 115 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
 python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 ```
 
@@ -107,18 +115,29 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 - `Recall@k = |TopK ∩ Gold| / |Gold|`，分母是**标注的相关项总数**，不是返回条数。
 - `MRR` 取第一个相关结果的倒数排名。
 - `nDCG@k` 按二值相关性计算，IDCG 用标注的相关项总数构造理想排序。
+- 报告里每种召回方式**单独列一行有效样本数**：某个方法在部分题上失败时，均值建立在不同的
+  题目集合上，不能拿"总题数"糊过去。
 
 标注优先用 `gold_chunk_ids`（无歧义）；图省事可以写 `gold_snippets`，脚本会把每个片段解析成
-语料中包含它的**全部** chunk 再计入 gold——所以片段在语料里出现得越分散，gold 越大，Recall 越难满分，
-这是刻意的保守处理。报告末尾会把"标注片段在语料中找不到"这类数据问题单独列出来。
+**该题筛选范围内**包含它的全部 chunk 再计入 gold——不按范围解析的话，别的项目里出现的同一段
+文字也会被算成相关项，而本题根本召回不到，Recall 会被系统性压低。解析不设上限（不静默截断），
+写错的 `chunk_id` 会被剔除并写进报告的数据问题里。
 
 ## 索引一致性
 
-一个索引里只能有一套向量空间。模型名、维度、归档三方必须自洽，否则**拒绝服务而不是降级**：
+一个索引里只能有一套向量空间。判断依据是**声明 + 事实 + 逐 id 对应**，任一不满足就**拒绝服务而不是降级**：
 
-- 增量入库、局部 `reindex`、检索前都会校验；不一致时返回 503 并说明该怎么修。
-- 换模型只能全量 `reindex`（不带 `--project`）；局部重建必须沿用现有模型。
-- `/api/health` 的 `index.consistent` / `index.issues` 会如实报告，`ok=false` 时先看这里。
+- `meta.embedding_model` / `embedding_dim`：上一次成功建索引时声明的模型与维度；
+- `vectors.model` / `dim`：归档里每一行实际是谁算的；
+- 片段与归档的逐 id 对应（缺向量、孤儿向量、模型未标注都算不一致）；
+- 后端实际条数与归档条数的交叉校验（归档对、Milvus 少写几条，只查 SQLite 是看不出来的）。
+
+出现任意一条，增量入库、局部 `reindex`、检索都会拒绝；`/api/health` 的 `index.consistent` /
+`index.issues` 如实报告，`ok=false` 时先看这里。换模型只能全量 `reindex`（不带 `--project`），
+局部重建必须沿用现有模型。
+
+`chunk_id` 是**内容寻址**的（`doc_id + 章节路径 + 正文哈希`），不是位置序号：同一 id 必然是同一段正文。
+这是"先写索引、后切事实"能安全的前提——改一段不会让后面所有片段换号，也不会出现"新向量配旧正文"。
 
 ## 已知局限
 
@@ -132,3 +151,7 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
   但任务本身不能断点续跑，需要重新触发。
 - **无鉴权**：上传与删除接口没有身份校验，只能部署在可信内网。
 - **上传无大小上限**：按后缀校验后一次性读入内存，没有流式落盘与容量限制。
+- **Milvus 与中文路径**：Windows 下 Milvus Lite 无法在含非 ASCII 字符的路径下建索引（faiss 限制），
+  程序会提前拒绝并自动回退 numpy；要跑 Milvus 请把数据目录指到纯 ASCII 路径。Linux 不受影响。
+- **重建期间有极短不可用窗口**：全量重建（含同维度）走"写暂存集合 → rename 切换"，
+  两次 rename 之间检索可能拿到集合不存在的错误。换来的是"绝不会返回新旧混杂的结果"。

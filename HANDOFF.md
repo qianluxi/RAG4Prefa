@@ -3,10 +3,11 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-23 18:00
-**交接时状态**：可运行、89 项离线测试全绿；**代码层的真实链路已用本地假 OpenAI 服务跑通，但真实厂商 API 尚未验证**——见第 7 节 P0-1。
-第三轮修复的重点不是加功能，而是**数据和检索语义的正确性**：模型混用、索引切换、旧版本保护。
-动手前请先读第 3 节的「索引不变量」，那七条是这批代码存在的理由。
+**交接时间**：2026-10-23 22:10
+**交接时状态**：可运行、115 项离线测试全绿；**代码层的真实链路已用本地假 OpenAI 服务跑通，但真实厂商 API 尚未验证**——见第 7 节 P0-1。
+第四轮修复的重点不是加功能，而是让**不变量真正约束运行路径**：一致性检查从"能报告"变成"能阻断"，
+文档切换与全量重建改成"准备完整新版 → 校验 → 再切换"，并顺带查出一个 Windows 平台级限制（见第 6 节第 9 条）。
+动手前请先读第 3 节的「索引不变量」，那八条是这批代码存在的理由。
 
 ---
 
@@ -27,7 +28,7 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | `d613e18`，工作区干净，本地与 `origin/main` 一致；历史已拆为 17 个分层提交（见第 8 节） |
+| 当前提交 | `4f3c25d` 之后的本轮修复提交，工作区干净，本地与 `origin/main` 一致；历史为 17 个分层提交 + 后续修复（见第 8 节） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -36,43 +37,45 @@
 原版项目（只读参考，**不要改它**）：`F:\project\PyProject\milvus`，已检出 v2.8.6。
 真实测试语料：`F:\project\课题\Ref\立体聚落异型大悬挑百年建造高质量建造技术研究-申请书26.10.23.docx`
 
-**先跑这三条确认环境可用**：
+**先跑这四条确认环境可用**：
 
 ```bash
 cd "F:/project/课题/RAG4Prefa"
-./.venv/Scripts/python.exe -m pytest -q          # 期望：60 passed
+./.venv/Scripts/python.exe -m pytest -q          # 期望：115 passed
 ./.venv/Scripts/python.exe -m ruff check rag4prefa tests scripts   # 期望：All checks passed
 ./.venv/Scripts/python.exe -m rag4prefa doctor   # 看后端、维度、缺哪些凭据
+./.venv/Scripts/python.exe -m rag4prefa verify   # 逐 id 核对片段/归档/索引（空库也返回 0）
 ```
 
 ---
 
-## 3. 代码地图（3 531 行 Python + 443 行单页 HTML + 1 812 行测试）
+## 3. 代码地图（3 954 行 Python + 443 行单页 HTML + 2 400+ 行测试）
 
 ```
 rag4prefa/
 ├── config.py      81    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读
 ├── domain.py     122    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
 ├── db.py         129    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
-├── repo.py       602    **全部 SQL 都在这里**，没有别处写 SQL
-├── consistency.py 134   **索引一致性**：模型/维度与归档是否自洽，能不能写、能不能查
-├── ingest.py     344    解析 → 分块 → 向量化 → 写库；含 rebuild_store / reindex
-├── chunking.py    82    按标题树切块（父标题路径拼进文本，保住上下文）
+├── repo.py       700+   **全部 SQL 都在这里**，没有别处写 SQL
+├── consistency.py 240+  **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）
+├── ingest.py     370+   解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
+├── chunking.py    90+   按标题树切块；chunk_id 内容寻址（同 id 必同正文）
 ├── tokens.py      51    中英混排的 token 估算（非真实 tokenizer）
-├── ask.py        184    混合召回 → RRF 融合 → 可选重排 → 流式生成
+├── ask.py        186    混合召回 → RRF 融合 → 可选重排 → 流式生成
 ├── filters.py    103    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     38    系统提示词与引用格式
 ├── admin.py       64    项目/文档的查询与级联删除
-├── services.py   171    组件装配；Milvus 不可用时回退 numpy，拿到维度后自动迁回
+├── services.py   190+   组件装配；Milvus 不可用时回退 numpy，拿到维度后自动迁回
 ├── api.py        258    FastAPI 路由（只做协议转换，不含业务逻辑）
-├── cli.py        216    init / serve / doctor / ingest / reindex / ask / projects
-└── adapters/     949    embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
+├── cli.py        230+   init / serve / doctor / ingest / reindex / ask / projects / verify
+└── adapters/     990+   embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
 ```
 
 前端只有一个文件 `rag4prefa/web/index.html`（443 行，原生 JS，无构建步骤）。
-`tests/` 89 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+`tests/` 115 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
-`test_consistency.py` 反向断言"必须被拒绝"，防止把"程序执行了预期操作"当成"业务不变量成立"。
+`test_consistency.py` / `test_ingest.py` 里有大量**故障注入**用例，反向断言"必须被拒绝""旧版本必须还在"，
+防止把"程序执行了预期操作"当成"业务不变量成立"。
 
 ### 数据分层（关键，改动前必须理解）
 
@@ -84,28 +87,37 @@ rag4prefa/
 
 ### 索引不变量（改这些代码前先读，`consistency.py` 是它的实现）
 
-1. **一个索引只有一个向量空间。** `vectors.model` 必须全库一致，且等于 `meta.embedding_model`。
-   维度相同不算数——两套 768 维向量混在一起，余弦照样算得出来，只是语义错位。
+1. **一个索引只有一个向量空间。** `vectors.model` 必须全库一致，且等于 `meta.embedding_model`；
+   **没有模型标注的历史行也算异常**（无法证明它是哪个空间算的）。维度相同不算数——
+   两套 768 维向量混在一起，余弦照样算得出来，只是语义错位。
 2. **换模型只能全量。** `reindex --project` 必须沿用现有模型；换模型走不带 `--project` 的全量重建。
-3. **事实先于索引。** 顺序永远是「算向量 → 写归档（事实）→ 写索引（派生）→ 写 meta」。
-   中途失败时索引可能落后，但归档是对的，`rebuild_store()` 能把索引补回来。
-4. **归档与片段一一对应。** `vectors` 里不该有 `chunks` 里不存在的行；全量重建会清孤儿，
-   读取时也 JOIN chunks，两道防线。
-5. **重建不能先毁掉可用的旧索引。** 同维度原地覆盖；换维度先写 `__staging` 并校验条数，
-   再 rename 切换；进程被杀由 `_recover()` 在下次启动时还原。
-6. **更新文档不能丢旧版本。** embedding 在切换之前完成；失败时旧片段、旧向量原样保留。
+3. **事实与归档同事务，索引先行。** 顺序是「算向量 → 写索引（派生）→ 一个事务切片段+归档 → 删淘汰向量 → 记 meta」。
+   为什么索引在事实之前：`chunk_id` 内容寻址，同 id 必同正文，先写索引不会让旧版本配错正文；
+   反过来（先切事实）一旦写索引失败，就会出现"新正文配旧向量"的双版本共存。失败时撤回本次新增的向量，
+   旧版本完整可用；撤回也失败时，条数不一致会让检索被拒绝，而不是静默出错。
+4. **归档与片段一一对应。** `vectors` 里不该有 `chunks` 里不存在的行，也不该缺行；
+   缺行/孤儿都进 `blockers`，`reindex` 会补齐/清掉。
+5. **重建不毁掉可用的旧索引。** 换不换维度都走同一条路：写 `__staging` → 校验条数 → rename 切换 → 删 `__retired`；
+   进程被杀由 `_recover()` 在下次启动时还原。绝不原地覆盖正式集合（覆盖到一半就是新旧混杂）。
+6. **更新文档不能丢旧版本。** embedding 在切换之前完成；写索引失败时旧片段、旧归档、旧索引原样保留。
 7. **配置与索引冲突时拒绝服务，而不是降级。** 检索会返回 503 + 一句能读懂的话，
-   而不是给出一份看起来正常、实际无关的引用。
+   而不是给出一份看起来正常、实际无关的引用。判断依据含**后端实际条数**——只查 SQLite 发现不了"归档对、索引少写几条"。
+8. **chunk_id 由内容决定，不由位置决定**（`doc_id + 章节路径 + 正文哈希 + 同段内序号`）。
+   同一 id 必是同一段正文；改一段只影响那一段，插入一段不会让后面全部换号。
 
 ### 请求链路（`/api/chat`）
 
 ```
 问题 + Filter → ask.build_filter()（规则补全筛选条件）
+  → consistency.ensure_queryable()（混模型/缺向量/孤儿/后端条数不符 → 503，不进入生成）
   → 并行：向量 Top-50  ‖  FTS5 bm25 Top-50
   → RRF 融合（k=60）→ 取 Top-8 → 可选远程重排
   → 组装带章节路径的上下文 → LLM stream=True → SSE
 SSE 事件：meta → token* → citations → done；异常走 error
 ```
+
+`/api/chat` 的一致性校验刻意放在**开始流之前**：一旦开始 SSE，HTTP 状态码就改不了了，
+只能发一个 error 事件，而客户端此时已经开始渲染。能给出 503 的时候要给 503。
 
 ---
 
@@ -150,16 +162,50 @@ API 一览（实现见 `api.py`，说明见 README）：
    所以 `heading_level()` 对它们返回 `0` 表示"相对级别"，由调用方挂到最近一个**绝对级别**标题的下一层。
    早期版本按 `len(stack)+1` 算，会出现 `1.3.1 →（1）→（二）` 越嵌越深。
 4. **Milvus Lite 的 `uri` 父目录必须先存在**，否则报 "dir not exists"（不是自动创建）。
-5. **Milvus Lite 在 Windows 上可用**（pymilvus 3.0.2 + milvus-lite 3.2.2 实测通过）。
-   `.env.example` 里"Windows 不可用"的旧注释是错的，尚未修正。
+5. **Milvus Lite 在 Windows 上可用，但路径必须纯 ASCII**（本轮实测的新结论，前几轮记错了）。
+   faiss 用窄字符 `fopen` 写索引文件，`F:\project\课题\...` 这类含中文的路径在
+   `flush` / `release+load`（重建、换维度、重启后重开）时会报
+   `faiss::FileIOWriter ... No such file or directory`，之后集合直接不可用。
+   同一份数据放 `C:/tmp/...` 完全正常，所以早期测试全在临时 ASCII 目录里跑，一直没暴露。
+   现在 `MilvusStore.__init__` 会在开集合前拒绝并说明两条出路（换 ASCII 数据目录 / 用 numpy），
+   `auto` 后端会自动回退 numpy。
 6. **不要用内存里的向量初始化 `NumpyStore` 的维度**：早期 `_load()` 里用 `rows[0]` 覆盖 `self.dim`，
    空表时矩阵是坏的。现在维度要么来自配置、要么来自 `meta` 表。
 7. **外键顺序**：`insert_chunks` 前必须先 `upsert_project`，否则 SQLite 外键约束失败（测试里踩过）。
 8. 项目已有 `.gitattributes`（`* text=auto eol=lf`），别删——否则 Windows 上 CRLF 会污染 diff。
+9. **内容寻址的 id 让"改一段"只影响那一段**：同一份申报书改末尾一段，26 个片段里 25 个 id 不变。
+   测试断言这一性质时不要再用"id 数量变化"来判断，要看存量 id 的保留率。
 
 ---
 
 ## 7. 待办清单（按优先级，每条都有验收标准）
+
+### 已完成（2026-10-23 第四轮，按第三次外部复审意见修复）
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| **一致性检查能报告却不能阻断** | `ensure_writable` 在归档条数为 0 时直接放行；`ensure_queryable` 只拦"混模型"，缺向量、孤儿、后端条数不符都能照常检索 | 判断集中到 `consistency._check()`，`blockers` 覆盖：混模型 / 未标注模型 / 混维度 / meta 与归档不符 / 缺向量 / 孤儿 / 后端条数与归档不符。**只有全空库才放行**。`ensure_writable` / `ensure_queryable` / `health` 用的是同一份判断 |
+| "归档为 0 但片段还在"被判为一致 | 用"归档条数 == 0"代表"索引是空的" | 新增 `missing_vector_count` / `orphan_vector_count` / `unlabeled_vector_count`，按逐 id 对应关系判断；`/api/health` 分别报 `missing_vectors` / `orphan_vectors` / `unlabeled_vectors` |
+| 只比 SQLite 内部的两个数 | 后端少写几条时，归档与片段完全自洽 | `inspect(conn, store_count=...)` 把后端实际条数纳入阻断；Milvus 的 `count()` 改用 `count(*)` 聚合（`get_collection_stats` 的 row_count 语义随版本而异，不能当阻断依据） |
+| **更新文档的失败窗口** | 顺序是"先切片段、再写索引"，写索引失败时事实已是新版 | 改成"先写索引、再同事务切片段+归档、最后删淘汰向量"；失败时**精确撤回本次新增的 id**（不能撤旧版本沿用的 id），撤回失败则由条数不一致触发拒绝 |
+| 同维度全量重建原地覆盖 | `if self.dim == dim: upsert + prune`，覆盖一半就是新旧混杂 | 删掉这条分支，一律 `__staging` → 校验 → rename；代价是重建期间有极短不可用窗口，换来"绝不返回混杂结果" |
+| 进程被杀后文档永远停在 `indexing` | 只处理了 `jobs`，没处理 `documents` 状态 | 启动时 `mark_interrupted_documents()` 标成 failed，并提示重新导入 |
+| **Gold 标注没按题型范围解析** | `resolve_gold` 用全库匹配，别处出现的同一段文字也算相关项 | `resolve_gold(conn, row, filt)` 用该题**生效的** filter 解析；先算 `effective` 再解析 gold，两者范围一致 |
+| Gold 静默截断 | `chunk_ids_containing` 默认 `limit=50` | 默认不截断；调用方要给上限必须显式传并自行报告 |
+| 失效/越界的 gold id 被当成有效标注 | 只做了字符串去重 | `repo.select_chunk_ids` 校验"存在且在范围内"，剔除并写进报告的数据问题 |
+| 报告只有一个总样本数 | 某方法在部分题上失败时，均值建立在不同题目集合上 | `evaluated[mode]` 逐方法计数，报告新增「有效样本」列，样本数不一致时给出显式提示 |
+| `verify` 能力缺失 | 条数相同但 id 不同（写坏、切换半成功）没有廉价手段发现 | 新增 `python -m rag4prefa verify`：拉取索引全部主键，与片段、归档三方比对 |
+
+**对第三次复审那份 6 项验收清单的逐条回应**（都可当场验证）：
+
+| 验收项 | 状态 | 怎么验 |
+|---|---|---|
+| 一致性检查真正阻断异常检索 | 已闭环 | `test_consistency.py` 四种故障注入 + `test_real_sdk_chain.py` 的 503 用例 |
+| 文档更新具备失败保护 | 已闭环 | `test_ingest.py`：切事实失败 / 索引写一半失败 / 删旧向量失败 |
+| 同维度全量重建经过故障测试 | 已闭环 | `test_milvus_store.py::test_rebuild_same_dim_also_goes_through_staging` 等 |
+| Gold 标注与检索范围一致 | 已闭环 | `test_eval_pipeline.py` 的范围内解析、不截断、失效 id 三条 |
+| 评测报告反映真实有效样本数 | 已闭环 | 报告新增「有效样本」列，样本数不等时显式提示 |
+| 交接文档与实际仓库状态一致 | 已闭环 | 本节 + 第 2 节 + 第 10 节均按本轮实测重写 |
 
 ### 已完成（2026-10-23 第三轮，按第二次外部复审意见修复）
 
@@ -196,7 +242,8 @@ API 一览（实现见 `api.py`，说明见 README）：
 - 做法：`cp .env.example .env` 后填 `R4P_EMBEDDING_API_KEY` / `R4P_LLM_API_KEY`（**不要**复用原仓库泄漏的 ModelScope token）。
 - 建议把 `R4P_EMBEDDING_DIM` 显式填成模型真实维度（gte-base-chinese 是 768）。
 - 验收：`ask "缓粘结预应力的张拉控制要点" --answer` 返回带章节引用的答案；
-  `/api/health` 的 `backend.name` 为 `milvus`、`vectors` > 0、`credentials_missing` 为空。
+  `/api/health` 的 `backend.name` 为 `milvus`（或已在 notes 里说明回退 numpy）、`vectors` > 0、`credentials_missing` 为空。
+- 注：若数据目录在含中文的路径下，Milvus 会被拒绝并回退 numpy —— 这是已知平台限制，不是配置错误。
 
 ### P1 · 功能缺口
 
@@ -233,11 +280,14 @@ Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milv
 
 1. **SQLite 并发**：同一个连接被请求线程与后台入库线程共用，`check_same_thread=False` 但没有写锁。
    短期加锁 + 并发测试；更好的做法是每线程独立连接。
-2. **任务不可恢复（部分解决）**：启动时已把遗留的 `running/queued` 标成 failed，
+2. **任务不可恢复（部分解决）**：启动时已把遗留的 `running/queued` 任务与停在 `indexing` 的文档都标成 failed，
    但任务本身仍是进程内 `asyncio.create_task`，进程一死就得重跑；要真正可恢复得落持久化任务表 + 重试。
 3. **无鉴权**：上传/删除没有身份校验，只能部署在可信内网。
 4. **上传无大小上限**：一次性读入内存，应改流式落盘 + 上限 + 清理策略。
 5. ~~模型一致性未强制校验~~ → 已在第三轮解决，见上表。
+6. ~~一致性检查只报告不阻断~~ → 已在第四轮解决：`blockers` 覆盖缺向量/孤儿/未标注/后端条数不符，检索与写入统一拒绝。
+7. **重建期间极短不可用窗口**：两次 rename 之间集合名短暂不存在。要消掉它得引入"活跃集合指针"（切换即改
+   SQLite 里的一行），但会让多进程各自缓存的名字不一致，代价更大；当前单进程假设下不值得。
 
 ### 已关闭
 
@@ -262,9 +312,14 @@ README / tests / eval 里的示例文字与路径按现状保留，**不要**再
 
 ## 9. 工作约定（接手后请遵守）
 
-- **改完必须跑**：`./.venv/Scripts/python.exe -m pytest -q` 和 `-m ruff check rag4prefa tests scripts`，两者都必须干净。
+- **改完必须跑**：`./.venv/Scripts/python.exe -m pytest -q` 和 `-m ruff check rag4prefa tests scripts`，两者都必须干净；
+  动过索引相关代码再跑一次 `python -m rag4prefa verify`。
 - **SQL 只写进 `repo.py`**；`api.py` 只做协议转换；外部依赖只进 `adapters/`。
 - **新功能必须有离线测试**：`tests/conftest.py` 里有 `FakeEmbedder` 模式可循，不要写依赖付费 API 的测试。
+  涉及失败路径的，按 `test_ingest.py` 里的 `HalfWritingStore` / `NoDeleteStore` 那样**注入故障**，
+  断言"旧版本还在""必须被拒绝"，而不是只断言"函数返回了"。
+- **测 Milvus 只能在纯 ASCII 路径下**（`tmp_path` 就是），中文路径会被 `_reject_non_ascii_uri` 直接拒绝；
+  这不是测试写得不对，是平台限制。
 - **不要引入本地模型 / torch**（用户明确要求）。
 - **不要把密钥写进任何入库文件**，也不要复用原仓库里的 ModelScope token（那个已泄漏在公开仓库）。
 - 提交信息用中文、说清"为什么"；不要用 `--no-verify`。**force push 只在用户明确要求重写历史时使用**，
@@ -273,31 +328,33 @@ README / tests / eval 里的示例文字与路径按现状保留，**不要**再
 
 ---
 
-## 10. 交接时的验证记录（2026-10-23 18:00，第三轮修复后）
+## 10. 交接时的验证记录（2026-10-23 22:10，第四轮修复后）
 
 ```
-pytest -q                          → 89 passed
+pytest -q                          → 115 passed
 ruff check rag4prefa tests scripts → All checks passed
-真实链路冒烟（真实申报书 + 真实 Milvus Lite + 真实 openai SDK，假服务兜住网络，零费用）：
-  1 入库                          → 30 章节 / 30 块，vectors=30，dim=32，meta.model=mock-embed
-  2 检索                          → embed 6ms / dense 8ms / sparse 1ms
-  3 一致性                        → model=mock-embed dim=32 count=30 issues=[]
-  4 局部重建换同维度模型          → 被拒绝（ReindexError，指明"维度相同也不代表向量空间相同"）
-  5 增量入库换模型                → failed，向量数不变，meta 未被改写
-  6 全量重建换同维度模型          → 走 upsert+剪枝，归档模型只剩 mock-embed-v2，检索可用
-  7 全量重建换维度(32→8)          → 走 __staging → rename 切换，集合列表只剩 chunks_vec（无残留）
-  8 重启后重开 Store              → dim=8，检索可用，notes 为空
-  9 /api/health                   → ok=true，index.consistent=true，issues=[]
+真实链路冒烟（真实申报书 + 真实 Milvus Lite + 真实 openai SDK，假服务兜住网络，零费用；
+            Milvus 段跑在 C:/tmp_r4p_smoke4，因为中文路径下 faiss 无法建索引）：
+  0 中文数据目录                   → MilvusStore 直接拒绝并说明两条出路
+  1 入库                          → 30 章节 / 26 块，chunks=archived=indexed=26，id 无重复
+  2 verify 三方核对                → ok=true
+  3 检索                          → embed 5ms / dense 4ms / sparse 1ms
+  4 同维度全量重建换模型          → 走 __staging → rename，集合列表只剩 chunks_vec
+  5 换维度重建(32→8)              → 同样走暂存切换，无残留集合
+  6 重启后重开 Store              → count 不变，notes 为空
+  7 注入残缺（删一条归档向量）    → health consistent=false、missing=1；检索被拒绝
+  8 verify 定位 → reindex 修复    → 差异定位到具体方向（片段缺向量 1、索引多 1），修复后 ok=true
+  9 同一文件改末尾一段            → 26 块保留 25 个 id，只新增 1 个（内容寻址生效）
 全新目录 + 照抄 .env.example 首启：
-  doctor                          → 不崩，回退 numpy，index.consistent=true，如实报 missing 两个 key
+  doctor                          → 不崩，回退 numpy 并写明"非 ASCII 路径"，如实报 missing 两个 key
 ```
-
-> 注意 `sparse_ms`（BM25）首次查询约 700~800ms，是 jieba 词典首次加载的开销，
-> 之后降到毫秒级。若在意首问延迟，可在启动时预热一次 `jieba.lcut_for_search("预热")`。
 
 环境实况：Python 3.13.14；fastapi 0.161.1 / uvicorn 0.54.0 / python-docx 1.2.0 /
 pymilvus 3.0.2 / milvus-lite 3.2.2 / openai 3.37.0 / jieba 0.42.1 / numpy 2.5.4 /
 pytest 9.1.1 / ruff 0.17.2 / pydantic-settings 2.16.1；**torch 未安装（符合约定）**。
+
+> 注意 `sparse_ms`（BM25）首次查询约 700~800ms，是 jieba 词典首次加载的开销，
+> 之后降到毫秒级。若在意首问延迟，可在启动时预热一次 `jieba.lcut_for_search("预热")`。
 
 > 注：`create_app()` 的 services 在 lifespan 里挂到 `app.state`，
 > 所以 `TestClient` 必须用 `with TestClient(app) as c:` 才会跑 startup，
