@@ -4,7 +4,7 @@
 用**稠密向量 + BM25 混合召回**找依据，再让大模型**流式**给带引用的回答。
 
 > 这是对 `qianluxi/milvus`（v2.8.6）的功能等价重写：同样能"上传文档 → 按项目/年份筛选 → 提问 → 得到答案"，
-> 但去掉了 Word COM 绑定、全局可变状态和 4 300 行死代码。设计取舍见 `../RAG4Prefa/REFACTOR_PLAN.md`。
+> 但去掉了 Word COM 绑定、全局可变状态和 4 300 行死代码。设计取舍见 `REFACTOR_PLAN.md`。
 
 ## 它解决了什么
 
@@ -37,8 +37,13 @@ python -m rag4prefa serve --port 8000
 
 ```bash
 python -m rag4prefa ask "缓粘结预应力的张拉控制要点" --project 立体聚落 --answer
-python -m rag4prefa reindex          # 换 embedding 模型后重建索引
+python -m rag4prefa reindex                  # 换 embedding 模型后全量重建
+python -m rag4prefa reindex --project 立体聚落  # 只重建一个项目（维度不变时可用）
 ```
+
+`reindex` 的语义：**先算完整个范围的新向量，再写 SQLite 归档，最后写向量索引**；
+中途失败不会留下半成品。只重建单个项目时不会清空其他项目的索引；
+若 embedding 维度发生变化，会明确拒绝局部重建并要求全量执行（同一索引放不下两种维度）。
 
 ## 架构
 
@@ -84,12 +89,20 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 30 项，全部离线（假向量 + 临时 Milvus/numpy）
+pytest -q                                  # 60 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
 python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 ```
 
 `scripts/eval.py` 输出 Recall@k / MRR / nDCG@k，并对比 `dense` 与 `hybrid` 两种召回模式——
 这是"混合检索到底有没有用"的量化依据。
+
+指标定义（写死在 `tests/test_eval_metrics.py` 里，不接受含糊）：
+
+- `Recall@k = |TopK ∩ Gold| / |Gold|`，分母是**标注的相关项总数**，不是返回条数。
+- `MRR` 取第一个相关结果的倒数排名。
+- `nDCG@k` 按二值相关性计算，IDCG 用标注的相关项总数构造理想排序。
+
+标注建议用 `gold_snippets`（原文片段），比标 `chunk_id` 更省力，也不怕分块参数变化。
 
 ## 已知局限
 
@@ -97,3 +110,11 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 - token 用字/词估算而非真实 tokenizer，分块边界与模型实际计数有误差（阈值留了余量）。
 - 未做多轮对话改写：追问需要带上上下文关键词，否则召回会偏。
 - 单进程设计（SQLite + 进程内任务）。要多副本时把 SQLite 换成 Postgres、任务换队列，接口层无需改动。
+- **并发**：同一个 `sqlite3.Connection` 被请求与后台入库线程共用（`check_same_thread=False`），
+  没有额外的写锁。单用户没问题，多人并发写之前应先改成每线程独立连接。
+- **任务恢复**：入库任务靠 `asyncio.create_task` 跑，状态在 `jobs` 表里但没有恢复逻辑，
+  进程重启会让正在跑的任务停在 `running`。
+- **无鉴权**：上传与删除接口没有身份校验，只能部署在可信内网。
+- **上传无大小上限**：按后缀校验后一次性读入内存，没有流式落盘与容量限制。
+- **索引与模型一致性**：`meta` 记录了 embedding 模型与维度，但检索前不会强制校验；
+  同维度的不同模型混用不会被发现。换模型后务必执行 `reindex`。

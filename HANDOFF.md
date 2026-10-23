@@ -3,8 +3,8 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-23 16:55
-**交接时状态**：可运行、可测试、已推送 GitHub，但**真实链路（真实 embedding / LLM）从未跑过**——这是当前最大的风险，见第 7 节 P0-1。
+**交接时间**：2026-10-23 17:25
+**交接时状态**：可运行、60 项离线测试全绿；**代码层的真实链路已用本地假 OpenAI 服务跑通，但真实厂商 API 尚未验证**——见第 7 节 P0-1。
 
 ---
 
@@ -38,14 +38,14 @@
 
 ```bash
 cd "F:/project/课题/RAG4Prefa"
-./.venv/Scripts/python.exe -m pytest -q          # 期望：30 passed
+./.venv/Scripts/python.exe -m pytest -q          # 期望：60 passed
 ./.venv/Scripts/python.exe -m ruff check rag4prefa tests scripts   # 期望：All checks passed
 ./.venv/Scripts/python.exe -m rag4prefa doctor   # 看后端、维度、缺哪些凭据
 ```
 
 ---
 
-## 3. 代码地图（2 838 行 Python + 438 行单页 HTML）
+## 3. 代码地图（2 992 行 Python + 438 行单页 HTML + 922 行测试）
 
 ```
 rag4prefa/
@@ -67,7 +67,8 @@ rag4prefa/
 ```
 
 前端只有一个文件 `rag4prefa/web/index.html`（438 行，原生 JS，无构建步骤）。
-`tests/` 30 项，**全部离线**（FakeEmbedder 确定性假向量 + 临时 Milvus/numpy），不花一分钱 API 费。
+`tests/` 60 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检。
 
 ### 数据分层（关键，改动前必须理解）
 
@@ -141,15 +142,28 @@ API 一览（实现见 `api.py`，说明见 README）：
 
 ## 7. 待办清单（按优先级，每条都有验收标准）
 
-### P0 · 必须先做，否则系统没被真实验证过
+### 已完成（2026-10-23 第二轮，按外部评估意见修复）
 
-**P0-1　用真实 API 跑通端到端（最高优先）**
-30 项测试全用 FakeEmbedder，**真实 embedding / LLM 的调用路径一次都没跑过**。
-- 做法：`cp .env.example .env`，请用户提供 `R4P_EMBEDDING_API_KEY` / `R4P_LLM_API_KEY`（**不要**复用原仓库里泄漏的那个 ModelScope token）。
-- 建议先把 `R4P_EMBEDDING_DIM` 显式填成模型真实维度（gte-base-chinese 是 768），否则首启会先回退 numpy 再迁移。
-- 验收：`ingest` 那份申报书 → `ask "缓粘结预应力的张拉控制要点" --answer` 能返回带章节引用的答案；
-  `/api/health` 的 `backend.name` 是 `milvus`、`vectors` > 0、`credentials_missing` 为空。
-- 大概率会暴露的问题：ModelScope 端点是否支持 `stream=True`、embedding 批量上限、响应字段名差异。
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| **真实 embedding 链路必崩** | `Embedder._cache_get()` 查 `embed_cache` 表，但 `db.py` 的 SCHEMA 里没建 | 补建表（`(model, sha)` 主键）；测试见 `tests/test_embed_cache.py` |
+| 样例配置首启即挂 | 样例同时给了 `BACKEND=milvus` 与 `DIM=0`，建集合时无维度可用 | 样例改 `auto`、密钥留空、首行改 `#`；显式 `milvus` 时报错带自救指引 |
+| **局部 reindex 会删别的项目** | 无条件 `store.clear()`，而 numpy 后端的 `clear()` 删的是归档表 | 新增 `VectorStore.rebuild()`；局部重建只 upsert 本次范围；维度变化强制全量并明确报错 |
+| reindex 不同步归档与元数据 | 新向量只写索引，`vectors` 归档仍是旧的，`meta` 不更新 | 顺序改为「先算完 → 写归档 → 写索引 → 写 meta」 |
+| **Milvus 重启后检索不可用** | 新进程打开已有集合处于 `released` 状态，未 `load()` | 初始化与重建时显式 load；回归测试 `test_reopened_collection_is_searchable` |
+| CLI `ask` 一跑就 TypeError | `ask.search()` 是 `async def`，却直接解包返回值 | 改 `asyncio.run()`；测试 `tests/test_cli.py` |
+| **Recall@k 算成了 Precision** | 分母用返回条数而非标注相关总数 | 改 `|TopK ∩ Gold| / |Gold|`，nDCG 的 IDCG 同步修正；定义写进 `tests/test_eval_metrics.py` |
+| SQL 散落在 repo 之外 | `services.py` / `ingest.py` 里有裸 SQL | meta 读写与重建查询收回 `repo.py` |
+
+### P0 · 仍待完成
+
+**P0-1　接真实厂商 API 跑一遍**
+本地假 OpenAI 兼容服务已跑通 `ingest → ask --answer → SSE`，但**真实厂商**仍有三个未知数：
+`stream=True` 支持情况、embedding 批量上限、响应字段差异。
+- 做法：`cp .env.example .env` 后填 `R4P_EMBEDDING_API_KEY` / `R4P_LLM_API_KEY`（**不要**复用原仓库泄漏的 ModelScope token）。
+- 建议把 `R4P_EMBEDDING_DIM` 显式填成模型真实维度（gte-base-chinese 是 768）。
+- 验收：`ask "缓粘结预应力的张拉控制要点" --answer` 返回带章节引用的答案；
+  `/api/health` 的 `backend.name` 为 `milvus`、`vectors` > 0、`credentials_missing` 为空。
 
 ### P1 · 功能缺口
 
@@ -173,14 +187,16 @@ Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milv
 把「上一轮问题 + 当前问题」交给 LLM 生成独立检索式（或用启发式拼接最近 2 轮关键词，省一次调用）。
 注意：`/api/chat` 目前是无状态的，需要前端把 `history` 一起 POST 上来，接口要向后兼容（缺省为空）。
 
-### P2 · 清洁工作
+### P2 · 可靠性（多人使用前必须处理，单机演示可暂缓）
 
-**P2-1　`.env.example` 第 1 行 `// 说明：...` 会触发 python-dotenv 警告**
-`python-dotenv could not parse statement starting at line 1`（不致命，但脏）。改成 `#` 开头。
+1. **SQLite 并发**：同一个连接被请求线程与后台入库线程共用，`check_same_thread=False` 但没有写锁。
+   短期加锁 + 并发测试；更好的做法是每线程独立连接。
+2. **任务不可恢复**：`asyncio.create_task` 跑入库，进程重启后 `jobs` 停在 `running`，需要启动时清扫。
+3. **无鉴权**：上传/删除没有身份校验，只能部署在可信内网。
+4. **上传无大小上限**：一次性读入内存，应改流式落盘 + 上限 + 清理策略。
+5. **模型一致性未强制校验**：`meta` 记了模型与维度，但检索前不比对，同维度换模型不会被发现。
 
-**P2-2　`.env.example` 里过时注释**
-`R4P_VECTOR_BACKEND` 处写着"Milvus Lite（Windows 不可用）"，实测可用，应改为"Windows 可用"。
-另外 `R4P_VECTOR_BACKEND=milvus` 与 `config.py` 默认 `auto` 不一致——建议样例保持 `auto`（对新手更稳）。
+### 已关闭
 
 **P2-3　~~公开仓库的标识脱敏~~　已关闭（2026-10-23 用户确认无需处理）**
 用户明确：「立体聚落」不是真实课题名，是另一个项目的参考资料；`课题/Ref` 只是参考材料目录。
@@ -214,18 +230,23 @@ README / tests / eval 里的示例文字与路径按现状保留，**不要**再
 
 ---
 
-## 10. 交接时的验证记录（2026-10-23 16:55，历史拆分后重测）
+## 10. 交接时的验证记录（2026-10-23 17:25，第二轮修复后）
 
 ```
-pytest -q                    → 30 passed in 8.74s
+pytest -q                    → 60 passed（原 30 + 新增 30）
 ruff check rag4prefa tests scripts → All checks passed
-git status -sb               → ## main...origin/main（无未提交改动，17 个提交）
-真实文档解析（申报书）        → 30 个章节、层级正确、共 11 033 字；层级分布 L1×10 / L2×9 / L3×4 / L4×6
-Milvus Lite（Windows）        → 建集合 / upsert / 带标量过滤检索 / 统计 全部实测通过
-HTTP（TestClient + lifespan） → GET / 200（16 245 bytes）；/api/health 200 且如实报告；
-                                /api/projects 200 []；无 key 时 /api/chat 返回 503 并指出缺哪个环境变量
-doctor                       → ok:false，唯一原因是 .env 未创建、两个 key 缺失，属预期
+真实 SDK 链路（本地假 OpenAI 服务，零费用）：
+  ingest 申报书            → 26 块入库，backend=milvus dim=64，第二次同文件 skipped
+  ask --answer             → 返回命中片段 + 大模型回答
+  embed_cache              → 27 行（26 片段 + 1 次查询），证明缓存真的生效
+  vectors 归档             → 26 行，model 未被抹空
+  /api/chat SSE            → ['meta','token','token','token','citations','done']
+全新目录 + 照抄 .env.example 首启：
+  doctor                   → 不崩，回退 numpy，如实报 missing 两个 key，无 dotenv 警告
 ```
+
+> 注意 `sparse_ms`（BM25）首次查询约 700~800ms，是 jieba 词典首次加载的开销，
+> 之后降到毫秒级。若在意首问延迟，可在启动时预热一次 `jieba.lcut_for_search("预热")`。
 
 环境实况：Python 3.13.14；fastapi 0.161.1 / uvicorn 0.54.0 / python-docx 1.2.0 /
 pymilvus 3.0.2 / milvus-lite 3.2.2 / openai 3.37.0 / jieba 0.42.1 / numpy 2.5.4 /
