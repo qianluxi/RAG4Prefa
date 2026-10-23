@@ -1,7 +1,10 @@
 // 评估集样例：每行一个 JSON。复制为 eval/dataset.jsonl 后替换成自己的题目。
-// 标注方式二选一：
-//   gold_chunk_ids  —— 精确（用 `python -m rag4prefa ask "问题"` 的输出里取 chunk_id）
-//   gold_snippets   —— 粗粒度，命中片段里包含这些原文即视为相关（更好标注）
+// 评价单位是 chunk：三个指标共用同一个 gold 集合。
+// 标注方式：
+//   gold_chunk_ids  —— 首选。精确、无歧义（chunk_id 从 `python -m rag4prefa ask "问题"` 的输出里取）
+//   gold_snippets   —— 省力。脚本会把它解析成"语料中包含该片段的全部 chunk"再计入 gold，
+//                      所以片段出现得越分散，gold 越大、Recall 越难满分（保守但可解释）
+// 同一片段不要重复列两次（会被去重，但没必要留下歧义）。
 {"question": "缓粘结预应力的张拉控制要点有哪些？", "filter": {"projects": ["立体聚落"]}, "gold_snippets": ["缓粘结预应力", "张拉"]}
 {"question": "2024年以后关于陶土砖饰面的做法", "gold_snippets": ["陶土砖", "叠涩错砌"]}
 {"question": "研究现状里提到哪些国内外差距？", "filter": {"projects": ["立体聚落"]}, "gold_snippets": ["国外", "国内"]}
