@@ -42,13 +42,17 @@ class Chunk(BaseModel):
 
 
 class Filter(BaseModel):
-    """检索约束。随请求传入，不存在任何进程级状态。"""
+    """检索约束。随请求传入，不存在任何进程级状态。
+
+    字段只保留**真的参与召回**的维度：projects / year_from / year_to 进标量过滤，
+    keyword 并入 BM25 查询式。曾经有一个 feature 字段能从问句里解析出来却从不参与过滤，
+    这种"看着生效其实无效"的字段比没有更糟，已删除。
+    """
 
     projects: list[str] | None = None
     year_from: int | None = None
     year_to: int | None = None
     keyword: str | None = None
-    feature: str | None = None
 
     def merge(self, other: Filter) -> Filter:
         """请求显式传入的条件优先，未给出的用自动解析出的条件补齐。"""
@@ -57,12 +61,11 @@ class Filter(BaseModel):
             year_from=self.year_from if self.year_from is not None else other.year_from,
             year_to=self.year_to if self.year_to is not None else other.year_to,
             keyword=self.keyword or other.keyword,
-            feature=self.feature or other.feature,
         )
 
     @property
     def is_empty(self) -> bool:
-        return not any((self.projects, self.year_from, self.year_to, self.keyword, self.feature))
+        return not any((self.projects, self.year_from, self.year_to, self.keyword))
 
 
 class Hit(BaseModel):

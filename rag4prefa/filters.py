@@ -20,7 +20,6 @@ _BEFORE = re.compile(r"(20\d{2})\s*年?\s*(?:以前|之前|前)")
 _RECENT = re.compile(r"近\s*([一二三四五六七八九十\d]+)\s*年")
 _SINGLE = re.compile(r"(20\d{2})\s*年")
 _QUOTED = re.compile(r"[“\"'「『]([^”\"'」』]{1,40})[”\"'」』]")
-_FEATURE = re.compile(r"(?:具有|涉及|包含|关于)([^，。？?]{2,30}?)(?:的|特点|特征|项目)")
 
 _CN_DIGITS = {
     "一": 1,
@@ -78,18 +77,11 @@ def parse_filter(
     if m := _QUOTED.search(question):
         keyword = m.group(1).strip()
 
-    feature = None
-    if m := _FEATURE.search(question):
-        candidate = m.group(1).strip()
-        if candidate and not candidate.isdigit():
-            feature = candidate
-
     return Filter(
         projects=projects or None,
         year_from=year_from,
         year_to=year_to,
         keyword=keyword,
-        feature=feature,
     )
 
 

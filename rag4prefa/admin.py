@@ -21,16 +21,8 @@ def list_documents(conn: sqlite3.Connection, project_name: str) -> list[Document
 
 
 def chapter_distribution(conn: sqlite3.Connection, project_name: str) -> list[dict]:
-    rows = conn.execute(
-        """
-        SELECT c.chapter_path, c.token_count
-        FROM chunks c JOIN documents d ON d.id = c.doc_id
-        WHERE d.project_name = ?
-        """,
-        (project_name,),
-    ).fetchall()
     buckets: dict[str, dict] = {}
-    for row in rows:
+    for row in repo.project_chapter_rows(conn, project_name):
         path = json.loads(row["chapter_path"])
         chapter = path[0] if path else "未分章"
         bucket = buckets.setdefault(chapter, {"chapter": chapter, "chunks": 0, "tokens": 0})
@@ -40,15 +32,8 @@ def chapter_distribution(conn: sqlite3.Connection, project_name: str) -> list[di
 
 
 def sample_hits(conn: sqlite3.Connection, project_name: str, limit: int = 5) -> list[Hit]:
-    """取该项目的代表性片段（按序取，不调用 embedding，避免摘要也要联网）。"""
-    rows = conn.execute(
-        """
-        SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id
-        WHERE d.project_name = ? ORDER BY c.token_count DESC LIMIT ?
-        """,
-        (project_name, limit),
-    ).fetchall()
-    ids = [r["id"] for r in rows]
+    """取该项目的代表性片段（按长度取，不调用 embedding，避免摘要也要联网）。"""
+    ids = repo.longest_chunk_ids(conn, project_name, limit)
     details = repo.get_chunks(conn, ids)
     return [Hit(score=0.0, **details[i]) for i in ids if i in details]
 
@@ -57,11 +42,9 @@ def summarize_project(
     conn: sqlite3.Connection, llm: LLM, project_name: str, *, refresh: bool = False
 ) -> str:
     if not refresh:
-        row = conn.execute(
-            "SELECT summary FROM projects WHERE name = ?", (project_name,)
-        ).fetchone()
-        if row and row["summary"]:
-            return row["summary"]
+        cached = repo.get_project_summary(conn, project_name)
+        if cached:
+            return cached
     hits = sample_hits(conn, project_name)
     if not hits:
         return ""
@@ -69,8 +52,7 @@ def summarize_project(
         SYSTEM_SUMMARY, build_summary_prompt(project_name, hits), max_tokens=300
     ).strip()
     if text:
-        conn.execute("UPDATE projects SET summary = ? WHERE name = ?", (text, project_name))
-        conn.commit()
+        repo.set_project_summary(conn, project_name, text)
     return text
 
 
