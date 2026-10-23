@@ -222,12 +222,14 @@ def create_app(services: Services | None = None) -> FastAPI:
             services.require_llm()
         except (EmbeddingError, LLMError) as exc:
             raise HTTPException(503, str(exc)) from exc
-        # 模型不一致的检查放在开始流之前：能改 HTTP 状态码的时候说清楚，别用 SSE error 收尾
+        # 模型不一致/索引与事实不符的检查放在开始流之前：能改 HTTP 状态码的时候说清楚，
+        # 别用 SSE error 收尾（客户端已经开始读 token 流了）
         try:
             consistency.ensure_queryable(
                 services.conn,
                 services.require_embedder().model,
                 services.store.dim,
+                store_count=services.store.count(),
             )
         except IndexMismatch as exc:
             raise HTTPException(503, str(exc)) from exc

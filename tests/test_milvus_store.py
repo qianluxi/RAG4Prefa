@@ -51,6 +51,23 @@ def test_delete(store: MilvusStore) -> None:
     assert store.count() == 0
 
 
+def test_ids_and_count_are_exact(store: MilvusStore) -> None:
+    """verify 命令靠 ids() 做逐 id 比对，count() 必须是精确值而不是统计估算。"""
+    store.upsert(
+        [
+            VectorItem("a", [1, 0, 0, 0], "甲项目", "", 2024),
+            VectorItem("b", [0, 1, 0, 0], "甲项目", "", 2024),
+            VectorItem("c", [0, 0, 1, 0], "甲项目", "", 2024),
+        ]
+    )
+    assert store.ids() == {"a", "b", "c"}
+    assert len(store.ids()) == store.count() == 3
+
+    store.delete(["b"])
+    assert store.ids() == {"a", "c"}
+    assert store.count() == 2, "删除后条数必须立刻准确，否则一致性检查会误判"
+
+
 def test_reopened_collection_is_searchable(tmp_path) -> None:
     """新进程打开已有集合时必须先 load，否则状态是 released，search 直接报错。
 
@@ -88,8 +105,8 @@ def test_rebuild_changes_dimension(tmp_path) -> None:
     assert {h[0] for h in store.search([1, 0, 0, 0, 0, 0], limit=2)} == {"a", "b"}
 
 
-def test_rebuild_same_dim_is_available_throughout_and_prunes_orphans(tmp_path) -> None:
-    """同维度整体重建不删集合，并且要把不在新集合里的旧 id 清掉。"""
+def test_rebuild_same_dim_prunes_orphans(tmp_path) -> None:
+    """同维度整体重建也要把不在新集合里的旧 id 清掉。"""
     uri, name = str(tmp_path / "vectors.db"), "chunks_vec"
     try:
         store = MilvusStore(uri, name, dim=4)
@@ -106,6 +123,56 @@ def test_rebuild_same_dim_is_available_throughout_and_prunes_orphans(tmp_path) -
 
     assert store.count() == 1, "不在本次重建范围内的旧向量必须被清掉"
     assert [h[0] for h in store.search([1, 0, 0, 0], limit=5)] == ["a"]
+
+
+def test_rebuild_same_dim_also_goes_through_staging(tmp_path, monkeypatch) -> None:
+    """同维度重建也不再原地覆盖正式集合。
+
+    原地覆盖到一半失败，正式集合就是新旧混杂的一堆向量，而检索看不出任何异常。
+    这里让"写暂存"这一步炸掉，断言正式索引**一条都没被动过**。
+    """
+    uri, name = str(tmp_path / "vectors.db"), "chunks_vec"
+    try:
+        store = MilvusStore(uri, name, dim=4)
+    except BackendUnavailable as exc:
+        pytest.skip(f"Milvus 不可用：{exc}")
+    store.upsert([VectorItem("a", [1, 0, 0, 0], "甲项目", "", 2024)])
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("模拟写暂存失败")
+
+    monkeypatch.setattr(store, "_upsert_into", boom)
+    with pytest.raises(RuntimeError, match="模拟写暂存失败"):
+        store.rebuild(
+            [
+                VectorItem("a", [0, 1, 0, 0], "甲项目", "", 2024),
+                VectorItem("b", [1, 0, 0, 0], "甲项目", "", 2024),
+            ]
+        )
+
+    assert store.count() == 1, "正式集合必须保持原样，不能混进 b"
+    assert set(store._client.list_collections()) == {name}, "失败的暂存集合必须被清掉"
+    # 旧向量还能被查出来，且分数仍是与 a 的原始向量算出来的
+    hits = store.search([1, 0, 0, 0], limit=5)
+    assert [h[0] for h in hits] == ["a"]
+
+
+def test_reopen_discards_staging_when_final_is_intact(tmp_path) -> None:
+    """进程在切换前被杀死：正式集合完好，暂存是半成品，重启后必须丢掉暂存。"""
+    uri, name = str(tmp_path / "vectors.db"), "chunks_vec"
+    try:
+        first = MilvusStore(uri, name, dim=4)
+    except BackendUnavailable as exc:
+        pytest.skip(f"Milvus 不可用：{exc}")
+    first.upsert([VectorItem("a", [1, 0, 0, 0], "甲项目", "", 2024)])
+    # 手工制造"暂存写了一半、切换还没开始"的状态
+    first._create_collection(f"{name}__staging", 4)
+
+    reopened = MilvusStore(uri, name, dim=4)
+
+    assert set(reopened._client.list_collections()) == {name}
+    assert reopened.notes, "丢弃暂存要留下说明"
+    assert [h[0] for h in reopened.search([1, 0, 0, 0], limit=3)] == ["a"]
 
 
 def test_rebuild_leaves_no_staging_or_retired_collections(tmp_path) -> None:
@@ -175,3 +242,81 @@ def test_reopen_rejects_dim_mismatch(tmp_path) -> None:
     # 不给维度时可以沿用集合里的实际维度（首启不知道维度也能打开）
     adopted = MilvusStore(uri, name, dim=0)
     assert adopted.dim == 4
+
+
+def test_non_ascii_path_is_rejected_before_touching_disk(tmp_path) -> None:
+    """Windows + 中文路径：faiss 建索引必失败，必须在开集合前就拒绝并给出出路。
+
+    实测结论：同一份数据放 `C:/tmp/...` 正常，放 `.../课题/...` 下只要触发
+    release+load 就报 "faiss::FileIOWriter ... No such file or directory"，
+    之后集合直接处于不可用状态。与其让人在重建那一刻收到看不懂的报错，不如早拒绝。
+    """
+    import os
+
+    if os.name != "nt":
+        pytest.skip("该限制只在 Windows 上出现")
+
+    with pytest.raises(BackendUnavailable, match="非 ASCII"):
+        MilvusStore(str(tmp_path / "课题" / "vectors.db"), "chunks_vec", dim=4)
+
+
+def test_non_ascii_collection_name_is_rejected(tmp_path) -> None:
+    """uri 干净但集合名带中文，索引文件路径照样是中文，同样要拒绝。"""
+    import os
+
+    if os.name != "nt":
+        pytest.skip("该限制只在 Windows 上出现")
+
+    with pytest.raises(BackendUnavailable, match="非 ASCII"):
+        MilvusStore(str(tmp_path / "vectors.db"), "课题向量", dim=4)
+
+
+def test_open_store_falls_back_to_numpy_for_non_ascii_path(tmp_path) -> None:
+    """默认 backend=auto 时，这类环境问题应自动回退到 numpy，而不是启动即崩。"""
+    import os
+
+    if os.name != "nt":
+        pytest.skip("该限制只在 Windows 上出现")
+
+    from rag4prefa.config import Settings
+    from rag4prefa.db import connect, init_db
+    from rag4prefa.services import open_store
+
+    data = tmp_path / "课题"
+    settings = Settings(
+        data_dir=data, vector_backend="auto", milvus_uri=str(data / "vectors.db")
+    )
+    settings.ensure_dirs()
+    init_db(settings.db_path)
+    conn = connect(settings.db_path)
+    try:
+        store, notes, fell_back = open_store(settings, conn)
+        assert store.name == "numpy"
+        assert fell_back is True
+        assert any("非 ASCII" in n for n in notes), "回退原因必须写清楚"
+    finally:
+        conn.close()
+
+
+def test_explicit_milvus_backend_does_not_silently_fall_back(tmp_path) -> None:
+    import os
+
+    if os.name != "nt":
+        pytest.skip("该限制只在 Windows 上出现")
+
+    from rag4prefa.config import Settings
+    from rag4prefa.db import connect, init_db
+    from rag4prefa.services import open_store
+
+    data = tmp_path / "课题"
+    settings = Settings(
+        data_dir=data, vector_backend="milvus", milvus_uri=str(data / "vectors.db")
+    )
+    settings.ensure_dirs()
+    init_db(settings.db_path)
+    conn = connect(settings.db_path)
+    try:
+        with pytest.raises(BackendUnavailable, match="不会自动回退"):
+            open_store(settings, conn)
+    finally:
+        conn.close()

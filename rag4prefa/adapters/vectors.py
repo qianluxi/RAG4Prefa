@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from array import array
 from collections.abc import Sequence
@@ -24,6 +25,28 @@ class BackendUnavailable(RuntimeError):
 
 class RebuildError(RuntimeError):
     """重建索引失败。错误信息里必须写清"现在处于什么状态、怎么恢复"。"""
+
+
+NON_ASCII_PATH_HINT = (
+    "Milvus Lite 在 Windows 上无法在含非 ASCII 字符的路径下建立索引："
+    "faiss 用窄字符 fopen 打开索引文件，中文目录名会直接失败；"
+    "一旦触发 flush / release+load（重建、换维度、重启后重开都算），集合就再也加载不起来。"
+    "两条出路：① 把 R4P_DATA_DIR（或 R4P_MILVUS_URI）指到纯 ASCII 路径，"
+    "例如 C:\\rag4prefa-data；② 用 R4P_VECTOR_BACKEND=numpy，"
+    "十万级片段以内它做精确余弦检索，结果与 Milvus 完全一致，只是 O(n) 扫描。"
+)
+
+
+def _reject_non_ascii_uri(uri: str) -> None:
+    """在开集合之前就拒绝，别让人在建索引那一刻才收到一条看不懂的 faiss 报错。
+
+    这条限制是实测出来的，不是猜的：同一份数据放 `C:/tmp/...` 一切正常，
+    放到 `F:/project/课题/...` 下 rebuild 立即失败。
+    """
+    if os.name != "nt":
+        return
+    if any(ord(ch) > 127 for ch in str(uri)):
+        raise BackendUnavailable(f"{NON_ASCII_PATH_HINT}（当前 uri：{uri}）")
 
 
 @dataclass(slots=True)
@@ -47,6 +70,7 @@ class VectorStore(Protocol):
         self, vector: list[float], *, limit: int, filt: Filter | None = None
     ) -> list[tuple[str, float]]: ...
     def count(self) -> int: ...
+    def ids(self) -> set[str]: ...
     def clear(self) -> None: ...
     def rebuild(self, items: Sequence[VectorItem]) -> None: ...
 
@@ -175,6 +199,9 @@ class NumpyStore:
     def count(self) -> int:
         return len(self._ids)
 
+    def ids(self) -> set[str]:
+        return set(self._ids)
+
     def clear(self) -> None:
         self._conn.execute("DELETE FROM vectors")
         self._conn.commit()
@@ -235,6 +262,7 @@ class MilvusStore:
         except ImportError as exc:  # pragma: no cover - 环境相关
             raise BackendUnavailable("未安装 pymilvus：pip install 'rag4prefa[milvus]'") from exc
 
+        _reject_non_ascii_uri(os.path.join(str(uri), collection))
         self._collection = collection
         self.dim = dim
         self.notes: list[str] = []
@@ -293,6 +321,10 @@ class MilvusStore:
             self._client.load_collection(self._collection)
         except Exception as exc:  # pragma: no cover - 平台相关
             message = str(exc)
+            if "faiss" in message.lower():
+                # 走到这里说明路径检查没拦住（例如符号链接绕过了判断），
+                # 把 faiss 的原始报错换成能照着做的话
+                raise BackendUnavailable(NON_ASCII_PATH_HINT) from exc
             if "already loaded" not in message.lower():
                 raise BackendUnavailable(f"无法加载 Milvus 集合：{message}") from exc
 
@@ -385,7 +417,24 @@ class MilvusStore:
     def count(self) -> int:
         return self._count_of(self._collection)
 
+    def ids(self) -> set[str]:
+        return self._all_ids(self._collection)
+
     def _count_of(self, collection: str) -> int:
+        """优先用 count(*) 拿精确条数。
+
+        `get_collection_stats` 的 row_count 语义随版本而异（可能是统计估算或含已删未压实
+        的记录）。一致性检查拿它当阻断依据时，宁可慢一点也要一个确定的数字——
+        误报 503 和漏报脏索引一样糟。
+        """
+        try:
+            res = self._client.query(
+                collection_name=collection, filter="", output_fields=["count(*)"]
+            )
+            if res:
+                return int(res[0].get("count(*)", 0))
+        except Exception:  # pragma: no cover - 老版本不支持聚合查询时回退
+            pass
         stats = self._client.get_collection_stats(collection)
         return int(stats.get("row_count", 0))
 
@@ -393,7 +442,7 @@ class MilvusStore:
         self._client.delete(collection_name=self._collection, filter="id != ''")
 
     def _all_ids(self, collection: str) -> set[str]:
-        """列出集合里的全部主键。用于删除孤儿向量，所以要一次性取完、不能截断。"""
+        """列出集合里的全部主键。用于精确比对与清理孤儿，所以要一次性取完、不能截断。"""
         total = self._count_of(collection)
         ids: set[str] = set()
         page = 1024
@@ -413,22 +462,22 @@ class MilvusStore:
             offset += len(rows)
         return ids
 
-    def _prune(self, collection: str, keep: set[str]) -> int:
-        orphan = self._all_ids(collection) - keep
-        if orphan:
-            self._client.delete(collection_name=collection, ids=sorted(orphan))
-        return len(orphan)
-
     def rebuild(self, items: Sequence[VectorItem]) -> None:
-        """整体替换全部向量。
+        """整体替换全部向量：准备一整套新的，校验通过后再切换。
 
-        两条路径，按风险分别处理：
+        **维度变不变都走同一条路径**，不再有"同维度就原地 upsert"的分支。
+        原地覆盖在正常情况下确实更快、也不需要删集合，但它不是原子操作：覆盖到一半
+        进程被杀，正式集合就是新旧混杂的一堆向量，而检索看不出任何异常。既然"少一次
+        rename"换不来任何业务收益，就不该为它保留一条更脆弱的路径。
 
-        - **维度不变**：原地 upsert 全部向量再删孤儿。全程不需要删集合，任何时刻都能检索；
-        - **维度变了**：Milvus 的集合维度不可改，只能换集合。先在 `__staging` 里写全并校验条数，
-          确认无误后才用 rename 做切换（rename 是元数据操作，不是"删了再建"），
-          被换下来的旧集合先叫 `__retired`，切换成功后立刻删除。中途失败时旧集合仍在，
-          或者至少在 retried/staging 里留着一份完整数据，`_recover()` 下次启动会自动还原。
+        代价：重建期间暂存集合占一份额外空间；两次 rename 之间有一个极短窗口，
+        此刻的检索会失败而不是返回混杂结果——这是刻意的取舍。
+
+        语义：
+        1. 在 `__staging` 里建同维度集合、写全、load、按条数校验；
+        2. 正式集合 rename 成 `__retired` 让位，暂存 rename 成正式名（元数据操作，不是删了重建）；
+        3. 成功后才删掉 `__retired`；
+        4. 中途失败：暂存直接丢弃，正式集合原样可用；`_recover()` 负责收拾进程被杀留下的残留。
         """
         if not items:
             self.clear()
@@ -437,14 +486,7 @@ class MilvusStore:
         dim = len(items[0].vector)
         if any(len(i.vector) != dim for i in items):
             raise ValueError("待重建的向量维度不一致，已中止（索引未做任何改动）")
-        ids = {i.chunk_id for i in items}
 
-        if self.dim == dim and self._client.has_collection(self._collection):
-            self.upsert(items)
-            self._prune(self._collection, ids)
-            return
-
-        # 暂存 → 校验
         self._drop_if_exists(self._staging)
         try:
             self._create_collection(self._staging, dim)
@@ -459,7 +501,6 @@ class MilvusStore:
             self._drop_if_exists(self._staging)
             raise
 
-        # 切换：旧集合先改名让位，再把暂存改名顶上
         self._drop_if_exists(self._retired)
         had_final = self._client.has_collection(self._collection)
         try:

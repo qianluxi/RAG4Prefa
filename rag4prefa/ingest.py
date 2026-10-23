@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -71,27 +72,37 @@ def ingest_file(
     步骤顺序是按"失败后用户还剩什么"排的，不是按"最短代码路径"排的：
 
     1. 解析 + 分块（纯本地，失败无副作用）；
-    2. **先把整份文档算成向量**——这一步要走网络、最可能失败，此时索引里还是旧版本，
-       用户照样能检索，只是内容还没更新；
-    3. 再在一个事务里切换片段（事实），随后覆盖向量（派生）与归档；
-    4. 最后才把新的 content_sha 与 indexed 状态记下来。
+    2. **先把整份文档算成向量**——这一步要走网络、最可能失败，此时索引与事实都还是旧版本；
+    3. **再写向量索引**：chunk_id 是内容寻址的（见 `chunking._chunk_id`），所以新写入的
+       只可能是"新内容"或"内容相同的老片段"，旧版本的正文不会被新向量配上；
+    4. 最后用一个事务把片段与归档一起切换，再删掉这一版淘汰掉的旧向量；
+    5. 全部成功后才记 content_sha、`indexed` 状态与索引元数据。
 
-    旧实现把"删旧片段"放在调 embedding 之前，于是限流/超时/密钥失效一次，
-    原先能用的版本就没了，只剩一个 failed 的空壳。
+    为什么不是"先切事实再写索引"：那种顺序下，一旦写索引失败，事实已经是新版、索引还是
+    旧版，chunk_id 相同的位置会出现"新向量配旧正文"或"新正文配旧向量"，两路召回各说各话。
+    现在改成索引先行，失败时旧版本（事实 + 归档 + 索引）完整可用，只需把多写的向量撤回；
+    撤回也失败时，一致性检查会发现"索引条数多于归档"并拒绝检索，不会静默给错答案。
     """
     filename = path.name
     doc_id = _doc_id(project_name, filename)
+    stage = "预检查"
+    written: list[str] = []  # 只在索引里新出现的 chunk_id，用于失败时精确撤回
+    facts_committed = False
+    doc_row_exists = False
     try:
-        # 第一步就是一致性检查：模型对不上时，连项目/文档记录都不要建，
+        # 第一步就是一致性检查：索引不能自证一致时，连项目/文档记录都不要建，
         # 否则库里会多出一个空项目，让人误以为"导过了"。
         try:
-            consistency.ensure_writable(conn, embedder.model, embedder.dim)
+            consistency.ensure_writable(
+                conn, embedder.model, embedder.dim, store_count=store.count()
+            )
         except IndexMismatch as exc:
             return FileOutcome(filename, "failed", 0, 0, str(exc))
 
         repo.upsert_project(conn, project_name, project_code)
         content_sha = _sha_file(path)
         existing = repo.get_document(conn, project_name, filename)
+        doc_row_exists = existing is not None
         # 只有"上一版确实建成功了"才允许跳过；失败过的文档必须能重试，
         # 否则一次限流就把这份文件永久钉在 failed 上。
         if (
@@ -102,6 +113,7 @@ def ingest_file(
         ):
             return FileOutcome(filename, "skipped", existing.section_count, existing.chunk_count)
 
+        stage = "解析与分块"
         sections = parse_docx(path)
         chunks = build_chunks(
             sections,
@@ -126,6 +138,9 @@ def ingest_file(
         repo.mark_document_indexing(
             conn, doc_id=doc_id, project_name=project_name, filename=filename, doc_year=doc_year
         )
+        doc_row_exists = True
+
+        stage = "计算向量"
         vectors = embedder.embed([contextual_text(c) for c in chunks])
 
         items = [
@@ -140,13 +155,26 @@ def ingest_file(
             for c, v in zip(chunks, vectors, strict=True)
         ]
 
-        # 事实先落在一个事务里；向量随后覆盖，再删掉这一版淘汰的片段
-        stale = repo.replace_document_chunks(conn, doc_id, chunks)
-        repo.archive_vectors(conn, [to_archive_row(i) for i in items])
+        # 派生索引先落：此时事实还是旧版本，检索照常可用。
+        # 记下切换前该文档已有的 id——chunk_id 是内容寻址的，改一版时未变的片段会沿用
+        # 原 id，撤回时只该删"这一版新增的"，否则会把旧版本的向量一起抹掉。
+        stage = "写入向量索引"
+        preexisting = set(repo.chunk_ids_of_doc(conn, doc_id))
         store.upsert(items)
+        written = [i.chunk_id for i in items if i.chunk_id not in preexisting]
+
+        # 事实与归档在同一个事务里切换：读方要么看到旧版、要么看到新版
+        stage = "切换文档片段"
+        stale = repo.commit_document_version(
+            conn, doc_id, chunks, [to_archive_row(i) for i in items]
+        )
+        facts_committed = True
+
+        stage = "清理淘汰向量"
         if stale:
             store.delete(stale)
 
+        stage = "记录文档状态"
         repo.upsert_document(
             conn,
             doc_id=doc_id,
@@ -163,8 +191,28 @@ def ingest_file(
         repo.set_meta(conn, "embedding_dim", str(embedder.dim or len(items[0].vector)))
         return FileOutcome(filename, "indexed", len(sections), len(chunks))
     except Exception as exc:  # 单文件失败不该拖垮整批
-        repo.set_document_status(conn, doc_id, "failed", str(exc))
-        return FileOutcome(filename, "failed", 0, 0, f"{type(exc).__name__}: {exc}")
+        detail = f"{type(exc).__name__}: {exc}"
+        if written and not facts_committed:
+            # 索引已写、事实没切换：索引里多出的是"没有正文的向量"，检索会跳过它们，
+            # 但会把召回名额占掉。撤回失败也不算灾难——一致性检查会因此报错并拒绝检索。
+            try:
+                store.delete(written)
+                detail += f"（{stage}失败，已撤回本次新增的 {len(written)} 条向量，库仍是上一版）"
+            except Exception as rollback_exc:
+                detail += (
+                    f"（{stage}失败，且撤回写入的向量也失败：{rollback_exc}；"
+                    "索引条数会多于归档，检索将被拒绝，重试同一文件或用 reindex 修复）"
+                )
+        elif facts_committed:
+            detail += (
+                f"（{stage}失败，但新版本已生效且可检索；"
+                "重新导入同一文件即可清理残留，不要只依赖这次的结果）"
+            )
+        if doc_row_exists:
+            with contextlib.suppress(Exception):
+                # 状态都写不进去时只能靠返回值说明，别让收尾动作盖掉原始错误
+                repo.set_document_status(conn, doc_id, "failed", detail)
+        return FileOutcome(filename, "failed", 0, 0, detail)
 
 
 def ingest_batch(
@@ -261,7 +309,7 @@ def reindex(
         return {"scope": project_name or "all", "chunks": 0, "rebuilt": False}
 
     if project_name:
-        _ensure_same_model(conn, embedder.model)
+        _ensure_same_model(conn, embedder.model, store.count())
 
     items: list[VectorItem] = []
     batch_size = max(1, settings.embedding_batch)
@@ -311,24 +359,23 @@ def reindex(
     }
 
 
-def _ensure_same_model(conn: sqlite3.Connection, model: str) -> None:
-    """局部重建只允许沿用索引现有模型；要换模型就必须全量。"""
-    state = consistency.inspect(conn)
-    if not state.count:
-        return
-    if len(state.known_models) > 1:
-        listed = "、".join(sorted(state.known_models))
+def _ensure_same_model(
+    conn: sqlite3.Connection, model: str, store_count: int | None = None
+) -> None:
+    """局部重建只允许在"索引本身自洽"的前提下沿用现有模型。
+
+    局部重建修不了全库的不一致（缺向量、混模型、索引与归档对不上），只会让状态更复杂，
+    所以这类前提不满足时直接拒绝，把"全量 reindex"指给用户。
+    """
+    try:
+        consistency.ensure_writable(
+            conn, model, store_count=store_count, action="局部重建"
+        )
+    except IndexMismatch as exc:
         raise ReindexError(
-            f"索引里已混有两套模型的向量（{listed}），只重建一个项目修不好这个问题。"
+            f"{exc}\n局部重建只能覆盖一个项目，修不了这类问题；"
             "请去掉 --project 执行全量 reindex。"
-        )
-    if state.known_models and model not in state.known_models:
-        index_model = "、".join(sorted(state.known_models))
-        raise ReindexError(
-            f"局部重建必须沿用索引现有的 embedding 模型：索引用的是「{index_model}」，"
-            f"当前配置是「{model}」。维度相同也不代表向量空间相同，混用会让检索静默变差。"
-            "确实要换模型，请去掉 --project 执行全量 reindex。"
-        )
+        ) from exc
 
 
 def doc_year_from(value: str | None, fallback: int | None = None) -> int | None:

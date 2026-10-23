@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import admin, ask, ingest, repo
+from . import admin, ask, consistency, ingest, repo
 from .config import get_settings
 from .consistency import IndexMismatch
 from .db import init_db
@@ -157,6 +157,28 @@ def cmd_ask(args: argparse.Namespace) -> int:
         services.close()
 
 
+def cmd_verify(_: argparse.Namespace) -> int:
+    """逐 id 核对「片段 / 归档 / 实际索引」三方是否一致。
+
+    health 里只做计数比对（廉价，每次请求都能跑）；条数相同但内容不同的情况
+    只能靠这个命令发现，代价是要把索引主键全拉一遍。
+    """
+    services = build_services()
+    try:
+        report = consistency.verify_ids(services.conn, services.store)
+        _print(report)
+        if not report["ok"]:
+            print(
+                "\n索引与事实不一致。先用 `python -m rag4prefa reindex` 全量重建，"
+                "重建后重跑本命令确认干净。",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+    finally:
+        services.close()
+
+
 def cmd_projects(_: argparse.Namespace) -> int:
     services = build_services()
     try:
@@ -203,6 +225,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("projects", help="列出项目")
     p.set_defaults(func=cmd_projects)
+
+    p = sub.add_parser("verify", help="逐 id 核对片段、归档与向量索引是否一致")
+    p.set_defaults(func=cmd_verify)
     return parser
 
 

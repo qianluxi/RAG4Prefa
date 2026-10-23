@@ -58,3 +58,35 @@ def test_cmd_reindex_reports_reindex_error(monkeypatch, capsys) -> None:
     assert cli.cmd_reindex(argparse.Namespace(project="甲项目")) == 1
     err = capsys.readouterr().err
     assert "维度" in err and "reindex 未执行" in err
+
+
+def test_cmd_verify_reports_drift(monkeypatch, capsys) -> None:
+    """verify 发现差异时必须返回非零，并指向可执行的修复命令。"""
+    monkeypatch.setattr(cli, "build_services", lambda: _FakeServices())
+    monkeypatch.setattr(
+        cli.consistency,
+        "verify_ids",
+        lambda conn, store: {
+            "ok": False,
+            "chunks": 10,
+            "archived": 9,
+            "indexed": 9,
+            "counts": {"片段没有归档向量": 1},
+            "samples": {"片段没有归档向量": ["c1"]},
+        },
+    )
+
+    assert cli.cmd_verify(argparse.Namespace()) == 1
+    captured = capsys.readouterr()
+    assert "c1" in captured.out
+    assert "reindex" in captured.err
+
+
+def test_cmd_verify_returns_zero_when_clean(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "build_services", lambda: _FakeServices())
+    monkeypatch.setattr(
+        cli.consistency,
+        "verify_ids",
+        lambda conn, store: {"ok": True, "chunks": 10, "archived": 10, "indexed": 10},
+    )
+    assert cli.cmd_verify(argparse.Namespace()) == 0

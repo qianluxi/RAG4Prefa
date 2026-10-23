@@ -147,5 +147,48 @@ def test_embed_cache_is_reused_across_calls(services: tuple[Services, Path]) -> 
     assert _cache_count(svc.conn) == rows_after_first, "重复文本不该再写一条缓存"
 
 
+def _break_index(svc: Services) -> None:
+    """把归档向量删掉一条，制造"片段多于向量"的残缺状态。"""
+    victim = svc.conn.execute("SELECT chunk_id FROM vectors LIMIT 1").fetchone()["chunk_id"]
+    svc.conn.execute("DELETE FROM vectors WHERE chunk_id = ?", (victim,))
+    svc.conn.commit()
+
+
+def test_search_returns_503_when_index_is_incomplete(
+    services: tuple[Services, Path], docx_file: Path
+) -> None:
+    """索引残缺时 /api/search 必须给出明确的 503，而不是少召回几条还照常返回 200。"""
+    svc, _ = services
+    ingest_file(
+        svc.conn, svc.store, svc.require_embedder(), svc.settings,
+        path=docx_file, project_name="冒烟项目",
+    )
+    _break_index(svc)
+
+    with TestClient(create_app(svc)) as client:
+        resp = client.post("/api/search", json={"question": "张拉控制要点"})
+
+    assert resp.status_code == 503
+    assert "没有归档向量" in resp.text
+
+
+def test_chat_refuses_to_start_streaming_when_index_is_incomplete(
+    services: tuple[Services, Path], docx_file: Path
+) -> None:
+    """流式问答必须在开始吐 token 之前就拒绝——一旦开始流，HTTP 状态码就改不了了。"""
+    svc, _ = services
+    ingest_file(
+        svc.conn, svc.store, svc.require_embedder(), svc.settings,
+        path=docx_file, project_name="冒烟项目",
+    )
+    _break_index(svc)
+
+    with TestClient(create_app(svc)) as client:
+        resp = client.post("/api/chat", json={"question": "张拉控制要点", "top_k": 3})
+
+    assert resp.status_code == 503
+    assert "text/event-stream" not in resp.headers.get("content-type", "")
+
+
 def _cache_count(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) AS c FROM embed_cache").fetchone()["c"]

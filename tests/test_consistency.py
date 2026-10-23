@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from rag4prefa import ask, repo
+from rag4prefa import ask, consistency, repo
 from rag4prefa.adapters.vectors import NumpyStore
 from rag4prefa.config import Settings
 from rag4prefa.consistency import IndexMismatch, inspect
@@ -74,7 +74,7 @@ def test_partial_reindex_with_other_model_is_refused(
 ) -> None:
     """维度相同也不行——这正是上一轮测试把 bug 当成功用例的那条路径。"""
     store, _ = seeded
-    with pytest.raises(ReindexError, match="沿用"):
+    with pytest.raises(ReindexError, match="向量空间"):
         from rag4prefa.ingest import reindex
 
         reindex(conn, store, AltEmbedder(), settings, project_name="甲项目")
@@ -159,7 +159,127 @@ def test_index_lagging_behind_facts_is_reported(seeded, conn: sqlite3.Connection
 
     state = inspect(conn)
     assert state.count < state.chunks
-    assert any("索引与事实不一致" in issue for issue in state.issues)
+    assert state.missing == 2, "缺几条要能精确报出来，而不是只说总数对不上"
+    assert any("没有归档向量" in issue for issue in state.blockers)
+
+
+# ── 故障注入：这些状态以前只是"能报告"，现在是"必须拒绝" ──────────────
+
+
+@pytest.mark.asyncio
+async def test_retrieval_refuses_when_archive_is_empty_but_facts_exist(
+    seeded, conn: sqlite3.Connection, settings: Settings
+) -> None:
+    """情况 A：片段都在，归档向量被人清空了。
+
+    这是最会骗人的一种状态——稠密召回一条都返回不了，BM25 还在正常出结果，
+    用户看到一份格式完整的答案，完全不知道向量索引已经废了。
+    """
+    store, _ = seeded
+    conn.execute("DELETE FROM vectors")
+    conn.commit()
+
+    state = inspect(conn)
+    assert state.count == 0 and state.chunks > 0
+    assert state.blockers, "归档为空但事实还在，必须被判定为不一致"
+
+    with pytest.raises(IndexMismatch, match="没有归档向量"):
+        await ask.retrieve(conn, store, FakeEmbedder(), settings, question="悬挑", filt=Filter())
+
+
+@pytest.mark.asyncio
+async def test_retrieval_refuses_when_part_of_vectors_lost(
+    seeded, conn: sqlite3.Connection, settings: Settings
+) -> None:
+    """情况 B：只丢了一部分向量，剩下的模型和维度都正确。
+
+    只比"模型对不对"是查不出来的：这里模型只有一个、维度只有一个，但索引已经残缺。
+    """
+    store, _ = seeded
+    ids = [r["chunk_id"] for r in conn.execute("SELECT chunk_id FROM vectors LIMIT 2")]
+    conn.executemany("DELETE FROM vectors WHERE chunk_id = ?", [(i,) for i in ids])
+    conn.commit()
+
+    with pytest.raises(IndexMismatch, match="没有归档向量"):
+        await ask.search(conn, store, FakeEmbedder(), settings, question="悬挑", filt=Filter())
+
+
+def test_meta_mismatch_blocks_both_retrieval_and_ingest(
+    seeded, conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """情况 C：meta 声明与归档事实不符（上次重建没走完），读写都必须拒绝。"""
+    store, _ = seeded
+    repo.set_meta(conn, "embedding_model", "ghost-embedder")
+
+    state = inspect(conn)
+    assert any("上次重建没走完" in issue for issue in state.blockers)
+
+    with pytest.raises(IndexMismatch):
+        consistency.ensure_queryable(conn, "fake-embedder", store.dim, store_count=store.count())
+
+    failed = ingest_file(
+        conn, store, FakeEmbedder(), settings, path=docx_file, project_name="丁项目"
+    )
+    assert failed.status == "failed"
+    assert repo.get_project(conn, "丁项目") is None, "被拒绝时不该留下空项目"
+
+
+def test_store_lagging_behind_archive_is_reported_and_blocks(
+    seeded, conn: sqlite3.Connection
+) -> None:
+    """情况 D：SQLite 归档是对的，后端索引少写了几条。
+
+    只查 SQLite 内部两个数字永远发现不了：chunks == vectors 归档，看起来完全自洽。
+    """
+    store, _ = seeded
+    state = inspect(conn, store_count=store.count() - 1)
+    assert state.count == state.chunks, "归档与事实是一致的"
+    assert state.blockers, "但后端条数少于归档，仍必须报不一致"
+
+    with pytest.raises(IndexMismatch, match="向量索引实际"):
+        consistency.ensure_queryable(
+            conn, "fake-embedder", store.dim, store_count=store.count() - 1
+        )
+
+
+def test_unlabeled_vectors_are_not_treated_as_consistent(
+    seeded, conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """不知道向量是谁算的，就不能声称它和当前模型同一套空间。"""
+    store, _ = seeded
+    conn.execute("UPDATE vectors SET model = ''")
+    conn.commit()
+
+    state = inspect(conn)
+    assert state.unlabeled == state.count > 0
+    assert any("没有记录产生它的模型" in issue for issue in state.blockers)
+
+    failed = ingest_file(
+        conn, store, FakeEmbedder(), settings, path=docx_file, project_name="戊项目"
+    )
+    assert failed.status == "failed"
+
+
+def test_health_counts_each_kind_of_gap(
+    seeded, conn: sqlite3.Connection, settings: Settings
+) -> None:
+    """health 要把三种差额分开报：缺向量、孤儿、后端条数，便于定位。"""
+    from rag4prefa.adapters.rerank import NoopReranker
+    from rag4prefa.services import Services
+
+    store, outcome = seeded
+    conn.execute("DELETE FROM vectors WHERE chunk_id = (SELECT chunk_id FROM vectors LIMIT 1)")
+    conn.commit()
+
+    services = Services(
+        settings=settings, conn=conn, store=store, embedder=FakeEmbedder(), llm=None,
+        reranker=NoopReranker(),
+    )
+    health = services.health()
+    assert health["index"]["missing_vectors"] == 1
+    assert health["index"]["consistent"] is False
+    assert health["ok"] is False
+    assert health["index"]["chunks"] == outcome.chunks
 
 
 def test_orphan_archive_rows_are_not_read_back(conn: sqlite3.Connection) -> None:

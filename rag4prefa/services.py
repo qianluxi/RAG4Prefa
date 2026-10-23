@@ -19,9 +19,9 @@ from .adapters.vectors import (
     VectorStore,
 )
 from .config import Settings, get_settings
-from .consistency import health_issues, inspect
+from .consistency import collect_issues, inspect
 from .db import connect, init_db
-from .repo import chunk_count, get_meta, mark_interrupted_jobs
+from .repo import get_meta, mark_interrupted_documents, mark_interrupted_jobs
 
 
 @dataclass
@@ -80,25 +80,41 @@ class Services:
         return True
 
     def health(self) -> dict:
-        state = inspect(self.conn)
-        issues = health_issues(
-            self.conn, self.embedder.model if self.embedder else None, self.store.dim
+        # 后端条数是"索引 vs 归档"交叉校验的一半，读不到就如实说读不到，
+        # 不要拿 None 当 0 —— 那会把"查不了"伪装成"索引是空的"。
+        store_count: int | None
+        store_error: str | None = None
+        try:
+            store_count = self.store.count()
+        except Exception as exc:  # pragma: no cover - 后端不可用时才会走到
+            store_count = None
+            store_error = f"{type(exc).__name__}: {exc}"
+
+        state = inspect(self.conn, store_count=store_count)
+        issues = collect_issues(
+            state, self.embedder.model if self.embedder else None, self.store.dim
         )
+        if store_error:
+            issues.append(f"读不到向量索引的实际条数，无法完成交叉校验：{store_error}")
         return {
             # 索引与配置对不上时不能报"健康"：那种状态能跑，但检索结果不可信
             "ok": bool(self.embedder and self.llm) and not issues,
             "backend": {
                 "name": self.store.name,
-                "vectors": self.store.count(),
+                "vectors": store_count,
                 "dim": self.store.dim,
                 "fell_back": self.fell_back,
             },
             "index": {
                 "model": state.model,
                 "dim": state.dim,
+                # 归档（事实）：片段的权威向量副本
                 "vectors": state.count,
-                # vectors 与 chunks 数量对不上，说明索引落后于事实（重建没走完）
-                "chunks": chunk_count(self.conn),
+                "chunks": state.chunks,
+                # 三个差额分开报，比"总数对不上"更能定位问题
+                "missing_vectors": state.missing,
+                "orphan_vectors": state.orphan,
+                "unlabeled_vectors": state.unlabeled,
                 "consistent": not issues,
                 "issues": issues,
             },
@@ -142,6 +158,10 @@ def build_services(settings: Settings | None = None) -> Services:
     interrupted = mark_interrupted_jobs(conn)
     if interrupted:
         notes.append(f"已把上次进程遗留的 {interrupted} 个任务标记为失败")
+    # 同一类问题在文档维度也要收尾，否则它会永远显示"正在入库"
+    dangling = mark_interrupted_documents(conn)
+    if dangling:
+        notes.append(f"已把上次进程中断时处于入库中的 {dangling} 个文档标记为失败，可重新导入")
 
     embedder: Embedder | None
     try:

@@ -222,8 +222,26 @@ def replace_document_chunks(
     逐条 delete 再 insert 会让"删完、插一半"的窗口暴露给检索；这里整个过程
     在同一个事务里，读取方要么看到旧版、要么看到新版。
     """
+    return commit_document_version(conn, doc_id, chunks, [])
+
+
+def commit_document_version(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    chunks: Sequence[Chunk],
+    archive_rows: Iterable[tuple[str, str, str, int | None, int, str, bytes]],
+) -> list[str]:
+    """片段与向量归档在**同一个事务**里切换到新版本，返回被淘汰的 chunk_id。
+
+    为什么必须同事务：如果片段先提交、归档后写，中间崩溃就得到"正文是新版、归档是旧版"。
+    如果两个 chunk_id 恰好相同（内容寻址下即内容相同，通常不是问题，但位置寻址时是常态），
+    检索会拿旧向量配新正文。放在一个事务里，这种状态在结构上就不存在。
+
+    向量索引（Milvus / numpy 后端）不在这里写——它是派生数据，由调用方先写好再切事实。
+    """
     keep = {c.id for c in chunks}
     stale = [i for i in chunk_ids_of_doc(conn, doc_id) if i not in keep]
+    rows = list(archive_rows)
     with transaction(conn):
         if stale:
             marks = ",".join("?" * len(stale))
@@ -233,6 +251,12 @@ def replace_document_chunks(
             conn.execute(f"DELETE FROM vectors WHERE chunk_id IN ({marks})", stale)
         for c in chunks:
             _write_chunk(conn, c)
+        if rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO vectors (chunk_id, project_name, project_code, doc_year,"
+                " dim, model, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
     return stale
 
 
@@ -406,13 +430,117 @@ def vector_stats(conn: sqlite3.Connection) -> dict:
     return {"models": models, "dims": dims, "count": sum(models.values())}
 
 
-def chunk_ids_containing(conn: sqlite3.Connection, snippet: str, *, limit: int = 50) -> list[str]:
-    """找出正文包含某段原文的片段——评估集用片段标注时，靠它换算成 chunk_id。"""
+def missing_vector_count(conn: sqlite3.Connection) -> int:
+    """有正文、但没有归档向量的片段数。
+
+    比"chunks 总数 vs vectors 总数"更可诊断：总数相等也可能是"A 缺了、B 多了"，
+    而 A 缺了正是最危险的一种——稠密召回静默少一路，只靠 BM25 还能返回结果。
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM chunks c"
+        " LEFT JOIN vectors v ON v.chunk_id = c.id WHERE v.chunk_id IS NULL"
+    ).fetchone()
+    return int(row["c"])
+
+
+def orphan_vector_count(conn: sqlite3.Connection) -> int:
+    """有归档向量、但没有对应正文的条数（片段已删、向量没跟上）。"""
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM vectors v"
+        " LEFT JOIN chunks c ON c.id = v.chunk_id WHERE c.id IS NULL"
+    ).fetchone()
+    return int(row["c"])
+
+
+def unlabeled_vector_count(conn: sqlite3.Connection) -> int:
+    """模型名为空的历史归档行。
+
+    不知道向量是谁算的，就无法证明它和当前模型同一套空间；把它当"一致"是自欺。
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM vectors WHERE model IS NULL OR model = ''"
+    ).fetchone()
+    return int(row["c"])
+
+
+def all_chunk_ids(conn: sqlite3.Connection) -> set[str]:
+    return {r["id"] for r in conn.execute("SELECT id FROM chunks")}
+
+
+def archived_chunk_ids(conn: sqlite3.Connection) -> set[str]:
+    return {r["chunk_id"] for r in conn.execute("SELECT chunk_id FROM vectors")}
+
+
+def select_chunk_ids(
+    conn: sqlite3.Connection, ids: Iterable[str], *, filt: Filter | None = None
+) -> set[str]:
+    """从给定 id 里筛出**存在且满足筛选条件**的那些。
+
+    两件事必须一起做：不存在的 id 是标注写错了（当成有效标注会让 Recall 永远差一截），
+    不满足筛选条件的 id 是标注越界了（那条片段本题根本召回不到）。只筛存在的、
+    不筛范围的，会让 gold 里混进"不可能命中"的项，把分数压低却看不出原因。
+    """
+    wanted = list(dict.fromkeys(ids))
+    found: set[str] = set()
+    step = 400  # SQLite 参数上限是 999，这里按 400 一批，给筛选参数留余量
+    for start in range(0, len(wanted), step):
+        batch = wanted[start : start + step]
+        marks = ",".join("?" * len(batch))
+        sql = (
+            "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id"
+            f" WHERE c.id IN ({marks})"
+        )
+        params: list[object] = list(batch)
+        if filt:
+            if filt.projects:
+                sql += f" AND d.project_name IN ({','.join('?' * len(filt.projects))})"
+                params.extend(filt.projects)
+            if filt.year_from is not None:
+                sql += " AND d.doc_year >= ?"
+                params.append(filt.year_from)
+            if filt.year_to is not None:
+                sql += " AND d.doc_year <= ?"
+                params.append(filt.year_to)
+        found.update(r["id"] for r in conn.execute(sql, params))
+    return found
+
+
+def chunk_ids_containing(
+    conn: sqlite3.Connection,
+    snippet: str,
+    *,
+    filt: Filter | None = None,
+    limit: int | None = None,
+) -> list[str]:
+    """找出正文包含某段原文的片段——评估集用片段标注时，靠它换算成 chunk_id。
+
+    `filt` 必须传该题实际生效的筛选条件：题面只允许检索甲项目时，别的项目里出现
+    同一段文字并不算"本题的相关片段"，把它们算进 gold 会让 Recall 永远达不到 1。
+
+    `limit` 默认不截断。截断会让 gold 悄悄变小、指标看起来更好看，
+    这比慢一点危险得多；确实要限制时由调用方显式给值并自己报告。
+    """
     escaped = snippet.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    rows = conn.execute(
-        "SELECT id FROM chunks WHERE text LIKE ? ESCAPE '\\' ORDER BY id LIMIT ?",
-        (f"%{escaped}%", limit),
-    ).fetchall()
+    where = ["c.text LIKE ? ESCAPE '\\'"]
+    params: list[object] = [f"%{escaped}%"]
+    if filt:
+        if filt.projects:
+            where.append(f"d.project_name IN ({','.join('?' * len(filt.projects))})")
+            params.extend(filt.projects)
+        if filt.year_from is not None:
+            where.append("d.doc_year >= ?")
+            params.append(filt.year_from)
+        if filt.year_to is not None:
+            where.append("d.doc_year <= ?")
+            params.append(filt.year_to)
+    sql = (
+        "SELECT DISTINCT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        f" WHERE {' AND '.join(where)} ORDER BY c.id"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
     return [r["id"] for r in rows]
 
 
@@ -568,6 +696,21 @@ def mark_interrupted_jobs(conn: sqlite3.Connection) -> int:
                 JobState.running.value,
                 JobState.queued.value,
             ),
+        )
+    return int(cur.rowcount or 0)
+
+
+def mark_interrupted_documents(conn: sqlite3.Connection) -> int:
+    """进程被杀时正处在 `indexing` 的文档，重启后必须有个结论。
+
+    这类文档的片段可能已经切换、也可能没有——没有结论时它会永远显示"正在入库"，
+    而 health 里的片段/向量计数又可能正好相等（因为事务是原子的），于是看起来一切正常。
+    统一标成 failed，让人知道"这一版没走完，重跑一次即可"；重跑不会被 content_sha 判成跳过。
+    """
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE documents SET status = 'failed', error = ? WHERE status = 'indexing'",
+            ("上次进程在入库过程中退出，这一版没有走完；重新导入该文件即可",),
         )
     return int(cur.rowcount or 0)
 

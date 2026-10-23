@@ -103,7 +103,7 @@ def test_partial_reindex_rejects_model_switch_at_same_dim(
     store = _store(conn)
     total = _seed(conn, store, settings, docx_file)
 
-    with pytest.raises(ReindexError, match="沿用"):
+    with pytest.raises(ReindexError, match="向量空间"):
         reindex(conn, store, AltEmbedder(), settings, project_name="甲项目")
 
     assert store.count() == total

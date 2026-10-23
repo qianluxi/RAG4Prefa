@@ -64,8 +64,11 @@ async def retrieve(
     """返回 (融合后的候选, 实际生效的筛选条件, 各阶段耗时)。"""
     recall = recall_k or settings.recall_k
     timings: dict[str, float] = {}
-    # 查询向量与文档向量必须出自同一个模型，否则检索"能跑但结果无意义"
-    consistency.ensure_queryable(conn, embedder.model, store.dim)
+    # 查询向量与文档向量必须出自同一个模型，否则检索"能跑但结果无意义"。
+    # 同时核对后端实际条数与归档：归档对、索引少写几条时，稠密召回会静默漏内容。
+    consistency.ensure_queryable(
+        conn, embedder.model, store.dim, store_count=store.count()
+    )
     query = f"{question} {filt.keyword}" if filt.keyword else question
 
     t0 = time.perf_counter()
