@@ -1,0 +1,7 @@
+// 评估集样例：每行一个 JSON。复制为 eval/dataset.jsonl 后替换成自己的题目。
+// 标注方式二选一：
+//   gold_chunk_ids  —— 精确（用 `python -m rag4prefa ask "问题"` 的输出里取 chunk_id）
+//   gold_snippets   —— 粗粒度，命中片段里包含这些原文即视为相关（更好标注）
+{"question": "缓粘结预应力的张拉控制要点有哪些？", "filter": {"projects": ["立体聚落"]}, "gold_snippets": ["缓粘结预应力", "张拉"]}
+{"question": "2024年以后关于陶土砖饰面的做法", "gold_snippets": ["陶土砖", "叠涩错砌"]}
+{"question": "研究现状里提到哪些国内外差距？", "filter": {"projects": ["立体聚落"]}, "gold_snippets": ["国外", "国内"]}
