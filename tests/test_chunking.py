@@ -58,6 +58,37 @@ def test_chunk_ids_are_deterministic() -> None:
     assert other[0].id != first[0].id
 
 
+def test_chunk_id_follows_content_not_position() -> None:
+    """内容寻址：改一段只该让那一段换号，别的段不受影响。
+
+    这是"先写索引、后切事实"能安全的前提。位置寻址（doc_id|ordinal）下，
+    在中间插一段会让后面所有片段换号，而换号前那些位置可能已经指向别的正文——
+    索引与事实各说各话，且不报任何错。
+    """
+    head = _section("1.1 甲", "甲段内容，关于悬挑。" * 8, ["第1章"])
+    tail = _section("1.2 乙", "乙段内容，关于幕墙。" * 8, ["第1章"])
+    before = build_chunks([head, tail], "doc", max_tokens=100, min_tokens=20)
+    assert len(before) == 2
+
+    # 在中间插入一段完全不同的内容
+    middle = _section("1.1b 丙", "丙段内容，关于防水。" * 8, ["第1章"])
+    after = build_chunks([head, middle, tail], "doc", max_tokens=100, min_tokens=20)
+
+    ids_before = {c.id for c in before}
+    ids_after = {c.id for c in after}
+    assert len(ids_after - ids_before) == 1, "插入一段只该新增一个 id"
+    assert len(ids_before & ids_after) == 2, "原有两段的 id 必须保持不变"
+
+
+def test_identical_paragraphs_get_distinct_ids() -> None:
+    """同一章节里出现完全相同的两段（合并单元格解析后常见）不能撞成一个。"""
+    text = "同一段文字。" * 10
+    chunks = build_chunks([_section("1.1 甲", f"{text}\n{text}", ["第1章"])], "doc",
+                          max_tokens=60, min_tokens=10)
+    assert len(chunks) > 1
+    assert len({c.id for c in chunks}) == len(chunks), "id 必须唯一，否则会丢片段"
+
+
 def test_contextual_text_carries_path() -> None:
     sections = [_section("1.1 悬挑", "正文。", ["第1章"])]
     chunk = build_chunks(sections, "doc", max_tokens=100, min_tokens=10)[0]

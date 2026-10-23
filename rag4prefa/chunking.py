@@ -3,12 +3,14 @@
 规则：
 1. 每个标题节点自成一块的"种子"，正文超出预算时按句子边界再切；
 2. 同一父节点下的相邻小块合并（不跨父级，避免原实现"跨章节拼标题"的问题）；
-3. 空标题（无正文）不单独成块——它的标题已经出现在子节点的 chapter_path 里。
+3. 空标题（无正文）不单独成块——它的标题已经出现在子节点的 chapter_path 里；
+4. **chunk_id 由内容决定，不由位置决定**——见 `_chunk_id` 的说明。
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 
 from .domain import Chunk, Section
 from .tokens import estimate_tokens, split_by_tokens
@@ -18,8 +20,22 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _chunk_id(doc_id: str, ordinal: int) -> str:
-    return hashlib.sha1(f"{doc_id}|{ordinal}".encode()).hexdigest()[:32]
+def _chunk_id(doc_id: str, chapter_path: list[str], content_sha: str, seq: int) -> str:
+    """内容寻址：同一文档、同一章节路径、同一段正文 → 同一个 id。
+
+    为什么不用 `doc_id|ordinal`：位置寻址会让"同一 id 可能是不同正文"。文档在新版本中间
+    插一段，后面所有片段都换号；反过来，不改号的那些位置可能已经换成别的内容。于是
+    "先写向量、再切事实"就会让索引里的新向量配上事实表里的旧正文——检索能跑，但找到的
+    是另一段话。这类错位不报错，只会让引用看起来莫名对不上。
+
+    改成内容寻址后，"同 id 必同正文"是结构性质：先写索引不会污染旧版本，改一段也只影响
+    那一段。`seq` 只用于同一章节里出现完全相同的段落（合并单元格解析后可能出现），
+    同位置同内容的重复仍然稳定。
+    """
+    key = f"{doc_id}|{' > '.join(chapter_path)}|{content_sha}"
+    if seq:
+        key += f"|{seq}"
+    return hashlib.sha1(key.encode()).hexdigest()[:32]
 
 
 def contextual_text(chunk: Chunk) -> str:
@@ -76,7 +92,18 @@ def build_chunks(
         else:
             merged.append(chunk)
 
-    return [
-        c.model_copy(update={"ordinal": i, "id": _chunk_id(doc_id, i)})
-        for i, c in enumerate(merged)
-    ]
+    numbered: list[Chunk] = []
+    seen: Counter[tuple[str, str]] = Counter()
+    for ordinal, chunk in enumerate(merged):
+        key = (" > ".join(chunk.chapter_path), chunk.content_sha)
+        seq = seen[key]
+        seen[key] += 1
+        numbered.append(
+            chunk.model_copy(
+                update={
+                    "ordinal": ordinal,
+                    "id": _chunk_id(doc_id, chunk.chapter_path, chunk.content_sha, seq),
+                }
+            )
+        )
+    return numbered
