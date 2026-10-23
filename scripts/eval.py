@@ -45,8 +45,36 @@ def relevance(hit: Hit, gold_ids: set[str], gold_snippets: list[str]) -> float:
     return 0.0
 
 
-def recall_at_k(rels: list[float], k: int) -> float:
-    return sum(rels[:k]) / max(1, len(rels))
+def n_gold(gold_ids: set[str], gold_snippets: list[str]) -> int:
+    """该问题在语料里一共标了多少个相关项（Recall 的分母）。"""
+    return len(gold_ids) if gold_ids else len(gold_snippets)
+
+
+def retrieved_gold(
+    hits: list[Hit], gold_ids: set[str], gold_snippets: list[str], k: int
+) -> set[str]:
+    """Top-k 命中的标准答案标识；用集合去重，避免同一片段被多次召回时重复计数。"""
+    top = hits[:k]
+    if gold_ids:
+        return {h.chunk_id for h in top if h.chunk_id in gold_ids}
+    if gold_snippets:
+        # 一个标注片段在任意一条命中里出现即算找回
+        return {s for s in gold_snippets if any(s in h.text for h in top)}
+    return set()
+
+
+def recall_at_k(
+    hits: list[Hit], gold_ids: set[str], gold_snippets: list[str], k: int
+) -> float:
+    """Recall@k = |TopK ∩ Gold| / |Gold|。
+
+    分母是标注的相关项总数，**不是**返回条数——按返回条数算得到的是 Precision，
+    曾在两标一中的场景把 1.0 算成 0.4。
+    """
+    total = n_gold(gold_ids, gold_snippets)
+    if not total:
+        return 0.0
+    return len(retrieved_gold(hits, gold_ids, gold_snippets, k)) / total
 
 
 def mrr(rels: list[float]) -> float:
@@ -56,12 +84,11 @@ def mrr(rels: list[float]) -> float:
     return 0.0
 
 
-def ndcg_at_k(rels: list[float], k: int) -> float:
-    gains = [(2**r - 1) / math.log2(i + 2) for i, r in enumerate(rels[:k])]
-    ideal = sorted(rels, reverse=True)[:k]
-    ideal_gains = [(2**r - 1) / math.log2(i + 2) for i, r in enumerate(ideal)]
-    denom = sum(ideal_gains)
-    return sum(gains) / denom if denom else 0.0
+def ndcg_at_k(rels: list[float], k: int, total: int) -> float:
+    """二值相关性下的 nDCG@k；IDCG 用标注的相关项总数构造理想排序。"""
+    dcg = sum((2**r - 1) / math.log2(i + 2) for i, r in enumerate(rels[:k]))
+    idcg = sum(1 / math.log2(i + 2) for i in range(min(total, k)))
+    return dcg / idcg if idcg else 0.0
 
 
 async def dense_only(services, question: str, filt: Filter, k: int) -> list[Hit]:
@@ -101,9 +128,10 @@ async def run(dataset_path: Path, k: int, modes: list[str]) -> dict:
                 )
                 hits = hits[:k]
             rels = [relevance(h, gold_ids, gold_snippets) for h in hits]
-            results[mode]["recall"].append(recall_at_k(rels, k))
+            total = n_gold(gold_ids, gold_snippets)
+            results[mode]["recall"].append(recall_at_k(hits, gold_ids, gold_snippets, k))
             results[mode]["mrr"].append(mrr(rels))
-            results[mode]["ndcg"].append(ndcg_at_k(rels, k))
+            results[mode]["ndcg"].append(ndcg_at_k(rels, k, total))
     services.close()
     return results
 
@@ -112,7 +140,8 @@ def report(results: dict, k: int, n: int) -> str:
     lines = [
         "# 检索评估报告\n",
         f"- 样本数：{n}",
-        f"- 指标：Recall@{k}、MRR、nDCG@{k}（相关性按 gold 二值判定）\n",
+        f"- 指标：Recall@{k}、MRR、nDCG@{k}（相关性按 gold 二值判定）",
+        f"- Recall@{k} = |TopK ∩ Gold| / |Gold|，分母为标注的相关项总数\n",
         f"| 召回模式 | Recall@{k} | MRR | nDCG@{k} |",
         "|---|---|---|---|",
     ]
