@@ -3,8 +3,10 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-23 17:25
-**交接时状态**：可运行、60 项离线测试全绿；**代码层的真实链路已用本地假 OpenAI 服务跑通，但真实厂商 API 尚未验证**——见第 7 节 P0-1。
+**交接时间**：2026-10-23 18:00
+**交接时状态**：可运行、89 项离线测试全绿；**代码层的真实链路已用本地假 OpenAI 服务跑通，但真实厂商 API 尚未验证**——见第 7 节 P0-1。
+第三轮修复的重点不是加功能，而是**数据和检索语义的正确性**：模型混用、索引切换、旧版本保护。
+动手前请先读第 3 节的「索引不变量」，那七条是这批代码存在的理由。
 
 ---
 
@@ -45,30 +47,32 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（2 992 行 Python + 438 行单页 HTML + 922 行测试）
+## 3. 代码地图（3 531 行 Python + 443 行单页 HTML + 1 812 行测试）
 
 ```
 rag4prefa/
-├── config.py     81    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读
-├── domain.py    119    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
-├── db.py        119    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta）
-├── repo.py      392    **全部 SQL 都在这里**，没有别处写 SQL
-├── ingest.py    258    解析 → 分块 → 向量化 → 写库；含 rebuild_store / reindex
-├── chunking.py   82    按标题树切块（父标题路径拼进文本，保住上下文）
-├── tokens.py     51    中英混排的 token 估算（非真实 tokenizer）
-├── ask.py       182    混合召回 → RRF 融合 → 可选重排 → 流式生成
-├── filters.py   111    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
-├── prompts.py    38    系统提示词与引用格式
-├── admin.py      82    项目/文档的查询与级联删除
-├── services.py  165    组件装配；Milvus 不可用时回退 numpy，拿到维度后自动迁回
-├── api.py       249    FastAPI 路由（只做协议转换，不含业务逻辑）
-├── cli.py       205    init / serve / doctor / ingest / reindex / ask / projects
-└── adapters/    720    embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
+├── config.py      81    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读
+├── domain.py     122    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
+├── db.py         129    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
+├── repo.py       602    **全部 SQL 都在这里**，没有别处写 SQL
+├── consistency.py 134   **索引一致性**：模型/维度与归档是否自洽，能不能写、能不能查
+├── ingest.py     344    解析 → 分块 → 向量化 → 写库；含 rebuild_store / reindex
+├── chunking.py    82    按标题树切块（父标题路径拼进文本，保住上下文）
+├── tokens.py      51    中英混排的 token 估算（非真实 tokenizer）
+├── ask.py        184    混合召回 → RRF 融合 → 可选重排 → 流式生成
+├── filters.py    103    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
+├── prompts.py     38    系统提示词与引用格式
+├── admin.py       64    项目/文档的查询与级联删除
+├── services.py   171    组件装配；Milvus 不可用时回退 numpy，拿到维度后自动迁回
+├── api.py        258    FastAPI 路由（只做协议转换，不含业务逻辑）
+├── cli.py        216    init / serve / doctor / ingest / reindex / ask / projects
+└── adapters/     949    embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
 ```
 
-前端只有一个文件 `rag4prefa/web/index.html`（438 行，原生 JS，无构建步骤）。
-`tests/` 60 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
-不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检。
+前端只有一个文件 `rag4prefa/web/index.html`（443 行，原生 JS，无构建步骤）。
+`tests/` 89 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
+`test_consistency.py` 反向断言"必须被拒绝"，防止把"程序执行了预期操作"当成"业务不变量成立"。
 
 ### 数据分层（关键，改动前必须理解）
 
@@ -77,6 +81,21 @@ rag4prefa/
 - `vectors` 表存了一份向量归档（float32 bytes）→ 换后端、索引损坏时 `rebuild_store()` 直接重建，**无需重新调 embedding**（省钱省时）。
 - 所有计数（文档数、片段数）都是 `COUNT(*)` 现算，不存在"统计恒为 0"的可能。
 - 查向量：Milvus 拿到 `(chunk_id, score)` 后回 SQLite 取正文 → 所以 Milvus 只是 `chunk_id → 向量` 的索引。
+
+### 索引不变量（改这些代码前先读，`consistency.py` 是它的实现）
+
+1. **一个索引只有一个向量空间。** `vectors.model` 必须全库一致，且等于 `meta.embedding_model`。
+   维度相同不算数——两套 768 维向量混在一起，余弦照样算得出来，只是语义错位。
+2. **换模型只能全量。** `reindex --project` 必须沿用现有模型；换模型走不带 `--project` 的全量重建。
+3. **事实先于索引。** 顺序永远是「算向量 → 写归档（事实）→ 写索引（派生）→ 写 meta」。
+   中途失败时索引可能落后，但归档是对的，`rebuild_store()` 能把索引补回来。
+4. **归档与片段一一对应。** `vectors` 里不该有 `chunks` 里不存在的行；全量重建会清孤儿，
+   读取时也 JOIN chunks，两道防线。
+5. **重建不能先毁掉可用的旧索引。** 同维度原地覆盖；换维度先写 `__staging` 并校验条数，
+   再 rename 切换；进程被杀由 `_recover()` 在下次启动时还原。
+6. **更新文档不能丢旧版本。** embedding 在切换之前完成；失败时旧片段、旧向量原样保留。
+7. **配置与索引冲突时拒绝服务，而不是降级。** 检索会返回 503 + 一句能读懂的话，
+   而不是给出一份看起来正常、实际无关的引用。
 
 ### 请求链路（`/api/chat`）
 
@@ -142,7 +161,21 @@ API 一览（实现见 `api.py`，说明见 README）：
 
 ## 7. 待办清单（按优先级，每条都有验收标准）
 
-### 已完成（2026-10-23 第二轮，按外部评估意见修复）
+### 已完成（2026-10-23 第三轮，按第二次外部复审意见修复）
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| **同维度换模型会静默混用向量** | `reindex --project` 只比维度，不比模型；上一轮的测试甚至把这种混用写成"成功用例" | 新增 `consistency.py`：以 `meta.embedding_model`（声明）+ `vectors.model`（事实）双依据判断。增量入库、局部重建、检索三处都强制校验；局部重建只能沿用现有模型，换模型必须全量。`test_consistency.py` 反向断言"必须被拒绝" |
+| **索引重建不是原子切换** | `MilvusStore.rebuild()` 一上来就 `drop_collection`，后续失败就没有索引了 | 同维度：原地 upsert + 剪孤儿，全程可检索；换维度：先写 `__staging` 并校验条数 → `rename_collection` 切换（元数据操作，不是删了重建）→ 成功后再删 `__retired`。失败自动回滚，启动时 `_recover()` 收拾残留 |
+| **更新文档时 embedding 失败会丢掉旧版本** | `ingest_file()` 先删旧片段再调 embedding | 顺序改为「解析 → **先算完全部向量** → 一个事务换片段 → 覆盖向量 → 记 content_sha」。另修一个连带 bug：失败后重试会被 `content_sha` 判成 skipped，现在要求上一版是 `indexed` 才跳过 |
+| 重建后归档留孤儿向量 | 全量重建只覆盖不删除；`iter_archived_vectors` 也不看 chunks 是否存在 | 全量重建调用 `delete_orphan_vectors()`；归档读取改为 JOIN chunks，孤儿永远不会被灌回索引 |
+| 已有集合的维度不校验 | `_ensure_collection()` 发现集合存在就直接返回 | 从 schema 读出实际维度比对，不一致就明确失败并给出重建命令；配置未给维度时沿用集合实际维度 |
+| health 不反映索引一致性 | 只检查凭据与后端是否存在 | `/api/health` 增加 `index.consistent` / `index.issues`，不一致时 `ok=false`，前端徽标区分"配置缺失"与"索引异常" |
+| 评估指标的计数单位不统一 | Recall 按原文片段计数，MRR/nDCG 按 chunk 排序 | 片段标注在加载时解析成包含它的 chunk 集合，三个指标共用同一个 gold；补 4 组对照（dense / sparse / hybrid / rerank）与参数校验 |
+| `Filter.feature` 解析了但不参与召回 | 早期设计的遗留字段 | 删除。能解析却无效的字段比没有更糟——它让人以为筛选生效了 |
+| 任务永远停在 running | 入库任务在进程内跑，进程重启后没人收尾 | 启动时 `mark_interrupted_jobs()` 把 running/queued 标成 failed 并保留原进度说明 |
+
+### 已完成（2026-10-23 第二轮，按第一轮外部评估意见修复）
 
 | 问题 | 根因 | 修复 |
 |---|---|---|
@@ -169,8 +202,17 @@ API 一览（实现见 `api.py`，说明见 README）：
 
 **P1-1　评估集扩充到 30~50 条**
 现在 `eval/dataset.example.jsonl` 只有 3 条数据。没有足量标注，Recall/MRR 数字没有说服力，
-而这是课题验收要用的。标注方式用 `gold_snippets`（片段包含原文即算命中）比标 chunk_id 省力。
-验收：`python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5` 输出 `dense` vs `hybrid` 对照表。
+而这是课题验收要用的。
+- 标注方式：**优先 `gold_chunk_ids`**（评价单位就是 chunk，最不容易歧义）；
+  图省事可以写 `gold_snippets`，脚本会解析成包含该片段的全部 chunk——但要注意，
+  一个片段在语料里出现得越分散，gold 集合越大，Recall 越难满分，这是刻意的保守处理。
+- 验收：`python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5` 输出
+  dense / sparse / hybrid / rerank 四行对照表；报告末尾应无"数据问题"段落。
+- 注意 `rerank` 一栏在没有配 `R4P_RERANK_URL` 时等于 hybrid（NoopReranker）。
+
+**P1-1b　正式评测集与模型版本要一起锁定**
+报告里必须记下：embedding 模型名、维度、chunk 参数（`chunk_max_tokens` / `chunk_min_tokens`）、
+`recall_k`、`rrf_k`。换了其中任何一个，前后两次数值不可直接比较。
 
 **P1-2　Dockerfile + GitHub Actions CI**
 用户上次已表示可以补。CI 只跑 `pytest` + `ruff`（全离线，无需密钥）。
@@ -191,10 +233,11 @@ Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milv
 
 1. **SQLite 并发**：同一个连接被请求线程与后台入库线程共用，`check_same_thread=False` 但没有写锁。
    短期加锁 + 并发测试；更好的做法是每线程独立连接。
-2. **任务不可恢复**：`asyncio.create_task` 跑入库，进程重启后 `jobs` 停在 `running`，需要启动时清扫。
+2. **任务不可恢复（部分解决）**：启动时已把遗留的 `running/queued` 标成 failed，
+   但任务本身仍是进程内 `asyncio.create_task`，进程一死就得重跑；要真正可恢复得落持久化任务表 + 重试。
 3. **无鉴权**：上传/删除没有身份校验，只能部署在可信内网。
 4. **上传无大小上限**：一次性读入内存，应改流式落盘 + 上限 + 清理策略。
-5. **模型一致性未强制校验**：`meta` 记了模型与维度，但检索前不比对，同维度换模型不会被发现。
+5. ~~模型一致性未强制校验~~ → 已在第三轮解决，见上表。
 
 ### 已关闭
 
@@ -230,19 +273,23 @@ README / tests / eval 里的示例文字与路径按现状保留，**不要**再
 
 ---
 
-## 10. 交接时的验证记录（2026-10-23 17:25，第二轮修复后）
+## 10. 交接时的验证记录（2026-10-23 18:00，第三轮修复后）
 
 ```
-pytest -q                    → 60 passed（原 30 + 新增 30）
+pytest -q                          → 89 passed
 ruff check rag4prefa tests scripts → All checks passed
-真实 SDK 链路（本地假 OpenAI 服务，零费用）：
-  ingest 申报书            → 26 块入库，backend=milvus dim=64，第二次同文件 skipped
-  ask --answer             → 返回命中片段 + 大模型回答
-  embed_cache              → 27 行（26 片段 + 1 次查询），证明缓存真的生效
-  vectors 归档             → 26 行，model 未被抹空
-  /api/chat SSE            → ['meta','token','token','token','citations','done']
+真实链路冒烟（真实申报书 + 真实 Milvus Lite + 真实 openai SDK，假服务兜住网络，零费用）：
+  1 入库                          → 30 章节 / 30 块，vectors=30，dim=32，meta.model=mock-embed
+  2 检索                          → embed 6ms / dense 8ms / sparse 1ms
+  3 一致性                        → model=mock-embed dim=32 count=30 issues=[]
+  4 局部重建换同维度模型          → 被拒绝（ReindexError，指明"维度相同也不代表向量空间相同"）
+  5 增量入库换模型                → failed，向量数不变，meta 未被改写
+  6 全量重建换同维度模型          → 走 upsert+剪枝，归档模型只剩 mock-embed-v2，检索可用
+  7 全量重建换维度(32→8)          → 走 __staging → rename 切换，集合列表只剩 chunks_vec（无残留）
+  8 重启后重开 Store              → dim=8，检索可用，notes 为空
+  9 /api/health                   → ok=true，index.consistent=true，issues=[]
 全新目录 + 照抄 .env.example 首启：
-  doctor                   → 不崩，回退 numpy，如实报 missing 两个 key，无 dotenv 警告
+  doctor                          → 不崩，回退 numpy，index.consistent=true，如实报 missing 两个 key
 ```
 
 > 注意 `sparse_ms`（BM25）首次查询约 700~800ms，是 jieba 词典首次加载的开销，

@@ -17,6 +17,8 @@
 | 多人使用时筛选条件互相串 | 筛选条件随请求传入，无全局状态 |
 | "流式"其实是先跑完再逐词播放 | 大模型 token 流直通 SSE |
 | 绑死 Windows + Word，进不了容器 | 纯 python-docx 解析，Linux/Docker 可跑 |
+| 换模型后新旧向量混在一个索引里，检索静默变差 | 模型 / 维度 / 归档三方校验，不一致就拒绝写入与检索 |
+| 更新文档时 embedding 失败，旧版本被顺手删掉 | 先算完新向量再切换；失败时旧版本照常可检索 |
 
 ## 快速开始
 
@@ -42,20 +44,22 @@ python -m rag4prefa reindex --project 立体聚落  # 只重建一个项目（�
 ```
 
 `reindex` 的语义：**先算完整个范围的新向量，再写 SQLite 归档，最后写向量索引**；
-中途失败不会留下半成品。只重建单个项目时不会清空其他项目的索引；
-若 embedding 维度发生变化，会明确拒绝局部重建并要求全量执行（同一索引放不下两种维度）。
+中途失败不会留下半成品。只重建单个项目时不会清空其他项目的索引，但**必须沿用索引现有的模型**——
+维度相同也不算数，两个模型的向量空间不能混。换模型走不带 `--project` 的全量重建，
+维度变化会明确拒绝局部执行。详见下面「索引一致性」。
 
 ## 架构
 
 ```
 api.py        FastAPI 路由（只做协议转换）
-  ├── ask.py         检索 + 生成（混合召回 → RRF → 重排 → 流式）
-  ├── ingest.py      解析 → 分块 → 向量化 → 写库
-  ├── admin.py       项目/文档查询与删除
-  ├── filters.py     问题 → Filter（规则优先，可单测）
-  ├── chunking.py    标题树分块
-  ├── repo.py        全部 SQL
-  └── adapters/      embed / llm / vectors / rerank / parsers/docx
+  ├── ask.py          检索 + 生成（混合召回 → RRF → 重排 → 流式）
+  ├── ingest.py       解析 → 分块 → 向量化 → 写库；含 reindex / rebuild_store
+  ├── consistency.py  索引一致性（模型/维度与归档是否自洽，能不能写、能不能查）
+  ├── admin.py        项目/文档查询与删除
+  ├── filters.py      问题 → Filter（规则优先，可单测）
+  ├── chunking.py     标题树分块
+  ├── repo.py         全部 SQL
+  └── adapters/       embed / llm / vectors / rerank / parsers/docx
 ```
 
 **数据分层**：SQLite 存事实（项目、文档、片段、任务、向量归档），Milvus 只是可重建的索引。
@@ -75,7 +79,7 @@ api.py        FastAPI 路由（只做协议转换）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 后端、索引维度、缺失的凭据（不再静默降级） |
+| GET | `/api/health` | 后端、索引维度、模型一致性、缺失的凭据（不再静默降级） |
 | POST | `/api/projects/{name}/documents` | 上传 docx（multipart）→ `job_id` |
 | GET | `/api/jobs/{id}` | 入库进度与逐文件结果 |
 | GET | `/api/projects` | 项目列表（文档数/片段数为真实值） |
@@ -89,20 +93,32 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 60 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
+pytest -q                                  # 89 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
 python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 ```
 
-`scripts/eval.py` 输出 Recall@k / MRR / nDCG@k，并对比 `dense` 与 `hybrid` 两种召回模式——
-这是"混合检索到底有没有用"的量化依据。
+`scripts/eval.py` 输出四组对照——`dense`（纯向量）、`sparse`（纯 BM25）、`hybrid`（向量 + BM25 + RRF）、
+`rerank`（混合 + 重排）——这是"混合检索和重排各自带来多少收益"的量化依据。
+没有配 `R4P_RERANK_URL` 时 `rerank` 一栏等于 `hybrid`（NoopReranker）。
 
 指标定义（写死在 `tests/test_eval_metrics.py` 里，不接受含糊）：
 
+- 三个指标共用**同一个 gold 集合，单位是 chunk**。
 - `Recall@k = |TopK ∩ Gold| / |Gold|`，分母是**标注的相关项总数**，不是返回条数。
 - `MRR` 取第一个相关结果的倒数排名。
 - `nDCG@k` 按二值相关性计算，IDCG 用标注的相关项总数构造理想排序。
 
-标注建议用 `gold_snippets`（原文片段），比标 `chunk_id` 更省力，也不怕分块参数变化。
+标注优先用 `gold_chunk_ids`（无歧义）；图省事可以写 `gold_snippets`，脚本会把每个片段解析成
+语料中包含它的**全部** chunk 再计入 gold——所以片段在语料里出现得越分散，gold 越大，Recall 越难满分，
+这是刻意的保守处理。报告末尾会把"标注片段在语料中找不到"这类数据问题单独列出来。
+
+## 索引一致性
+
+一个索引里只能有一套向量空间。模型名、维度、归档三方必须自洽，否则**拒绝服务而不是降级**：
+
+- 增量入库、局部 `reindex`、检索前都会校验；不一致时返回 503 并说明该怎么修。
+- 换模型只能全量 `reindex`（不带 `--project`）；局部重建必须沿用现有模型。
+- `/api/health` 的 `index.consistent` / `index.issues` 会如实报告，`ok=false` 时先看这里。
 
 ## 已知局限
 
@@ -112,9 +128,7 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 - 单进程设计（SQLite + 进程内任务）。要多副本时把 SQLite 换成 Postgres、任务换队列，接口层无需改动。
 - **并发**：同一个 `sqlite3.Connection` 被请求与后台入库线程共用（`check_same_thread=False`），
   没有额外的写锁。单用户没问题，多人并发写之前应先改成每线程独立连接。
-- **任务恢复**：入库任务靠 `asyncio.create_task` 跑，状态在 `jobs` 表里但没有恢复逻辑，
-  进程重启会让正在跑的任务停在 `running`。
+- **任务恢复**：进程重启时会把遗留的 `running/queued` 标成失败（不会永远显示"运行中"），
+  但任务本身不能断点续跑，需要重新触发。
 - **无鉴权**：上传与删除接口没有身份校验，只能部署在可信内网。
 - **上传无大小上限**：按后缀校验后一次性读入内存，没有流式落盘与容量限制。
-- **索引与模型一致性**：`meta` 记录了 embedding 模型与维度，但检索前不会强制校验；
-  同维度的不同模型混用不会被发现。换模型后务必执行 `reindex`。
