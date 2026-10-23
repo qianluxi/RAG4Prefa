@@ -3,7 +3,7 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-23 16:40
+**交接时间**：2026-10-23 16:55
 **交接时状态**：可运行、可测试、已推送 GitHub，但**真实链路（真实 embedding / LLM）从未跑过**——这是当前最大的风险，见第 7 节 P0-1。
 
 ---
@@ -25,7 +25,7 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | `0d1526b`，工作区干净，本地与 `origin/main` 一致 |
+| 当前提交 | `d613e18`，工作区干净，本地与 `origin/main` 一致；历史已拆为 17 个分层提交（见第 8 节） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -182,18 +182,22 @@ Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milv
 `R4P_VECTOR_BACKEND` 处写着"Milvus Lite（Windows 不可用）"，实测可用，应改为"Windows 可用"。
 另外 `R4P_VECTOR_BACKEND=milvus` 与 `config.py` 默认 `auto` 不一致——建议样例保持 `auto`（对新手更稳）。
 
-**P2-3　公开仓库的标识脱敏（需用户确认，见第 8 节）**
+**P2-3　~~公开仓库的标识脱敏~~　已关闭（2026-10-23 用户确认无需处理）**
+用户明确：「立体聚落」不是真实课题名，是另一个项目的参考资料；`课题/Ref` 只是参考材料目录。
+README / tests / eval 里的示例文字与路径按现状保留，**不要**再自行替换成占位符。
 
 ---
 
-## 8. 需要用户拍板的两个问题（上一轮已提出，用户未回复）
+## 8. 两个待拍板问题的结果（2026-10-23 已答复，无需再问）
 
-1. **仓库是 public**。已自查无硬编码凭据（`.env` 未入库，样例只写 `sk-请替换`），
-   但 README 用法示例、`tests/`、`eval/` 里出现了真实课题名「立体聚落」和本地路径 `F:/project/课题/Ref`。
-   两个选项：① 用户把仓库改 private；② 把这些替换成 `demo-project` / `/path/to/docs` 这类中性占位。
-   **动手前先问，不要擅自改用户可见的示例。**
-2. **历史只有一个初始提交**（39 文件 +4 405 行）。若希望 commit 历史更像样
-   （解析器 / 存储层 / 检索 / 服务分开），现在是重做代价最低的时刻。用户未表态，默认不动。
+1. **仓库保持 public，不做标识脱敏。**
+   用户确认：「立体聚落」并非真实课题名，是其他项目的参考资料；`课题/Ref` 仅为参考资料目录。
+   已自查确无硬编码凭据（`.env` 未入库，样例只写 `sk-请替换`），可以保持公开。
+2. **提交历史已按层拆分**：1 个初始提交 → 17 个提交（骨架 / 领域模型 / 配置 / 存储 / 解析 /
+   分块 / 外部适配 / 入库 / 筛选与提示词 / 检索生成 / 服务装配 / API / 前端 / CLI / 评估 / 文档 / 交接）。
+   每个带测试的提交都能独立通过 `pytest`，通过数单调递增 2 → 9 → 12 → 19 → 27 → 30。
+   拆分前的旧历史保留在本地标签 `pre-split-backup`（指向 `f2a22cd`），需要回滚时
+   `git reset --hard pre-split-backup` 再 force push 即可。
 
 ---
 
@@ -204,22 +208,32 @@ Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milv
 - **新功能必须有离线测试**：`tests/conftest.py` 里有 `FakeEmbedder` 模式可循，不要写依赖付费 API 的测试。
 - **不要引入本地模型 / torch**（用户明确要求）。
 - **不要把密钥写进任何入库文件**，也不要复用原仓库里的 ModelScope token（那个已泄漏在公开仓库）。
-- 提交信息用中文、说清"为什么"；不要用 `--no-verify`、不要 force push。
+- 提交信息用中文、说清"为什么"；不要用 `--no-verify`。**force push 只在用户明确要求重写历史时使用**，
+  且必须先打备份标签（本次重写前的备份是 `pre-split-backup`）。
 - 推送前 `git status` 确认没有 `data/`、`.venv/`、`.env` 混进去。
 
 ---
 
-## 10. 交接时的验证记录（2026-10-23 16:40）
+## 10. 交接时的验证记录（2026-10-23 16:55，历史拆分后重测）
 
 ```
-pytest -q                    → 30 passed in 8.81s
+pytest -q                    → 30 passed in 8.74s
 ruff check rag4prefa tests scripts → All checks passed
-git status -sb               → ## main...origin/main（无未提交改动）
-真实文档解析（申报书）        → 30 个章节、层级正确、26 个块、平均 330 tokens
+git status -sb               → ## main...origin/main（无未提交改动，17 个提交）
+真实文档解析（申报书）        → 30 个章节、层级正确、共 11 033 字；层级分布 L1×10 / L2×9 / L3×4 / L4×6
 Milvus Lite（Windows）        → 建集合 / upsert / 带标量过滤检索 / 统计 全部实测通过
-HTTP                          → GET / 返回页面；/api/health 如实报告后端与缺失项；
-                                无 key 时 /api/chat 返回 503 并指出缺哪个环境变量（不是 500）
+HTTP（TestClient + lifespan） → GET / 200（16 245 bytes）；/api/health 200 且如实报告；
+                                /api/projects 200 []；无 key 时 /api/chat 返回 503 并指出缺哪个环境变量
+doctor                       → ok:false，唯一原因是 .env 未创建、两个 key 缺失，属预期
 ```
+
+环境实况：Python 3.13.14；fastapi 0.161.1 / uvicorn 0.54.0 / python-docx 1.2.0 /
+pymilvus 3.0.2 / milvus-lite 3.2.2 / openai 3.37.0 / jieba 0.42.1 / numpy 2.5.4 /
+pytest 9.1.1 / ruff 0.17.2 / pydantic-settings 2.16.1；**torch 未安装（符合约定）**。
+
+> 注：`create_app()` 的 services 在 lifespan 里挂到 `app.state`，
+> 所以 `TestClient` 必须用 `with TestClient(app) as c:` 才会跑 startup，
+> 否则 `/api/health` 会因 `State` 缺属性报 500。uvicorn 正常启动不受影响，写测试时注意这点。
 
 ---
 
