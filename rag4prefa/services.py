@@ -19,8 +19,9 @@ from .adapters.vectors import (
     VectorStore,
 )
 from .config import Settings, get_settings
+from .consistency import health_issues, inspect
 from .db import connect, init_db
-from .repo import get_meta, set_meta
+from .repo import chunk_count, get_meta, mark_interrupted_jobs
 
 
 @dataclass
@@ -33,12 +34,6 @@ class Services:
     reranker: Reranker
     notes: list[str] = field(default_factory=list)
     fell_back: bool = False
-
-    def remember_index_meta(self) -> None:
-        """记下索引所用模型与维度；换模型时 reindex 会据此校验。"""
-        if self.embedder and self.embedder.dim:
-            set_meta(self.conn, "embedding_model", self.embedder.model)
-            set_meta(self.conn, "embedding_dim", str(self.embedder.dim))
 
     @property
     def index_dim(self) -> int | None:
@@ -85,17 +80,32 @@ class Services:
         return True
 
     def health(self) -> dict:
+        state = inspect(self.conn)
+        issues = health_issues(
+            self.conn, self.embedder.model if self.embedder else None, self.store.dim
+        )
         return {
-            "ok": bool(self.embedder and self.llm),
+            # 索引与配置对不上时不能报"健康"：那种状态能跑，但检索结果不可信
+            "ok": bool(self.embedder and self.llm) and not issues,
             "backend": {
                 "name": self.store.name,
                 "vectors": self.store.count(),
                 "dim": self.store.dim,
                 "fell_back": self.fell_back,
             },
-            "index": {"model": self.index_model, "dim": self.index_dim},
+            "index": {
+                "model": state.model,
+                "dim": state.dim,
+                "vectors": state.count,
+                # vectors 与 chunks 数量对不上，说明索引落后于事实（重建没走完）
+                "chunks": chunk_count(self.conn),
+                "consistent": not issues,
+                "issues": issues,
+            },
             "credentials_missing": self.settings.missing_credentials(),
-            "notes": self.notes,
+            # 后端可能把恢复动作（如"已从上一版集合还原索引"）记在 notes 里；
+            # 用 getattr 是为了让 health 在任何 VectorStore 实现上都不会因为缺属性而 500
+            "notes": [*self.notes, *getattr(self.store, "notes", [])],
         }
 
     def close(self) -> None:
@@ -127,6 +137,11 @@ def build_services(settings: Settings | None = None) -> Services:
     conn = connect(settings.db_path)
 
     store, notes, fell_back = open_store(settings, conn)
+
+    # 入库任务跑在进程内，上次进程死掉留下的 running/queued 永远不会前进
+    interrupted = mark_interrupted_jobs(conn)
+    if interrupted:
+        notes.append(f"已把上次进程遗留的 {interrupted} 个任务标记为失败")
 
     embedder: Embedder | None
     try:

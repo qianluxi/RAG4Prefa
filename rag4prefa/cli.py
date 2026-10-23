@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import admin, ask, ingest, repo
 from .config import get_settings
+from .consistency import IndexMismatch
 from .db import init_db
 from .domain import Filter
 from .services import build_services
@@ -81,7 +82,6 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             project_code=args.code,
             doc_year=args.year,
         )
-        services.remember_index_meta()
         services.maybe_promote()
         _print([o.as_dict() for o in outcomes])
         return 0 if any(o.status == "indexed" for o in outcomes) else 1
@@ -150,6 +150,9 @@ def cmd_ask(args: argparse.Namespace) -> int:
             )
             print("\n--- 回答 ---\n" + reply)
         return 0
+    except IndexMismatch as exc:
+        print(f"检索已拒绝：{exc}", file=sys.stderr)
+        return 1
     finally:
         services.close()
 

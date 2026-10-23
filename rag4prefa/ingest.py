@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import repo
+from . import consistency, repo
 from .adapters.embed import Embedder
 from .adapters.parsers.docx import parse_docx
 from .adapters.vectors import (
@@ -19,6 +19,7 @@ from .adapters.vectors import (
 )
 from .chunking import build_chunks, contextual_text
 from .config import Settings
+from .consistency import IndexMismatch
 from .domain import Chunk, JobState
 from .tokens import estimate_tokens
 
@@ -65,13 +66,40 @@ def ingest_file(
     doc_year: int | None = None,
     force: bool = False,
 ) -> FileOutcome:
+    """把一个 docx 变成可检索的片段。
+
+    步骤顺序是按"失败后用户还剩什么"排的，不是按"最短代码路径"排的：
+
+    1. 解析 + 分块（纯本地，失败无副作用）；
+    2. **先把整份文档算成向量**——这一步要走网络、最可能失败，此时索引里还是旧版本，
+       用户照样能检索，只是内容还没更新；
+    3. 再在一个事务里切换片段（事实），随后覆盖向量（派生）与归档；
+    4. 最后才把新的 content_sha 与 indexed 状态记下来。
+
+    旧实现把"删旧片段"放在调 embedding 之前，于是限流/超时/密钥失效一次，
+    原先能用的版本就没了，只剩一个 failed 的空壳。
+    """
     filename = path.name
     doc_id = _doc_id(project_name, filename)
     try:
+        # 第一步就是一致性检查：模型对不上时，连项目/文档记录都不要建，
+        # 否则库里会多出一个空项目，让人误以为"导过了"。
+        try:
+            consistency.ensure_writable(conn, embedder.model, embedder.dim)
+        except IndexMismatch as exc:
+            return FileOutcome(filename, "failed", 0, 0, str(exc))
+
         repo.upsert_project(conn, project_name, project_code)
         content_sha = _sha_file(path)
         existing = repo.get_document(conn, project_name, filename)
-        if existing and existing.content_sha == content_sha and not force:
+        # 只有"上一版确实建成功了"才允许跳过；失败过的文档必须能重试，
+        # 否则一次限流就把这份文件永久钉在 failed 上。
+        if (
+            existing
+            and existing.status == "indexed"
+            and existing.content_sha == content_sha
+            and not force
+        ):
             return FileOutcome(filename, "skipped", existing.section_count, existing.chunk_count)
 
         sections = parse_docx(path)
@@ -82,20 +110,40 @@ def ingest_file(
             min_tokens=settings.chunk_min_tokens,
         )
         if not chunks:
-            repo.upsert_document(
-                conn,
-                doc_id=doc_id,
-                project_name=project_name,
-                filename=filename,
-                content_sha=content_sha,
-                doc_year=doc_year,
-                status="empty",
-                error="未能从文档中提取到正文",
-            )
+            if existing is None:
+                repo.upsert_document(
+                    conn,
+                    doc_id=doc_id,
+                    project_name=project_name,
+                    filename=filename,
+                    content_sha=content_sha,
+                    doc_year=doc_year,
+                    status="empty",
+                    error="未能从文档中提取到正文",
+                )
             return FileOutcome(filename, "failed", len(sections), 0, "文档没有可用正文")
 
-        # 重新入库：先清旧片段，避免残留孤儿向量
-        stale = repo.delete_chunks_of_doc(conn, doc_id)
+        repo.mark_document_indexing(
+            conn, doc_id=doc_id, project_name=project_name, filename=filename, doc_year=doc_year
+        )
+        vectors = embedder.embed([contextual_text(c) for c in chunks])
+
+        items = [
+            VectorItem(
+                chunk_id=c.id,
+                vector=v,
+                project_name=project_name,
+                project_code=project_code,
+                doc_year=doc_year,
+                model=embedder.model,
+            )
+            for c, v in zip(chunks, vectors, strict=True)
+        ]
+
+        # 事实先落在一个事务里；向量随后覆盖，再删掉这一版淘汰的片段
+        stale = repo.replace_document_chunks(conn, doc_id, chunks)
+        repo.archive_vectors(conn, [to_archive_row(i) for i in items])
+        store.upsert(items)
         if stale:
             store.delete(stale)
 
@@ -108,28 +156,11 @@ def ingest_file(
             doc_year=doc_year,
             section_count=len(sections),
             chunk_count=len(chunks),
-            status="indexing",
+            status="indexed",
         )
-
-        vectors = embedder.embed([contextual_text(c) for c in chunks])
-        items = [
-            VectorItem(
-                chunk_id=c.id,
-                vector=v,
-                project_name=project_name,
-                project_code=project_code,
-                doc_year=doc_year,
-                model=embedder.model,
-            )
-            for c, v in zip(chunks, vectors, strict=True)
-        ]
-        repo.archive_vectors(conn, [to_archive_row(i) for i in items])
-        store.upsert(items)
-        repo.insert_chunks(conn, chunks)
         # 元数据由"真正写过向量的人"记，而不是指望每个调用方都记得调一次
         repo.set_meta(conn, "embedding_model", embedder.model)
         repo.set_meta(conn, "embedding_dim", str(embedder.dim or len(items[0].vector)))
-        repo.set_document_status(conn, doc_id, "indexed", None)
         return FileOutcome(filename, "indexed", len(sections), len(chunks))
     except Exception as exc:  # 单文件失败不该拖垮整批
         repo.set_document_status(conn, doc_id, "failed", str(exc))
@@ -214,17 +245,23 @@ def reindex(
     """按 SQLite 里的事实重新 embedding，并重建指定范围的向量索引（换模型后必做）。
 
     执行顺序刻意如此：
-    1. 先把整个范围的向量算完放在内存里——中途失败时索引与归档都还是旧的一套，不留半成品；
-    2. 再写 SQLite 归档（事实），最后写向量索引（派生）——索引写坏还能用 rebuild_store 补回。
+    1. 先做前置校验（模型、维度），不满足就直接拒绝，一个字节都不改；
+    2. 再把整个范围的向量算完放在内存里——中途失败时索引与归档都还是旧的一套，不留半成品；
+    3. 然后写 SQLite 归档（事实），最后写向量索引（派生）——索引写坏还能用
+       rebuild_store 从归档补回，反过来则会把已经把新向量算完的成果弄丢；
+    4. 全部成功后才更新 meta，避免"元数据说新模型、索引里还是旧模型"。
 
     范围语义：
-    - 不给 project_name → 全量重建，允许维度变化（换模型的主要场景）；
-    - 指定项目 → 只动这个项目，**绝不 clear 全库**；但若维度变了就拒绝执行，
-      因为同一个索引里放不下两种维度，局部重建必然破坏其他项目。
+    - 不给 project_name → 全量重建，允许换模型、换维度（唯一的换模型入口）；
+    - 指定项目 → 只动这个项目，**绝不 clear 全库**；且必须沿用索引现有的模型——
+      维度相同不代表向量空间相同，局部换模型会得到"能查、但结果悄悄变差"的索引。
     """
     rows = repo.chunks_for_reindex(conn, project_name)
     if not rows:
         return {"scope": project_name or "all", "chunks": 0, "rebuilt": False}
+
+    if project_name:
+        _ensure_same_model(conn, embedder.model)
 
     items: list[VectorItem] = []
     batch_size = max(1, settings.embedding_batch)
@@ -255,10 +292,13 @@ def reindex(
         )
 
     repo.archive_vectors(conn, [to_archive_row(i) for i in items])
-    if dim_changed:
-        store.rebuild(items)  # 全量：按新维度整体替换
-    else:
+    if project_name:
         store.upsert(items)  # 局部：只覆盖本次范围内的 chunk_id
+    else:
+        # 全量：归档、索引、片段三者要对齐，先把归档里的孤儿清掉，
+        # 否则 rebuild_store 会把已经没有正文的旧向量重新灌回索引。
+        repo.delete_orphan_vectors(conn)
+        store.rebuild(items)
     repo.set_meta(conn, "embedding_model", embedder.model)
     repo.set_meta(conn, "embedding_dim", str(new_dim))
     return {
@@ -266,8 +306,29 @@ def reindex(
         "chunks": len(items),
         "model": embedder.model,
         "dim": new_dim,
-        "rebuilt": dim_changed,
+        "rebuilt": project_name is None,  # 全量才是"整体替换"，局部只是覆盖本次范围
+        "dim_changed": dim_changed,
     }
+
+
+def _ensure_same_model(conn: sqlite3.Connection, model: str) -> None:
+    """局部重建只允许沿用索引现有模型；要换模型就必须全量。"""
+    state = consistency.inspect(conn)
+    if not state.count:
+        return
+    if len(state.known_models) > 1:
+        listed = "、".join(sorted(state.known_models))
+        raise ReindexError(
+            f"索引里已混有两套模型的向量（{listed}），只重建一个项目修不好这个问题。"
+            "请去掉 --project 执行全量 reindex。"
+        )
+    if state.known_models and model not in state.known_models:
+        index_model = "、".join(sorted(state.known_models))
+        raise ReindexError(
+            f"局部重建必须沿用索引现有的 embedding 模型：索引用的是「{index_model}」，"
+            f"当前配置是「{model}」。维度相同也不代表向量空间相同，混用会让检索静默变差。"
+            "确实要换模型，请去掉 --project 执行全量 reindex。"
+        )
 
 
 def doc_year_from(value: str | None, fallback: int | None = None) -> int | None:

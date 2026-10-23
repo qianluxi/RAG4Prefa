@@ -13,9 +13,10 @@ from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import admin, ask, ingest, repo
+from . import admin, ask, consistency, ingest, repo
 from .adapters.embed import EmbeddingError
 from .adapters.llm import LLMError
+from .consistency import IndexMismatch
 from .domain import Filter, JobState
 from .services import Services, build_services
 
@@ -62,7 +63,7 @@ async def _chat_stream(services: Services, req: ChatRequest) -> AsyncIterator[st
             use_rerank=req.rerank,
         ):
             yield _sse(event, data)
-    except (EmbeddingError, LLMError) as exc:
+    except (EmbeddingError, LLMError, IndexMismatch) as exc:
         yield _sse("error", {"message": str(exc)})
     except Exception as exc:  # 流已开始，不能再改 HTTP 状态码，用 error 事件收尾
         yield _sse("error", {"message": f"{type(exc).__name__}: {exc}"})
@@ -136,7 +137,6 @@ def create_app(services: Services | None = None) -> FastAPI:
                     project_code=code,
                     doc_year=doc_year,
                 )
-                services.remember_index_meta()
                 services.maybe_promote()
             except Exception as exc:
                 repo.update_job(
@@ -206,7 +206,7 @@ def create_app(services: Services | None = None) -> FastAPI:
                 filt=effective,
                 top_k=req.top_k,
             )
-        except (EmbeddingError, LLMError) as exc:
+        except (EmbeddingError, LLMError, IndexMismatch) as exc:
             raise HTTPException(503, str(exc)) from exc
         return {
             "filter": applied.model_dump(exclude_none=True),
@@ -221,6 +221,15 @@ def create_app(services: Services | None = None) -> FastAPI:
             services.require_embedder()
             services.require_llm()
         except (EmbeddingError, LLMError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        # 模型不一致的检查放在开始流之前：能改 HTTP 状态码的时候说清楚，别用 SSE error 收尾
+        try:
+            consistency.ensure_queryable(
+                services.conn,
+                services.require_embedder().model,
+                services.store.dim,
+            )
+        except IndexMismatch as exc:
             raise HTTPException(503, str(exc)) from exc
         return StreamingResponse(
             _chat_stream(services, req),

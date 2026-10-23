@@ -188,9 +188,14 @@ async function loadHealth() {
   try {
     const h = await api("/api/health");
     const backend = `${h.backend.name} · ${h.backend.vectors} 片段`;
-    badge.textContent = h.ok ? `就绪 · ${backend}` : `配置缺失 · ${backend}`;
+    const issues = (h.index && h.index.issues) || [];
+    // 索引与配置对不上时也报 !ok，这种情况下说"配置缺失"会误导人
+    badge.textContent = h.ok
+      ? `就绪 · ${backend}`
+      : `${issues.length ? "索引异常" : "配置缺失"} · ${backend}`;
     badge.classList.toggle("err", !h.ok);
-    if (h.notes && h.notes.length) $("status").textContent = h.notes.join("；");
+    if (issues.length) $("status").textContent = issues.join("；");
+    else if (h.notes && h.notes.length) $("status").textContent = h.notes.join("；");
   } catch (err) {
     badge.textContent = "服务不可用";
     badge.classList.add("err");

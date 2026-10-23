@@ -184,18 +184,56 @@ def set_document_status(
         )
 
 
-def delete_chunks_of_doc(conn: sqlite3.Connection, doc_id: str) -> list[str]:
-    ids = [r["id"] for r in conn.execute("SELECT id FROM chunks WHERE doc_id = ?", (doc_id,))]
+def mark_document_indexing(
+    conn: sqlite3.Connection,
+    *,
+    doc_id: str,
+    project_name: str,
+    filename: str,
+    doc_year: int | None,
+) -> None:
+    """占位 + 标记"正在重建"。
+
+    存在的文档只改 status，**不动 content_sha / chunk_count**：新的摘要要等
+    这一版真的写成功才记下来，否则下次重试会被误判成"内容没变"而跳过。
+    """
     with transaction(conn):
         conn.execute(
-            "DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE doc_id = ?)",
-            (doc_id,),
+            """
+            INSERT INTO documents (id, project_name, filename, content_sha, doc_year,
+                                   section_count, chunk_count, status, error, uploaded_at)
+            VALUES (?, ?, ?, '', ?, 0, 0, 'indexing', NULL, ?)
+            ON CONFLICT(project_name, filename) DO UPDATE SET
+                status = 'indexing', error = NULL
+            """,
+            (doc_id, project_name, filename, doc_year, now_iso()),
         )
-        conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
-        if ids:
-            marks = ",".join("?" * len(ids))
-            conn.execute(f"DELETE FROM vectors WHERE chunk_id IN ({marks})", ids)
-    return ids
+
+
+def chunk_ids_of_doc(conn: sqlite3.Connection, doc_id: str) -> list[str]:
+    return [r["id"] for r in conn.execute("SELECT id FROM chunks WHERE doc_id = ?", (doc_id,))]
+
+
+def replace_document_chunks(
+    conn: sqlite3.Connection, doc_id: str, chunks: Sequence[Chunk]
+) -> list[str]:
+    """用一个事务把该文档的片段换成新的一版，返回被淘汰的 chunk_id。
+
+    逐条 delete 再 insert 会让"删完、插一半"的窗口暴露给检索；这里整个过程
+    在同一个事务里，读取方要么看到旧版、要么看到新版。
+    """
+    keep = {c.id for c in chunks}
+    stale = [i for i in chunk_ids_of_doc(conn, doc_id) if i not in keep]
+    with transaction(conn):
+        if stale:
+            marks = ",".join("?" * len(stale))
+            conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({marks})", stale)
+            conn.execute(f"DELETE FROM chunks WHERE id IN ({marks})", stale)
+            # 归档里也不该留下已经没有正文的向量
+            conn.execute(f"DELETE FROM vectors WHERE chunk_id IN ({marks})", stale)
+        for c in chunks:
+            _write_chunk(conn, c)
+    return stale
 
 
 # ── chunks ──────────────────────────────────────────────────
@@ -204,33 +242,37 @@ def delete_chunks_of_doc(conn: sqlite3.Connection, doc_id: str) -> list[str]:
 def insert_chunks(conn: sqlite3.Connection, chunks: Sequence[Chunk]) -> None:
     with transaction(conn):
         for c in chunks:
-            conn.execute(
-                """
-                INSERT INTO chunks (id, doc_id, ordinal, chapter_path, title, text,
-                                    token_count, content_sha)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    ordinal = excluded.ordinal, chapter_path = excluded.chapter_path,
-                    title = excluded.title, text = excluded.text,
-                    token_count = excluded.token_count, content_sha = excluded.content_sha
-                """,
-                (
-                    c.id,
-                    c.doc_id,
-                    c.ordinal,
-                    json.dumps(c.chapter_path, ensure_ascii=False),
-                    c.title,
-                    c.text,
-                    c.token_count,
-                    c.content_sha,
-                ),
-            )
-            conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (c.id,))
-            conn.execute(
-                "INSERT INTO chunks_fts (chunk_id, title, body) VALUES (?, ?, ?)",
-                (c.id, _fts_tokens(f"{c.title} {' '.join(c.chapter_path)}"), _fts_tokens(c.text)),
-            )
+            _write_chunk(conn, c)
         # 注：vectors 表由向量后端自己维护，这里不碰，避免两条写路径互相覆盖
+
+
+def _write_chunk(conn: sqlite3.Connection, c: Chunk) -> None:
+    conn.execute(
+        """
+        INSERT INTO chunks (id, doc_id, ordinal, chapter_path, title, text,
+                            token_count, content_sha)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            ordinal = excluded.ordinal, chapter_path = excluded.chapter_path,
+            title = excluded.title, text = excluded.text,
+            token_count = excluded.token_count, content_sha = excluded.content_sha
+        """,
+        (
+            c.id,
+            c.doc_id,
+            c.ordinal,
+            json.dumps(c.chapter_path, ensure_ascii=False),
+            c.title,
+            c.text,
+            c.token_count,
+            c.content_sha,
+        ),
+    )
+    conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (c.id,))
+    conn.execute(
+        "INSERT INTO chunks_fts (chunk_id, title, body) VALUES (?, ?, ?)",
+        (c.id, _fts_tokens(f"{c.title} {' '.join(c.chapter_path)}"), _fts_tokens(c.text)),
+    )
 
 
 def get_chunks(conn: sqlite3.Connection, chunk_ids: Iterable[str]) -> dict[str, dict]:
@@ -318,8 +360,17 @@ def archive_vectors(
 
 
 def iter_archived_vectors(conn: sqlite3.Connection) -> list[dict]:
+    """归档向量，**只取仍有正文的那些**。
+
+    孤儿向量（chunk 已被删除）没有正文，检索命中它也只能跳过，
+    留着只会让重建后的索引比事实表更大、并且把旧维度带回来。
+    """
     rows = conn.execute(
-        "SELECT chunk_id, project_name, project_code, doc_year, dim, model, vec FROM vectors"
+        """
+        SELECT v.chunk_id, v.project_name, v.project_code, v.doc_year, v.dim, v.model, v.vec
+        FROM vectors v JOIN chunks c ON c.id = v.chunk_id
+        ORDER BY v.chunk_id
+        """
     ).fetchall()
     return [
         {
@@ -333,6 +384,40 @@ def iter_archived_vectors(conn: sqlite3.Connection) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def delete_orphan_vectors(conn: sqlite3.Connection) -> int:
+    """清掉没有对应片段的归档行；返回删除条数。"""
+    with transaction(conn):
+        cur = conn.execute("DELETE FROM vectors WHERE chunk_id NOT IN (SELECT id FROM chunks)")
+    return int(cur.rowcount or 0)
+
+
+def vector_stats(conn: sqlite3.Connection) -> dict:
+    """归档里实际存在的模型与维度分布——判断"有没有混用两套向量"的唯一依据。"""
+    models = {
+        (r["model"] or ""): int(r["c"])
+        for r in conn.execute("SELECT model, COUNT(*) AS c FROM vectors GROUP BY model")
+    }
+    dims = {
+        int(r["dim"]): int(r["c"])
+        for r in conn.execute("SELECT dim, COUNT(*) AS c FROM vectors GROUP BY dim")
+    }
+    return {"models": models, "dims": dims, "count": sum(models.values())}
+
+
+def chunk_ids_containing(conn: sqlite3.Connection, snippet: str, *, limit: int = 50) -> list[str]:
+    """找出正文包含某段原文的片段——评估集用片段标注时，靠它换算成 chunk_id。"""
+    escaped = snippet.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = conn.execute(
+        "SELECT id FROM chunks WHERE text LIKE ? ESCAPE '\\' ORDER BY id LIMIT ?",
+        (f"%{escaped}%", limit),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def chunk_count(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()["c"])
 
 
 def chunks_for_reindex(
@@ -382,6 +467,46 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
         conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
 
 
+# ── 管理视图（给 admin 用，避免上层写 SQL）─────────────────
+
+
+def project_chapter_rows(conn: sqlite3.Connection, project_name: str) -> list[dict]:
+    return [
+        {"chapter_path": r["chapter_path"], "token_count": r["token_count"]}
+        for r in conn.execute(
+            """
+            SELECT c.chapter_path, c.token_count
+            FROM chunks c JOIN documents d ON d.id = c.doc_id
+            WHERE d.project_name = ?
+            """,
+            (project_name,),
+        )
+    ]
+
+
+def longest_chunk_ids(conn: sqlite3.Connection, project_name: str, limit: int) -> list[str]:
+    return [
+        r["id"]
+        for r in conn.execute(
+            """
+            SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id
+            WHERE d.project_name = ? ORDER BY c.token_count DESC LIMIT ?
+            """,
+            (project_name, limit),
+        )
+    ]
+
+
+def get_project_summary(conn: sqlite3.Connection, project_name: str) -> str | None:
+    row = conn.execute("SELECT summary FROM projects WHERE name = ?", (project_name,)).fetchone()
+    return (row["summary"] or None) if row else None
+
+
+def set_project_summary(conn: sqlite3.Connection, project_name: str, summary: str) -> None:
+    with transaction(conn):
+        conn.execute("UPDATE projects SET summary = ? WHERE name = ?", (summary, project_name))
+
+
 # ── jobs ────────────────────────────────────────────────────
 
 
@@ -422,6 +547,29 @@ def update_job(
     params.append(job_id)
     with transaction(conn):
         conn.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def mark_interrupted_jobs(conn: sqlite3.Connection) -> int:
+    """进程重启后，把上次遗留的 running/queued 任务标记为失败。
+
+    入库任务跑在进程内，进程一死它们永远不会前进；不处理就会永远显示"运行中"，
+    让人无法判断到底是排队还是已经死了。
+    """
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE jobs SET state = ?, finished_at = ?,"
+            " message = CASE WHEN message = '' THEN ? ELSE message || ' / ' || ? END"
+            " WHERE state IN (?, ?)",
+            (
+                JobState.failed.value,
+                now_iso(),
+                "进程重启，任务中断",
+                "进程重启，任务中断",
+                JobState.running.value,
+                JobState.queued.value,
+            ),
+        )
+    return int(cur.rowcount or 0)
 
 
 def get_job(conn: sqlite3.Connection, job_id: str) -> Job | None:
