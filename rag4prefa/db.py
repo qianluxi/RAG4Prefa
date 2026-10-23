@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished_at TEXT
 );
 
+-- embedding 结果缓存：同一 (模型, 文本 sha) 只付一次费。
+-- 注意：这张表是「省钱的加速层」，丢了最多重算，不承载业务事实。
+CREATE TABLE IF NOT EXISTS embed_cache (
+    model TEXT NOT NULL,
+    sha   TEXT NOT NULL,
+    dim   INTEGER NOT NULL,
+    vec   BLOB NOT NULL,
+    PRIMARY KEY (model, sha)
+);
+
 -- numpy 向量后端使用；milvus 后端不使用
 CREATE TABLE IF NOT EXISTS vectors (
     chunk_id     TEXT PRIMARY KEY,

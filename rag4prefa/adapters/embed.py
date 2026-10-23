@@ -78,7 +78,6 @@ class Embedder:
             "INSERT OR REPLACE INTO embed_cache (model, sha, dim, vec) VALUES (?, ?, ?, ?)",
             (self._model, sha, len(vec), arr.tobytes()),
         )
-        self._conn.commit()
 
     # ── 对外 ────────────────────────────────────────────
 
@@ -93,9 +92,16 @@ class Embedder:
         for start in range(0, len(missing), batch_size):
             idx = missing[start : start + batch_size]
             vectors = self._call([texts[i] for i in idx])
+            if len(vectors) != len(idx):
+                raise EmbeddingError(
+                    f"embedding 服务返回 {len(vectors)} 条向量，期望 {len(idx)} 条"
+                )
             for i, vec in zip(idx, vectors, strict=True):
                 out[i] = vec
                 self._cache_put(shas[i], vec)
+        if self._conn is not None:
+            # 整批只提交一次：缓存是加速层，没必要每条向量都 fsync 一遍
+            self._conn.commit()
 
         result = [v for v in out if v is not None]
         if result and not self._dim:
