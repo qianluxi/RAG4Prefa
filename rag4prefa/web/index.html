@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RAG4Prefa · 课题文档知识库</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1b2130; --muted: #6b7280;
+    --line: #e4e7ec; --brand: #2f4b8f; --brand-soft: #eef2fb; --warn: #b45309;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.65 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .badge {
+    margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    background: var(--brand-soft); color: var(--brand);
+  }
+  .badge.err { background: #fef2f2; color: #b91c1c; }
+  main { display: grid; grid-template-columns: 268px 1fr; gap: 16px; padding: 16px; height: calc(100vh - 55px); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  aside { padding: 14px; overflow: auto; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0 0 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .chip {
+    border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 999px;
+    padding: 3px 10px; font-size: 12px; cursor: pointer;
+  }
+  .chip.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input, select {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px;
+    font: inherit; color: inherit; background: #fff;
+  }
+  .row { display: flex; gap: 8px; }
+  button {
+    font: inherit; cursor: pointer; border-radius: 7px; border: 1px solid var(--line);
+    background: #fff; padding: 7px 12px;
+  }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .chat { display: flex; flex-direction: column; overflow: hidden; }
+  .messages { flex: 1; overflow: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 860px; }
+  .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .msg.user { align-self: flex-end; text-align: right; }
+  .msg .bubble {
+    display: inline-block; text-align: left; padding: 10px 14px; border-radius: 10px;
+    background: var(--brand-soft); white-space: pre-wrap; word-break: break-word;
+  }
+  .msg.user .bubble { background: #e8f0fe; }
+  .msg.assistant .bubble { background: #fff; border: 1px solid var(--line); }
+  .cite { color: var(--brand); cursor: pointer; font-size: 11px; vertical-align: super; }
+  .cards { display: grid; gap: 6px; margin-top: 8px; }
+  .card {
+    border: 1px solid var(--line); border-left: 3px solid var(--brand); border-radius: 6px;
+    padding: 8px 10px; background: #fcfcfd; font-size: 12.5px;
+  }
+  .card .src { color: var(--muted); font-size: 11.5px; margin-bottom: 3px; }
+  .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+  .composer input { flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; padding: 0 18px 8px; }
+  .drawer {
+    position: fixed; top: 0; right: 0; width: 460px; height: 100vh; background: #fff;
+    border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(16,24,40,.08);
+    transform: translateX(100%); transition: transform .18s ease; overflow: auto; z-index: 10;
+  }
+  .drawer.open { transform: none; }
+  .drawer header { border: 0; padding: 14px 16px; }
+  .drawer .body { padding: 0 16px 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 11.5px; }
+  .job { margin-top: 10px; font-size: 12.5px; color: var(--muted); white-space: pre-wrap; }
+  .err { color: #b91c1c; }
+  .kbd { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>RAG4Prefa</h1>
+  <span class="sub">课题文档知识库 · 混合检索 + 流式问答</span>
+  <span id="health" class="badge">检查中…</span>
+  <button class="ghost" id="toggle-admin">项目管理</button>
+</header>
+
+<main>
+  <aside class="panel">
+    <h2>检索范围</h2>
+    <div id="project-chips" class="chips"></div>
+
+    <h2>年份</h2>
+    <div class="row">
+      <input id="year-from" type="number" placeholder="起" min="1990" max="2100" />
+      <input id="year-to" type="number" placeholder="止" min="1990" max="2100" />
+    </div>
+
+    <label for="keyword">关键词（参与 BM25 召回）</label>
+    <input id="keyword" type="text" placeholder="如：缓粘结预应力" />
+
+    <label>
+      <input id="rerank" type="checkbox" style="width:auto" /> 启用重排（需配置重排服务）
+    </label>
+
+    <div class="row" style="margin-top:14px">
+      <button class="ghost" id="clear-filter">清空条件</button>
+      <button class="ghost" id="show-filtered">当前生效</button>
+    </div>
+    <p class="kbd" style="margin-top:14px">
+      Enter 发送，Shift+Enter 换行。<br />问题里的年份、项目名会自动识别为条件。
+    </p>
+  </aside>
+
+  <section class="chat panel">
+    <div class="messages" id="messages">
+      <div class="msg assistant">
+        <div class="who">RAG4Prefa</div>
+        <div class="bubble">先在「项目管理」上传 docx 建立索引，然后在这里提问。<br />
+        例如：「悬挑构件的缓粘结预应力施工要点是什么？」「2024 年以后的超限报告里关于陶土砖饰面有哪些做法？」</div>
+      </div>
+    </div>
+    <div class="composer">
+      <input id="question" type="text" placeholder="输入问题…" autocomplete="off" />
+      <button class="primary" id="send">提问</button>
+    </div>
+    <div class="hint" id="status"></div>
+  </section>
+</main>
+
+<div class="drawer" id="drawer">
+  <header>
+    <h1 style="font-size:14px">项目管理</h1>
+    <button class="ghost" id="close-admin" style="margin-left:auto">关闭</button>
+  </header>
+  <div class="body">
+    <table>
+      <thead><tr><th>项目</th><th>编号</th><th>文档</th><th>片段</th><th></th></tr></thead>
+      <tbody id="project-rows"></tbody>
+    </table>
+
+    <h2 style="margin-top:18px;font-size:12px;color:var(--muted)">上传 docx</h2>
+    <label>项目名称</label><input id="up-name" placeholder="如：立体聚落大悬挑" />
+    <div class="row">
+      <div style="flex:1"><label>项目编号</label><input id="up-code" placeholder="如：kc2026" /></div>
+      <div style="flex:1"><label>起始年份</label><input id="up-year" type="number" placeholder="2024" /></div>
+    </div>
+    <label>选择文件（可多选）</label><input id="up-files" type="file" accept=".docx" multiple />
+    <button class="primary" id="upload" style="margin-top:12px">开始入库</button>
+    <div class="job" id="job"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { projects: [], selected: new Set(), busy: false };
+
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  if (!res.ok) {
+    const detail = (data && data.detail) || (data && data.message) || res.statusText;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return data;
+}
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/* ── 健康状态 ─────────────────────────────── */
+async function loadHealth() {
+  const badge = $("health");
+  try {
+    const h = await api("/api/health");
+    const backend = `${h.backend.name} · ${h.backend.vectors} 片段`;
+    badge.textContent = h.ok ? `就绪 · ${backend}` : `配置缺失 · ${backend}`;
+    badge.classList.toggle("err", !h.ok);
+    if (h.notes && h.notes.length) $("status").textContent = h.notes.join("；");
+  } catch (err) {
+    badge.textContent = "服务不可用";
+    badge.classList.add("err");
+  }
+}
+
+/* ── 项目筛选 ─────────────────────────────── */
+async function loadProjects() {
+  state.projects = await api("/api/projects");
+  const chips = $("project-chips");
+  chips.innerHTML = "";
+  if (!state.projects.length) {
+    chips.appendChild(el("span", "kbd", "尚未导入项目"));
+  }
+  for (const p of state.projects) {
+    const chip = el("button", "chip", `${p.name}`);
+    chip.dataset.name = p.name;
+    chip.onclick = () => {
+      state.selected.has(p.name) ? state.selected.delete(p.name) : state.selected.add(p.name);
+      chip.classList.toggle("on");
+    };
+    chips.appendChild(chip);
+  }
+  const rows = $("project-rows");
+  rows.innerHTML = "";
+  for (const p of state.projects) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "", p.name));
+    tr.appendChild(el("td", "", p.code || "—"));
+    tr.appendChild(el("td", "", String(p.document_count)));
+    tr.appendChild(el("td", "", String(p.chunk_count)));
+    const td = el("td");
+    const del = el("button", "ghost", "删除");
+    del.style.padding = "2px 8px";
+    del.onclick = async () => {
+      if (!confirm(`删除项目「${p.name}」及其全部文档与向量？`)) return;
+      try {
+        await api(`/api/projects/${encodeURIComponent(p.name)}`, { method: "DELETE" });
+        state.selected.delete(p.name);
+        await loadProjects();
+        await loadHealth();
+      } catch (err) { alert(err.message); }
+    };
+    td.appendChild(del);
+    tr.appendChild(td);
+    rows.appendChild(tr);
+  }
+}
+
+function currentFilter() {
+  const projects = [...state.selected];
+  const from = $("year-from").value ? Number($("year-from").value) : null;
+  const to = $("year-to").value ? Number($("year-to").value) : null;
+  const keyword = $("keyword").value.trim();
+  const filter = {};
+  if (projects.length) filter.projects = projects;
+  if (from) filter.year_from = from;
+  if (to) filter.year_to = to;
+  if (keyword) filter.keyword = keyword;
+  return Object.keys(filter).length ? filter : null;
+}
+
+/* ── SSE 解析 ─────────────────────────────── */
+async function* readEvents(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      let event = "message";
+      const dataLines = [];
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      if (dataLines.length) {
+        let data = {};
+        try { data = JSON.parse(dataLines.join("\n")); } catch { data = {}; }
+        yield { event, data };
+      }
+    }
+  }
+}
+
+/* ── 提问 ─────────────────────────────────── */
+async function ask() {
+  const question = $("question").value.trim();
+  if (!question || state.busy) return;
+  state.busy = true;
+  $("send").disabled = true;
+  $("question").value = "";
+
+  const userMsg = el("div", "msg user");
+  userMsg.appendChild(el("div", "who", "我"));
+  userMsg.appendChild(el("div", "bubble", question));
+  $("messages").appendChild(userMsg);
+
+  const botMsg = el("div", "msg assistant");
+  botMsg.appendChild(el("div", "who", "RAG4Prefa"));
+  const bubble = el("div", "bubble", "");
+  botMsg.appendChild(bubble);
+  const cards = el("div", "cards");
+  botMsg.appendChild(cards);
+  $("messages").appendChild(botMsg);
+  $("messages").scrollTop = $("messages").scrollHeight;
+
+  let answer = "";
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question,
+        filter: currentFilter(),
+        top_k: 8,
+        rerank: $("rerank").checked,
+      }),
+    });
+    if (!res.ok || !res.body) {
+      const payload = await res.json().catch(() => ({}));
+      throw new Error(payload.detail || `HTTP ${res.status}`);
+    }
+    for await (const { event, data } of readEvents(res)) {
+      if (event === "meta") {
+        $("status").textContent =
+          `候选 ${data.candidates} · ${data.filter_desc || "全库"} · ` +
+          `embed ${data.timings.embed_ms}ms / dense ${data.timings.dense_ms}ms / bm25 ${data.timings.sparse_ms}ms` +
+          (data.rerank_error ? ` · 重排失败：${data.rerank_error}` : "");
+      } else if (event === "token") {
+        answer += data.text || "";
+        bubble.innerHTML = formatAnswer(answer);
+        $("messages").scrollTop = $("messages").scrollHeight;
+      } else if (event === "citations") {
+        renderCitations(cards, data.items || []);
+      } else if (event === "error") {
+        bubble.classList.add("err");
+        bubble.textContent = `出错：${data.message}`;
+      } else if (event === "done") {
+        $("status").textContent += ` · 总耗时 ${data.elapsed_ms}ms`;
+      }
+    }
+  } catch (err) {
+    bubble.classList.add("err");
+    bubble.textContent = `请求失败：${err.message}`;
+  } finally {
+    state.busy = false;
+    $("send").disabled = false;
+    $("messages").scrollTop = $("messages").scrollHeight;
+    await loadHealth();
+  }
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function formatAnswer(text) {
+  return escapeHtml(text).replace(/\[(\d+)\]/g, '<span class="cite" data-n="$1">[$1]</span>');
+}
+
+function renderCitations(container, items) {
+  container.innerHTML = "";
+  for (const item of items) {
+    const card = el("div", "card");
+    card.appendChild(el("div", "src",
+      `[${item.n}] ${item.project}${item.project_code ? " / " + item.project_code : ""} · ${item.filename}`));
+    card.appendChild(el("div", "", item.chapter || "（未分章）"));
+    if (item.snippet) {
+      const snip = el("div", "src", item.snippet);
+      snip.style.marginTop = "4px";
+      card.appendChild(snip);
+    }
+    container.appendChild(card);
+  }
+}
+
+/* ── 上传 ─────────────────────────────────── */
+async function upload() {
+  const name = $("up-name").value.trim();
+  const files = $("up-files").files;
+  if (!name) return alert("请填写项目名称");
+  if (!files.length) return alert("请选择 docx 文件");
+
+  const form = new FormData();
+  for (const file of files) form.append("files", file);
+  form.append("code", $("up-code").value.trim());
+  const year = $("up-year").value.trim();
+  if (year) form.append("started_on", `${year}-01-01`);
+
+  $("upload").disabled = true;
+  $("job").textContent = "上传中…";
+  try {
+    const { job_id } = await api(`/api/projects/${encodeURIComponent(name)}/documents`, {
+      method: "POST",
+      body: form,
+    });
+    await pollJob(job_id);
+  } catch (err) {
+    $("job").textContent = `失败：${err.message}`;
+  } finally {
+    $("upload").disabled = false;
+    await loadProjects();
+    await loadHealth();
+  }
+}
+
+async function pollJob(jobId) {
+  while (true) {
+    const job = await api(`/api/jobs/${jobId}`);
+    const pct = Math.round((job.progress || 0) * 100);
+    $("job").textContent = `[${job.state}] ${pct}% · ${job.message || ""}`;
+    if (job.state === "done" || job.state === "failed") return job;
+    await new Promise((resolve) => setTimeout(resolve, 900));
+  }
+}
+
+/* ── 事件绑定 ─────────────────────────────── */
+$("send").onclick = ask;
+$("question").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ask(); }
+});
+$("clear-filter").onclick = () => {
+  state.selected.clear();
+  document.querySelectorAll(".chip").forEach((c) => c.classList.remove("on"));
+  $("year-from").value = ""; $("year-to").value = ""; $("keyword").value = "";
+};
+$("show-filtered").onclick = () => {
+  const filter = currentFilter();
+  $("status").textContent = filter ? `当前条件：${JSON.stringify(filter)}` : "当前条件：全库";
+};
+$("toggle-admin").onclick = () => $("drawer").classList.add("open");
+$("close-admin").onclick = () => $("drawer").classList.remove("open");
+$("upload").onclick = upload;
+
+loadHealth();
+loadProjects();
+</script>
+</body>
+</html>
