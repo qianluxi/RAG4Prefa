@@ -19,6 +19,7 @@ from rag4prefa.adapters.rerank import NoopReranker
 from rag4prefa.adapters.vectors import NumpyStore
 from rag4prefa.config import Settings
 from rag4prefa.db import connect, init_db
+from rag4prefa.domain import Filter
 from rag4prefa.ingest import ingest_file
 from rag4prefa.services import Services
 from tests import mock_openai
@@ -81,10 +82,111 @@ def _seed(svc: Services, docx_file: Path) -> list[str]:
 def test_snippet_labels_resolve_to_chunks(services: Services, docx_file: Path) -> None:
     _seed(services, docx_file)
     gold, warnings = ev.resolve_gold(
-        services.conn, {"question": "x", "gold_snippets": ["缓粘结预应力", "根本不存在的句子"]}
+        services.conn,
+        {"question": "x", "gold_snippets": ["缓粘结预应力", "根本不存在的句子"]},
+        Filter(),
     )
     assert gold, "标注片段应能解析出 chunk"
     assert warnings and "未在语料中找到" in warnings[0]
+
+
+def test_gold_resolution_respects_the_question_filter(
+    services: Services, docx_file: Path
+) -> None:
+    """同一段原文出现在两个项目里时，题目限定甲项目就不能把乙项目的片段算进 gold。
+
+    否则 Recall 的分母里永远有本题根本召回不到的片段，指标被系统性压低，
+    而这个误差和模型好坏毫无关系。
+    """
+    for project, year in (("甲项目", 2024), ("乙项目", 2020)):
+        outcome = ingest_file(
+            services.conn,
+            services.store,
+            services.require_embedder(),
+            services.settings,
+            path=docx_file,
+            project_name=project,
+            doc_year=year,
+        )
+        assert outcome.status == "indexed"
+
+    everything = repo.chunk_ids_containing(services.conn, "缓粘结预应力")
+    assert len(everything) > 1, "两个项目都该有这段文字"
+
+    scoped, _ = ev.resolve_gold(
+        services.conn, {"question": "q", "gold_snippets": ["缓粘结预应力"]},
+        Filter(projects=["甲项目"]),
+    )
+    assert scoped and scoped < set(everything), "范围内的命中必须少于全库命中"
+    details = repo.get_chunks(services.conn, scoped)
+    assert {d["project_name"] for d in details.values()} == {"甲项目"}
+
+
+def test_gold_resolution_does_not_silently_truncate(services: Services) -> None:
+    """片段出现次数超过 50 时不能悄悄只取前 50 条——那会让指标变好看。"""
+    from rag4prefa.domain import Chunk
+
+    repo.upsert_project(services.conn, "多片段项目")
+    repo.upsert_document(
+        services.conn,
+        doc_id="d1",
+        project_name="多片段项目",
+        filename="a.docx",
+        content_sha="sha",
+        doc_year=2024,
+        status="indexed",
+    )
+    repo.insert_chunks(
+        services.conn,
+        [
+            Chunk(
+                id=f"c{i:03d}",
+                doc_id="d1",
+                ordinal=i,
+                chapter_path=["第1章"],
+                title="t",
+                text="共同关键词 的内容",
+                token_count=5,
+                content_sha=f"s{i}",
+            )
+            for i in range(60)
+        ],
+    )
+
+    assert len(repo.chunk_ids_containing(services.conn, "共同关键词")) == 60
+
+    gold, warnings = ev.resolve_gold(
+        services.conn, {"question": "q", "gold_snippets": ["共同关键词"]}, Filter()
+    )
+    assert len(gold) == 60
+    assert warnings == []
+
+
+def test_invalid_gold_ids_are_dropped_with_warning(services: Services, docx_file: Path) -> None:
+    """写错的 chunk_id 不能当成有效标注，否则分母虚高、Recall 永远差一截。"""
+    gold_ids = _seed(services, docx_file)
+    gold, warnings = ev.resolve_gold(
+        services.conn,
+        {"question": "q", "gold_chunk_ids": [gold_ids[0], "根本不存在的id"]},
+        Filter(),
+    )
+    assert gold == {gold_ids[0]}
+    assert warnings and "已剔除" in warnings[0]
+
+
+def test_report_shows_per_mode_sample_count(services: Services, docx_file: Path) -> None:
+    """各召回方式的有效样本数必须写进报告，不能只写一个总数。"""
+    gold_ids = _seed(services, docx_file)
+    rows = [
+        {"question": "缓粘结预应力的张拉控制要点", "gold_chunk_ids": gold_ids[:1]},
+        {"question": "陶土砖饰面的做法", "gold_snippets": ["陶土砖饰面"]},
+    ]
+    result = ev.evaluate(services, rows, 3, list(ev.MODES))
+    assert result["evaluated"]["dense"] == 2
+
+    text = ev.report(result, 3)
+    assert "有效样本" in text
+    assert "| dense | 2 |" in text
 
 
 def test_all_four_modes_run_and_report(services: Services, docx_file: Path) -> None:

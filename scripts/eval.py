@@ -11,6 +11,9 @@
 之后 Recall / MRR / nDCG 用的是同一个 gold 集合。这一点必须钉死：如果 Recall 按原文片段
 计数、MRR 和 nDCG 按 chunk 排序，同一个系统会同时算出 1.0 和 0.61，报告没法解释。
 
+**gold 的解析范围必须等于检索的筛选范围。** 题为"甲项目"时，乙项目里出现同一段文字并不
+算本题的相关片段——把它算进 gold，只会让 Recall 永远差一截，且误差与模型无关。
+
 用法：
     python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
     python scripts/eval.py --modes dense,sparse,hybrid,rerank
@@ -48,20 +51,41 @@ def load_dataset(path: Path) -> list[dict]:
     return rows
 
 
-def resolve_gold(conn, row: dict) -> tuple[set[str], list[str]]:
+def resolve_gold(conn, row: dict, filt: Filter) -> tuple[set[str], list[str]]:
     """把一条标注换算成 chunk_id 集合，返回 (gold, 警告)。
 
-    `gold_chunk_ids` 直接可用；`gold_snippets` 用正文匹配解析——一个片段若出现在多个
-    chunk 里，它们都算相关项（命中任意一条即满足该片段），这样三个指标的分母一致。
+    三条硬规则，都会影响指标能不能解释：
+
+    1. **范围必须和检索一致**。检索会用该题生效的 `filt` 过滤候选；如果 gold 却在全库
+       范围内解析，别的项目/年份里出现的同一段文字也会被算成相关项——那些片段本题根本
+       召回不到，于是 Recall 被系统性压低。这个误差与模型无关，纯属标注口径问题。
+    2. **标注不能静默截断**。旧实现给 `chunk_ids_containing` 留了 `limit=50`，一段话
+       在语料里出现超过 50 次时 gold 会被悄悄砍掉，指标反而变好看。
+    3. **id 必须真实存在且在范围内**。写错的 id 不能当成有效标注，否则分母虚高。
     """
-    gold = {str(x) for x in row.get("gold_chunk_ids") or []}
     warnings: list[str] = []
+    declared = [str(x) for x in row.get("gold_chunk_ids") or []]
+    gold = repo.select_chunk_ids(conn, declared, filt=filt)
+    if len(gold) != len(set(declared)):
+        unknown = sorted(set(declared) - gold)
+        warnings.append(
+            f"{len(unknown)} 个 gold_chunk_id 不存在或不在本题筛选范围内，已剔除"
+            f"（例：{unknown[:3]}）"
+        )
+
     snippets = [s for s in dict.fromkeys(row.get("gold_snippets") or []) if s]
     for snippet in snippets:
-        found = repo.chunk_ids_containing(conn, snippet)
+        found = repo.chunk_ids_containing(conn, snippet, filt=filt)
         if not found:
             # 标错了或语料已变：留着会让 Recall 永远达不到 1，必须让人看见
-            warnings.append(f"标注片段未在语料中找到：{snippet!r}")
+            outside = repo.chunk_ids_containing(conn, snippet)
+            if outside:
+                warnings.append(
+                    f"标注片段只出现在本题筛选范围之外：{snippet!r}"
+                    f"（全库命中 {len(outside)} 条，范围内 0 条）"
+                )
+            else:
+                warnings.append(f"标注片段未在语料中找到：{snippet!r}")
             continue
         gold.update(found)
     return gold, warnings
@@ -155,6 +179,9 @@ async def _evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dic
     metrics: dict[str, dict[str, list[float]]] = {
         m: {"recall": [], "mrr": [], "ndcg": []} for m in modes
     }
+    # 每种召回方式实际评估了多少题，必须各自记账：某一方法在部分样本上失败时，
+    # 用"总有效题数"代表所有方法，会让不同方法的均值建立在不同题目集合上，不可比。
+    evaluated: dict[str, int] = {m: 0 for m in modes}
     warnings: list[str] = []
     skipped: list[str] = []
 
@@ -163,13 +190,14 @@ async def _evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dic
         if not question:
             skipped.append("缺少 question 字段的记录")
             continue
-        gold, row_warnings = resolve_gold(services.conn, row)
+        request_filter = Filter(**row["filter"]) if row.get("filter") else Filter()
+        # 先算出生效筛选条件，再解析 gold：两者必须是同一个范围
+        effective = ask.build_filter(question, request_filter, repo.project_names(services.conn))
+        gold, row_warnings = resolve_gold(services.conn, row, effective)
         warnings.extend(f"{question}：{w}" for w in row_warnings)
         if not gold:
             skipped.append(question)
             continue
-        request_filter = Filter(**row["filter"]) if row.get("filter") else Filter()
-        effective = ask.build_filter(question, request_filter, repo.project_names(services.conn))
 
         for mode in modes:
             try:
@@ -185,9 +213,11 @@ async def _evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dic
             metrics[mode]["recall"].append(recall_at_k(hits, gold, k))
             metrics[mode]["mrr"].append(mrr(rels))
             metrics[mode]["ndcg"].append(ndcg_at_k(rels, k, len(gold)))
+            evaluated[mode] += 1
 
     return {
         "modes": metrics,
+        "evaluated": evaluated,
         "samples": len(rows) - len(skipped),
         "skipped": skipped,
         "warnings": warnings,
@@ -207,22 +237,34 @@ def run(dataset_path: Path, k: int, modes: list[str]) -> dict:
 
 def report(result: dict, k: int) -> str:
     modes: dict[str, dict[str, list[float]]] = result["modes"]
+    evaluated: dict[str, int] = result.get("evaluated") or {
+        m: len(v["recall"]) for m, v in modes.items()
+    }
     lines = [
         "# 检索评估报告\n",
-        f"- 样本数：{result['samples']}（跳过 {len(result['skipped'])} 条无标注/无问题的记录）",
+        f"- 标注有效的题目数：{result['samples']}"
+        f"（跳过 {len(result['skipped'])} 条无标注/无问题的记录）",
         f"- 指标：Recall@{k}、MRR、nDCG@{k}，相关性按 chunk 二值判定",
-        f"- Recall@{k} = |TopK ∩ Gold| / |Gold|，Gold 为标注的相关 chunk 集合",
-        "- 片段标注已解析成语料中包含它的全部 chunk，三个指标共用同一个 Gold\n",
-        f"| 召回方式 | Recall@{k} | MRR | nDCG@{k} |",
-        "|---|---|---|---|",
+        f"- Recall@{k} = |TopK ∩ Gold| / |Gold|，Gold 为**本题筛选范围内**的相关 chunk 集合",
+        "- 片段标注已解析成范围内包含它的全部 chunk，三个指标共用同一个 Gold\n",
+        f"| 召回方式 | 有效样本 | Recall@{k} | MRR | nDCG@{k} |",
+        "|---|---|---|---|---|",
     ]
     for mode, values in modes.items():
         if not values["recall"]:
-            lines.append(f"| {mode} | - | - | - |")
+            lines.append(f"| {mode} | 0 | - | - | - |")
             continue
         lines.append(
-            f"| {mode} | {statistics.mean(values['recall']):.3f} | "
-            f"{statistics.mean(values['mrr']):.3f} | {statistics.mean(values['ndcg']):.3f} |"
+            f"| {mode} | {evaluated.get(mode, 0)} | "
+            f"{statistics.mean(values['recall']):.3f} | "
+            f"{statistics.mean(values['mrr']):.3f} | "
+            f"{statistics.mean(values['ndcg']):.3f} |"
+        )
+    # 样本数不一致时，横向比较不严谨——必须写出来，而不是靠读者自己数
+    if len(set(evaluated.values())) > 1:
+        lines.append(
+            "\n> 注意：各召回方式的有效样本数不同，均值建立在不同的题目集合上，"
+            "横向比较只能作参考。失败原因见下方「需要处理的数据问题」。"
         )
     if {"dense", "hybrid"} <= set(modes) and modes["dense"]["recall"] and modes["hybrid"]["recall"]:
         gain = statistics.mean(modes["hybrid"]["recall"]) - statistics.mean(
