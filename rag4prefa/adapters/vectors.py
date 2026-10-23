@@ -22,6 +22,10 @@ class BackendUnavailable(RuntimeError):
     pass
 
 
+class RebuildError(RuntimeError):
+    """重建索引失败。错误信息里必须写清"现在处于什么状态、怎么恢复"。"""
+
+
 @dataclass(slots=True)
 class VectorItem:
     chunk_id: str
@@ -35,6 +39,7 @@ class VectorItem:
 class VectorStore(Protocol):
     name: str
     dim: int
+    notes: list[str]
 
     def upsert(self, items: Sequence[VectorItem]) -> None: ...
     def delete(self, chunk_ids: Sequence[str]) -> None: ...
@@ -64,6 +69,7 @@ class NumpyStore:
     def __init__(self, conn: sqlite3.Connection, dim: int) -> None:
         self._conn = conn
         self.dim = dim
+        self.notes: list[str] = []
         self._ids: list[str] = []
         self._projects: list[str] = []
         self._codes: list[str] = []
@@ -88,7 +94,14 @@ class NumpyStore:
         self._projects = [r["project_name"] for r in rows]
         self._codes = [r["project_code"] for r in rows]
         self._years = [r["doc_year"] for r in rows]
-        dim = rows[0]["dim"] or self.dim
+        dims = {int(r["dim"]) for r in rows}
+        if len(dims) > 1:
+            # 归档里混了两种维度，vstack 会直接崩在一个看不懂的错误上
+            raise RebuildError(
+                f"归档里混有多种向量维度 {sorted(dims)}，无法组成一个矩阵。"
+                "请执行 `python -m rag4prefa reindex` 全量重建。"
+            )
+        dim = dims.pop() if dims else 0
         if dim:
             self.dim = dim
         self._mat = np.vstack([np.frombuffer(r["vec"], dtype=np.float32) for r in rows])
@@ -207,6 +220,11 @@ class MilvusStore:
 
     注意：Milvus Lite 不支持 HNSW 参数，统一用 AUTOINDEX；
     切到 standalone 时把 index_type 换成 HNSW 才需要调参。
+
+    集合命名约定（用于崩溃恢复，见 `_recover`）：
+    - `<collection>`            正式索引，检索只读它；
+    - `<collection>__staging`   重建时的暂存集合，写完并校验后才切换；
+    - `<collection>__retired`   被换下来的上一版，切换成功后立即删除。
     """
 
     name = "milvus"
@@ -219,13 +237,55 @@ class MilvusStore:
 
         self._collection = collection
         self.dim = dim
+        self.notes: list[str] = []
         try:
             self._client = MilvusClient(uri=uri)
         except Exception as exc:  # pragma: no cover - 平台相关
             raise BackendUnavailable(f"无法打开 Milvus 存储 {uri}: {exc}") from exc
 
+        self._recover()
         self._ensure_collection(dim)
         self._load_collection()
+
+    # ── 集合名 ──────────────────────────────────────────
+
+    @property
+    def _staging(self) -> str:
+        return f"{self._collection}__staging"
+
+    @property
+    def _retired(self) -> str:
+        return f"{self._collection}__retired"
+
+    # ── 崩溃恢复 ────────────────────────────────────────
+
+    def _recover(self) -> None:
+        """把上一次重建留下的中间状态收拾干净，让启动后的行为是确定的。
+
+        正常结束时不会留下任何残留；只有进程在切换过程中被杀掉才会走到这里。
+        """
+        has_final = self._client.has_collection(self._collection)
+        has_retired = self._client.has_collection(self._retired)
+        has_staging = self._client.has_collection(self._staging)
+
+        if not has_final and has_retired:
+            # 切换进行到一半：旧版还在 retired 里，先还原成可用状态
+            self._client.rename_collection(old_name=self._retired, new_name=self._collection)
+            self.notes.append("检测到未完成的重建，已从上一版集合恢复索引")
+            has_final, has_retired = True, False
+
+        if has_staging:
+            # 正式集合可用 → 暂存的一定是半成品；正式集合不在 → 半成品不能当正式索引用
+            self._drop_if_exists(self._staging)
+            self.notes.append(
+                "清理了上次未完成的重建暂存集合"
+                if has_final
+                else "丢弃了上次未完成的暂存集合，请执行 rebuild_store 或 reindex 从归档重建"
+            )
+        if has_retired:
+            self._drop_if_exists(self._retired)
+
+    # ── 集合管理 ────────────────────────────────────────
 
     def _load_collection(self) -> None:
         """新进程打开已有集合时它处于 released 状态，不 load 就无法 search。"""
@@ -236,11 +296,19 @@ class MilvusStore:
             if "already loaded" not in message.lower():
                 raise BackendUnavailable(f"无法加载 Milvus 集合：{message}") from exc
 
-    def _ensure_collection(self, dim: int) -> None:
-        if self._client.has_collection(self._collection):
-            return
-        if not dim:
-            raise BackendUnavailable("首次创建 Milvus 集合需要已知向量维度")
+    def _vector_dim(self, collection: str) -> int:
+        """从集合 schema 里读出向量字段的实际维度（0 表示读不到）。"""
+        try:
+            info = self._client.describe_collection(collection)
+        except Exception as exc:  # pragma: no cover - 平台相关
+            raise BackendUnavailable(f"无法读取集合 {collection} 的结构：{exc}") from exc
+        for field in info.get("fields", []):
+            if field.get("name") == "vector":
+                dim = field.get("params", {}).get("dim")
+                return int(dim) if dim else 0
+        return 0
+
+    def _create_collection(self, collection: str, dim: int) -> None:
         from pymilvus import DataType, MilvusClient
 
         schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
@@ -252,13 +320,33 @@ class MilvusStore:
         index_params = self._client.prepare_index_params()
         index_params.add_index(field_name="vector", index_type="AUTOINDEX", metric_type="COSINE")
         self._client.create_collection(
-            collection_name=self._collection, schema=schema, index_params=index_params
+            collection_name=collection, schema=schema, index_params=index_params
         )
+
+    def _drop_if_exists(self, collection: str) -> None:
+        if self._client.has_collection(collection):
+            self._client.drop_collection(collection)
+
+    def _ensure_collection(self, dim: int) -> None:
+        if self._client.has_collection(self._collection):
+            actual = self._vector_dim(self._collection)
+            if dim and actual and dim != actual:
+                # 配置说是 N 维、集合里其实是 M 维：写入会直接报错，检索会给出无意义结果
+                raise BackendUnavailable(
+                    f"Milvus 集合 {self._collection} 的向量维度是 {actual}，"
+                    f"当前配置是 {dim}。改配置或换集合名都改不了已写入的向量，"
+                    "请用 `python -m rag4prefa reindex` 按当前模型整体重建。"
+                )
+            self.dim = actual or dim
+            return
+        if not dim:
+            raise BackendUnavailable("首次创建 Milvus 集合需要已知向量维度")
+        self._create_collection(self._collection, dim)
         self.dim = dim
 
-    def upsert(self, items: Sequence[VectorItem]) -> None:
-        if not items:
-            return
+    # ── 对外 ────────────────────────────────────────────
+
+    def _upsert_into(self, collection: str, items: Sequence[VectorItem]) -> None:
         rows = [
             {
                 "id": item.chunk_id,
@@ -269,7 +357,12 @@ class MilvusStore:
             }
             for item in items
         ]
-        self._client.upsert(collection_name=self._collection, data=rows)
+        self._client.upsert(collection_name=collection, data=rows)
+
+    def upsert(self, items: Sequence[VectorItem]) -> None:
+        if not items:
+            return
+        self._upsert_into(self._collection, items)
 
     def delete(self, chunk_ids: Sequence[str]) -> None:
         if chunk_ids:
@@ -290,23 +383,107 @@ class MilvusStore:
         return [(str(h["id"]), float(h["distance"])) for h in hits]
 
     def count(self) -> int:
-        stats = self._client.get_collection_stats(self._collection)
+        return self._count_of(self._collection)
+
+    def _count_of(self, collection: str) -> int:
+        stats = self._client.get_collection_stats(collection)
         return int(stats.get("row_count", 0))
 
     def clear(self) -> None:
         self._client.delete(collection_name=self._collection, filter="id != ''")
 
+    def _all_ids(self, collection: str) -> set[str]:
+        """列出集合里的全部主键。用于删除孤儿向量，所以要一次性取完、不能截断。"""
+        total = self._count_of(collection)
+        ids: set[str] = set()
+        page = 1024
+        offset = 0
+        while offset < total:
+            batch = self._client.query(
+                collection_name=collection,
+                filter="id != ''",
+                output_fields=["id"],
+                limit=page,
+                offset=offset,
+            )
+            rows = list(batch)
+            if not rows:
+                break
+            ids.update(str(r["id"]) for r in rows)
+            offset += len(rows)
+        return ids
+
+    def _prune(self, collection: str, keep: set[str]) -> int:
+        orphan = self._all_ids(collection) - keep
+        if orphan:
+            self._client.delete(collection_name=collection, ids=sorted(orphan))
+        return len(orphan)
+
     def rebuild(self, items: Sequence[VectorItem]) -> None:
-        """整体替换：集合维度不可改，换模型后只能删掉重建。"""
+        """整体替换全部向量。
+
+        两条路径，按风险分别处理：
+
+        - **维度不变**：原地 upsert 全部向量再删孤儿。全程不需要删集合，任何时刻都能检索；
+        - **维度变了**：Milvus 的集合维度不可改，只能换集合。先在 `__staging` 里写全并校验条数，
+          确认无误后才用 rename 做切换（rename 是元数据操作，不是"删了再建"），
+          被换下来的旧集合先叫 `__retired`，切换成功后立刻删除。中途失败时旧集合仍在，
+          或者至少在 retried/staging 里留着一份完整数据，`_recover()` 下次启动会自动还原。
+        """
         if not items:
             self.clear()
             return
+
         dim = len(items[0].vector)
-        self._client.drop_collection(self._collection)
+        if any(len(i.vector) != dim for i in items):
+            raise ValueError("待重建的向量维度不一致，已中止（索引未做任何改动）")
+        ids = {i.chunk_id for i in items}
+
+        if self.dim == dim and self._client.has_collection(self._collection):
+            self.upsert(items)
+            self._prune(self._collection, ids)
+            return
+
+        # 暂存 → 校验
+        self._drop_if_exists(self._staging)
+        try:
+            self._create_collection(self._staging, dim)
+            self._upsert_into(self._staging, items)
+            self._client.load_collection(self._staging)
+            got = self._count_of(self._staging)
+            if got != len(items):
+                raise RebuildError(
+                    f"暂存集合写入 {got} 条，期望 {len(items)} 条。正式索引未受影响，可直接重试。"
+                )
+        except Exception:
+            self._drop_if_exists(self._staging)
+            raise
+
+        # 切换：旧集合先改名让位，再把暂存改名顶上
+        self._drop_if_exists(self._retired)
+        had_final = self._client.has_collection(self._collection)
+        try:
+            if had_final:
+                self._client.rename_collection(
+                    old_name=self._collection, new_name=self._retired
+                )
+            self._client.rename_collection(old_name=self._staging, new_name=self._collection)
+        except Exception as exc:
+            # 尽力回滚：把旧集合改回正式名字，别让系统停在没有索引的状态
+            if self._client.has_collection(self._retired) and not self._client.has_collection(
+                self._collection
+            ):
+                self._client.rename_collection(
+                    old_name=self._retired, new_name=self._collection
+                )
+            raise RebuildError(
+                f"切换索引失败：{exc}。已回滚到上一版，检索可继续；"
+                "完整的新向量仍在暂存集合中，可重试 reindex。"
+            ) from exc
+
+        self._drop_if_exists(self._retired)
         self.dim = dim
-        self._ensure_collection(dim)
         self._load_collection()
-        self.upsert(items)
 
 
 def to_archive_row(item: VectorItem, model: str = "") -> tuple:

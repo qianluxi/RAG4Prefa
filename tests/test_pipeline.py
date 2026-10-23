@@ -70,3 +70,36 @@ def test_question_parsing_adds_scope(conn, settings: Settings, docx_file, store)
 
     explicit = ask.build_filter("广州项目 2023年以后的做法", Filter(projects=["其他"]), known)
     assert explicit.projects == ["其他"]  # 请求显式条件优先，不被自动解析覆盖
+
+
+async def test_switch_model_on_milvus_rebuilds_everything(
+    conn, settings: Settings, docx_file, store
+) -> None:
+    """在真正的向量库上验证换模型：维度不同 → 集合被整体替换，检索立刻可用。"""
+    from rag4prefa.ingest import reindex
+
+    class Dim8Embedder(FakeEmbedder):
+        model = "dim8-embedder"
+        dim = 8
+
+    ingest_file(
+        conn, store, FakeEmbedder(), settings, path=docx_file, project_name="课题甲", doc_year=2024
+    )
+    before = store.count()
+    assert store.dim == FakeEmbedder.dim
+
+    result = reindex(conn, store, Dim8Embedder(), settings)
+
+    assert result["dim"] == 8
+    assert store.dim == 8
+    assert store.count() == before
+    hits, _, _ = await ask.retrieve(
+        conn, store, Dim8Embedder(), settings, question="悬挑构件的预应力做法", filt=Filter()
+    )
+    assert hits, "换模型重建后必须能立刻检索"
+    assert {h.project_name for h in hits} == {"课题甲"}
+    # 换回旧模型应被拒绝：索引已经是 8 维、8 维模型的向量空间
+    with pytest.raises(Exception, match=r"维度|模型"):
+        await ask.retrieve(
+            conn, store, FakeEmbedder(), settings, question="悬挑", filt=Filter()
+        )
