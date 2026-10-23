@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from rag4prefa.chunking import build_chunks, contextual_text
+from rag4prefa.domain import Section, SectionKind
+from rag4prefa.tokens import estimate_tokens, split_by_tokens
+
+
+def _section(title: str, text: str, path: list[str], level: int = 2) -> Section:
+    return Section(
+        title=title,
+        kind=SectionKind.section if level == 2 else SectionKind.chapter,
+        level=level,
+        path=path,
+        text=text,
+    )
+
+
+def test_empty_sections_do_not_produce_chunks() -> None:
+    chunks = build_chunks([_section("空标题", "   ", [])], "doc", max_tokens=100, min_tokens=20)
+    assert chunks == []
+
+
+def test_long_section_is_split_within_budget() -> None:
+    text = "。".join(["悬挑构件需要控制挠度与裂缝宽度"] * 60) + "。"
+    chunks = build_chunks(
+        [_section("1.1 悬挑", text, ["第1章"])], "doc", max_tokens=100, min_tokens=20
+    )
+    assert len(chunks) > 1
+    assert all(c.token_count <= 100 for c in chunks)
+    assert all(c.chapter_path == ["第1章", "1.1 悬挑"] for c in chunks)
+
+
+def test_small_siblings_merge_within_same_parent() -> None:
+    sections = [
+        _section("1.1 甲", "短内容。", ["第1章"]),
+        _section("1.2 乙", "另一段短内容。", ["第1章"]),
+    ]
+    chunks = build_chunks(sections, "doc", max_tokens=200, min_tokens=50)
+    assert len(chunks) == 1
+    assert "甲 / 1.2 乙" in chunks[0].title  # 合并后标题保留双方，不丢信息
+
+
+def test_small_sections_do_not_merge_across_parents() -> None:
+    sections = [
+        _section("1.1 甲", "短内容。", ["第1章"]),
+        _section("2.1 乙", "另一段短内容。", ["第2章"]),
+    ]
+    chunks = build_chunks(sections, "doc", max_tokens=200, min_tokens=50)
+    assert len(chunks) == 2
+
+
+def test_chunk_ids_are_deterministic() -> None:
+    sections = [_section("1.1 甲", "内容。" * 20, ["第1章"])]
+    first = build_chunks(sections, "doc-a", max_tokens=100, min_tokens=20)
+    second = build_chunks(sections, "doc-a", max_tokens=100, min_tokens=20)
+    assert [c.id for c in first] == [c.id for c in second]
+    other = build_chunks(sections, "doc-b", max_tokens=100, min_tokens=20)
+    assert other[0].id != first[0].id
+
+
+def test_contextual_text_carries_path() -> None:
+    sections = [_section("1.1 悬挑", "正文。", ["第1章"])]
+    chunk = build_chunks(sections, "doc", max_tokens=100, min_tokens=10)[0]
+    assert contextual_text(chunk).startswith("第1章 > 1.1 悬挑")
+
+
+def test_split_by_tokens_respects_sentence_boundaries() -> None:
+    text = "第一句话。第二句话。第三句话。"
+    pieces = split_by_tokens(text, 6)
+    assert all(p.endswith("。") for p in pieces)
+    assert "".join(pieces) == text
+    assert sum(estimate_tokens(p) for p in pieces) >= estimate_tokens(text) - len(pieces)
