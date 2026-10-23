@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -100,6 +101,10 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         )
         _print(result)
         return 0
+    except ingest.ReindexError as exc:
+        # 这类错误需要人做决定（比如维度变了只能全量重建），直接给出可执行的下一步
+        print(f"reindex 未执行：{exc}", file=sys.stderr)
+        return 1
     finally:
         services.close()
 
@@ -108,14 +113,17 @@ def cmd_ask(args: argparse.Namespace) -> int:
     services = build_services()
     try:
         filt = Filter(projects=[args.project] if args.project else None)
-        hits, applied, timings = ask.search(
-            services.conn,
-            services.store,
-            services.require_embedder(),
-            services.settings,
-            question=args.question,
-            filt=filt,
-            top_k=args.top_k,
+        # ask.search 是 async：必须跑在事件循环里，否则拿到的是协程而不是结果
+        hits, applied, timings = asyncio.run(
+            ask.search(
+                services.conn,
+                services.store,
+                services.require_embedder(),
+                services.settings,
+                question=args.question,
+                filt=filt,
+                top_k=args.top_k,
+            )
         )
         _print(
             {
