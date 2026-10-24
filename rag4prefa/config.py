@@ -29,7 +29,11 @@ class Settings(BaseSettings):
     # 生成
     llm_base_url: str = "https://api-inference.modelscope.cn/v1"
     llm_api_key: str = ""
-    llm_model: str = "Qwen/Qwen3-Next-80B-A3B-Instruct"
+    # 魔搭的模型目录会下线旧 ID，写死一个名字迟早会收到
+    # "Model id : ... has no provider supported"。拿不准时先列一遍当前可调用的：
+    #   curl -s https://api-inference.modelscope.cn/v1/models
+    # 这个列表不需要鉴权，直接能看到该平台当前供哪些模型。
+    llm_model: str = "Qwen/Qwen3.5-35B-A3B"
     llm_temperature: float = 0.2
     llm_max_tokens: int = 2048
 
