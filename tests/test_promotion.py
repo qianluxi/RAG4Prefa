@@ -22,6 +22,7 @@ from rag4prefa import consistency, repo
 from rag4prefa.adapters.rerank import NoopReranker
 from rag4prefa.adapters.vectors import NumpyStore
 from rag4prefa.config import Settings
+from rag4prefa.credentials import UserCredentials
 from rag4prefa.domain import JobState
 from rag4prefa.ingest import ingest_batch, ingest_file
 from rag4prefa.services import Services
@@ -180,3 +181,54 @@ def test_a_failed_promotion_does_not_turn_an_indexed_job_into_a_failure(
 
     assert repo.get_job(conn, job_id).state is JobState.done
     assert repo.chunk_count(conn) > 0, "数据确实已经写进去了"
+
+
+class OkTarget:
+    """迁移目标：写入成功，只记下 id 集合，用来核对"根服务、后端、归档"三者。"""
+
+    name = "milvus"
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.dim = int(args[2]) if len(args) > 2 else 0
+        self.notes: list[str] = []
+        self._ids: set[str] = set()
+
+    def rebuild(self, items) -> None:  # type: ignore[override]
+        self._ids = {i.chunk_id for i in items}
+
+    def count(self) -> int:
+        return len(self._ids)
+
+    def ids(self) -> set[str]:
+        return set(self._ids)
+
+
+def test_promotion_through_a_request_view_updates_the_root_service(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    docx_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """迁移只能由根服务拥有。
+
+    请求级视图是 `dataclasses.replace()` 出来的临时对象，一次请求结束就扔。在它上面
+    迁移会出现一种很别扭的"成功"：Milvus 建好了、`meta` 也更新了，根服务却还在用
+    numpy，而根服务的 `fell_back` 仍是 True——下一个请求会再迁一遍。
+
+    触发条件也不苛刻：只带 `X-R4P-LLM-Model` 的请求同样会走到视图分支。
+    """
+    store = NumpyStore(conn, FakeEmbedder.dim)
+    _seed(conn, store, settings, docx_file)
+    services = _services(settings, conn, store)
+    view = services.for_credentials(UserCredentials("张三", llm_model="mock-chat"))
+    assert view is not services
+    monkeypatch.setattr("rag4prefa.services.MilvusStore", OkTarget)
+
+    assert view.maybe_promote() is True
+
+    assert services.store is not store, "根服务必须换成新后端，否则下一个请求还在查 numpy"
+    assert services.fell_back is False
+    assert services.owner is services, "根服务的 owner 就是自己"
+    assert view.owner is services, "视图必须指回根服务"
+    assert any("迁移到 Milvus" in n for n in services.notes), "/health 读的是根服务的 notes"
+    assert services.store.ids() == repo.archived_chunk_ids(conn)

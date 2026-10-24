@@ -19,6 +19,7 @@ from .adapters.vectors import (
     to_archive_row,
 )
 from .chunking import build_chunks, contextual_text
+from .concurrency import MaintenanceBusy, maintenance_lock
 from .config import Settings
 from .consistency import IndexMismatch
 from .domain import Chunk, JobState
@@ -56,6 +57,41 @@ def _doc_id(project_name: str, filename: str) -> str:
 
 
 def ingest_file(
+    conn: sqlite3.Connection,
+    store: VectorStore,
+    embedder: Embedder,
+    settings: Settings,
+    *,
+    path: Path,
+    project_name: str,
+    project_code: str = "",
+    doc_year: int | None = None,
+    force: bool = False,
+) -> FileOutcome:
+    """入库一个文件。真正干活的是 `_ingest_locked`，这里是维护锁的入口。
+
+    为什么分成两层：抢不到锁和"这份文件有问题"要说成两件事。前者是任务级拒绝
+    （别人正在重建索引），换一份文件、多试几次都一样；后者才是文件/网络的问题。
+    把它们混成同一个失败原因，用户会去检查一份没问题的文档。
+    """
+    try:
+        with maintenance_lock(conn, purpose=f"入库 {path.name}", timeout=0.0):
+            return _ingest_locked(
+                conn,
+                store,
+                embedder,
+                settings,
+                path=path,
+                project_name=project_name,
+                project_code=project_code,
+                doc_year=doc_year,
+                force=force,
+            )
+    except MaintenanceBusy as exc:
+        return FileOutcome(path.name, "failed", 0, 0, str(exc))
+
+
+def _ingest_locked(
     conn: sqlite3.Connection,
     store: VectorStore,
     embedder: Embedder,
@@ -287,7 +323,9 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
     1. **先证归档能当恢复源**：有正文就必须有归档向量，归档行必须带模型名，全库只有
        一套模型、一种维度，且每行向量的**实际字节长度**与声明的维度相符。不合格就抛错
        并**保留**未完成标记，别在这里反复重试；
-    2. 再从归档重建索引，并核对后端实际条数——"写进去了"要以条数为证；
+    2. 再从归档重建索引，核对后端实际条数**和实际 id 集合**——"写进去了"要以 id 为准。
+       条数相同只是必要条件：两个版本的条数可以一模一样，只有 chunk_id 不同（重建期间
+       有并发写入时就是这样），那种库能检索、只是检索的是另一批内容；
     3. 最后清掉孤儿归档行，并把归档对应的模型、维度连同 `index_state=ready` 在
        **同一个事务**里提交。
 
@@ -298,7 +336,16 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
     顺序同理不能反：**目标后端重建成功之前，归档一个字节都不许动**。numpy 后端的内存
     索引就是 `vectors` 表的缓存，先删孤儿行再失败，它的条数就和归档对不上了——一次
     "可选迁移失败"会把本来能用的后端变成不可检索。旧实现正是在这个位置先删后建。
+
+    整个过程持有维护锁：从"读归档快照"到"切完索引"之间不许有别的写入插进来。锁的
+    时间范围比函数体本身更早生效的只有调用方（例如 `reindex` 先算 embedding 再进来），
+    那种情况由外层锁负责。
     """
+    with maintenance_lock(conn, purpose="从归档重建索引", timeout=None):
+        return _rebuild_store_locked(conn, store)
+
+
+def _rebuild_store_locked(conn: sqlite3.Connection, store: VectorStore) -> int:
     # 只有仍有正文的行才算恢复源；孤儿行留着会让重建后的索引比事实表更大
     rows = repo.iter_archived_vectors(conn)
     models = {r["model"] for r in rows}
@@ -336,13 +383,7 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
 
     items = [from_archive_row(r) for r in rows]
     store.rebuild(items)
-
-    got = store.count()
-    if got != len(items):
-        raise ReindexError(
-            f"向量后端实际 {got} 条、归档 {len(items)} 条，恢复未完成，"
-            "重建标记保持原样。可直接重试 rebuild。"
-        )
+    _assert_backend_matches(store, {i.chunk_id for i in items}, "归档")
 
     # 到这里目标后端已经是新的一套，再清孤儿行就伤不到任何一方：
     # 归档里剩下的孤儿本来也不在 items 里，删掉只是让"归档 = 索引"成立。
@@ -351,6 +392,41 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
     dim = str(next(iter(dims), 0) or store.dim)
     repo.set_index_meta(conn, model=model, dim=dim, state=repo.INDEX_READY)
     return len(items)
+
+
+def _assert_backend_matches(
+    store: VectorStore, expected: set[str], source: str
+) -> None:
+    """核对后端里的 id 集合与本次应当写入的那一套完全一致。
+
+    为什么条数不够：重建期间若有并发写入，两边可以条数相同、chunk_id 不同。那种库
+    能检索、`health` 也看不出异常，只是检索到的是另一批内容。`consistency.verify_ids`
+    早就在做逐 id 比对，但它不在主路径上——恢复动作在宣布 `ready` 之前必须自己过一遍，
+    否则"恢复成功"的判据比日常校验还弱。
+    """
+    got = store.count()
+    if got != len(expected):
+        raise ReindexError(
+            f"向量后端实际 {got} 条、{source} {len(expected)} 条，恢复未完成，"
+            "重建标记保持原样。可直接重试 rebuild。"
+        )
+    try:
+        actual = store.ids()
+    except Exception as exc:  # 后端读不出主键时不能假设它写对了
+        raise ReindexError(
+            f"读不到向量后端的主键，无法确认恢复结果（{type(exc).__name__}: {exc}）；"
+            "重建标记保持原样。"
+        ) from exc
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ReindexError(
+            f"后端条数与{source}相同（{got} 条），但 id 集合不同："
+            f"缺 {len(missing)} 个、多 {len(extra)} 个"
+            f"（例如缺 {missing[:2]}、多 {extra[:2]}）。"
+            "这说明重建期间有别的写入改了索引，重建标记保持原样；"
+            "确认没有并发的入库/删除后再重试。"
+        )
 
 
 def _contextual_text(row: dict) -> str:
@@ -393,10 +469,18 @@ def _reindex_nothing(
             "索引与标记均未改动。"
         )
     # 片段真为空：归档里的行必然是孤儿，索引里也可能留着上一版的向量。
-    # 两者都清掉，才真的是"空得一致"。
-    removed = repo.delete_orphan_vectors(conn)
+    # 顺序与普通重建一致——**先清后端、确认它真的空了，再动归档**。
+    # 反过来的话，删完归档行、后端清理失败，就会停在"归档已改、索引还在"的中间态；
+    # 而这条路径未必带着 `rebuilding:*` 标记，事后无从判断。
     if store.count():
         store.rebuild([])
+    left = store.count()
+    if left:
+        raise ReindexError(
+            f"向量后端仍有 {left} 条残留向量，清空没有成功；归档与索引标记均未改动。"
+            "先处理后端（例如确认没有别的进程在用同一个集合），再重试 reindex。"
+        )
+    removed = repo.delete_orphan_vectors(conn)
     repo.set_index_state(conn, repo.INDEX_READY)
     return {
         "scope": scope,
@@ -407,6 +491,27 @@ def _reindex_nothing(
 
 
 def reindex(
+    conn: sqlite3.Connection,
+    store: VectorStore,
+    embedder: Embedder,
+    settings: Settings,
+    *,
+    project_name: str | None = None,
+) -> dict:
+    """按 SQLite 里的事实重新 embedding，并重建指定范围的向量索引（换模型后必做）。
+
+    **全程持有维护锁**，从"读片段快照"一直到"写完元数据"——因为中间那段 embedding
+    可能要跑几分钟。只锁写入的话，算完才发现事实表已经变了：那时条数可能仍然一样，
+    只有 chunk_id 不一样，`rebuild_store` 的条数校验发现不了。锁期间别的入库会被
+    直接拒绝（`MaintenanceBusy`），而不是排队等到一个说不清的失败。
+    """
+    with maintenance_lock(conn, purpose=f"重建索引（{project_name or '全量'}）", timeout=None):
+        return _reindex_locked(
+            conn, store, embedder, settings, project_name=project_name
+        )
+
+
+def _reindex_locked(
     conn: sqlite3.Connection,
     store: VectorStore,
     embedder: Embedder,
@@ -488,11 +593,20 @@ def reindex(
         raise
     if project_name:
         store.upsert(items)  # 局部：只覆盖本次范围内的 chunk_id
+        # 只核对"这次写进去的那些"确实在后端里：全量核对是 verify 的活，
+        # 局部重建没资格要求别的项目也一致。
+        missing = {i.chunk_id for i in items} - store.ids()
+        if missing:
+            raise ReindexError(
+                f"局部重建后有 {len(missing)} 条向量没有真正写进后端"
+                f"（例如 {sorted(missing)[:2]}），标记仍是 {marker}，可重跑同一个项目修复。"
+            )
     else:
         # 全量：先把索引整体换掉，再清没有任何正文的归档行——顺序不能反。
         # 先清的话，重建一旦失败，归档已经少了行而索引还停在旧的一套；numpy 后端
         # 的内存索引更是直接与表脱节，后面的修复动作反而更难判断起点。
         store.rebuild(items)
+        _assert_backend_matches(store, {i.chunk_id for i in items}, "本次重建")
         repo.delete_orphan_vectors(conn)
     # 全量重建重写了所有范围，一定能恢复 ready；局部重建只能抵消**同范围**的标记，
     # 若上一笔失败是全量的，状态要原样留着，否则会把全库的坑说成已经填了。

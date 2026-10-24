@@ -18,6 +18,7 @@ from .adapters.vectors import (
     NumpyStore,
     VectorStore,
 )
+from .concurrency import MaintenanceBusy, maintenance_lock
 from .config import Settings, get_settings
 from .consistency import collect_issues, inspect
 from .credentials import CredentialPool, UserCredentials
@@ -47,10 +48,19 @@ class Services:
     user_label: str | None = None
     # 视图不拥有连接：一次请求结束若能关掉全局 SQLite 连接，下一个请求就全崩
     owns_conn: bool = True
+    # 请求级视图指回根服务。后端指针（store / fell_back）只能由根服务改：
+    # 视图是 `replace()` 出来的临时对象，请求结束就扔，在它上面迁移等于"迁移成功、
+    # 根服务还在用旧后端"。见 `owner` 与 `maybe_promote`。
+    root: Services | None = None
 
     def __post_init__(self) -> None:
         if self.credentials is None:
             self.credentials = CredentialPool(self.settings, self.conn)
+
+    @property
+    def owner(self) -> Services:
+        """后端指针的所有者。视图返回根服务，根服务返回自己。"""
+        return self.root if self.root is not None else self
 
     def for_credentials(self, creds: UserCredentials | None) -> Services:
         """换上某个用户 Key 之后的视图，共享 conn / store / reranker。
@@ -69,6 +79,7 @@ class Services:
             notes=list(self.notes),
             user_label=creds.username,
             owns_conn=False,
+            root=self.owner,
         )
 
     @property
@@ -95,12 +106,30 @@ class Services:
 
         避免"先写进 numpy、下次启动换成 Milvus 却查不到数据"的静默不一致。
 
-        整个动作是**可选升级**，因此异常一律在这里截住。上传接口是在 `ingest_batch`
-        成功之后直接调它的：一次没接住的异常会把已经 done 的任务改写成 failed，
-        用户看到失败、数据其实已经写好了，还会照着"失败"去重导一遍。
+        三件事必须一起成立，历史上各错一次：
+
+        1. **只能由根服务执行**。请求级视图是 `replace()` 出来的临时对象，在它上面
+           迁移会让"迁移成功、根服务还在用旧后端"，而且根服务的 `fell_back` 仍是
+           True，下一个请求再迁一遍；
+        2. **整个过程持有维护锁**，和入库、重建互斥——迁移要把归档搬进新后端，
+           期间又有人写入，新后端拿到的就是过期快照；
+        3. **异常一律截住**。上传接口是在 `ingest_batch` 之后调它的，一次没接住的
+           异常会把已经 done 的任务改写成 failed，数据其实已经写好。
         """
+        owner = self.owner
+        if owner is not self:
+            return owner.maybe_promote()
         if not self.fell_back or self.settings.vector_backend != "auto":
             return False
+        try:
+            with maintenance_lock(self.conn, purpose="迁移到 Milvus", timeout=0.0):
+                return self._promote()
+        except MaintenanceBusy as exc:
+            # 有别的动作在改索引时不迁移：这次不是"失败"，是让路。下次入库还会再来。
+            self.notes.append(f"暂不迁移到 Milvus：{exc}")
+            return False
+
+    def _promote(self) -> bool:
         dim = (self.embedder.dim if self.embedder else 0) or self.index_dim or 0
         if not dim:
             return False

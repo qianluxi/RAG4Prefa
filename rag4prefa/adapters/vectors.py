@@ -10,12 +10,14 @@ import json
 import os
 import sqlite3
 from array import array
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
 
+from ..concurrency import sqlite_write
 from ..domain import Filter
 
 
@@ -110,6 +112,14 @@ class NumpyStore:
     # ── 内部 ────────────────────────────────────────
 
     def _load(self) -> None:
+        """按归档重建内存矩阵。
+
+        **不在构造阶段拒绝坏数据**：这个后端在 `build_services()` 里就被创建，
+        构造即抛错意味着归档一旦损坏，服务起不来、`reindex` 也进不去——而那条命令
+        正是唯一的修复入口（它按正文重算向量、整表重写，根本不需要读旧索引）。
+        所以这里只跳过组不成的行、把原因记进 notes，让"能不能检索"由
+        `consistency` 统一判定：跳过的行会让后端条数少于归档，那就是阻断项。
+        """
         self._ids = []
         self._projects = []
         self._codes = []
@@ -120,31 +130,40 @@ class NumpyStore:
         ).fetchall()
         if not rows:
             return
-        self._ids = [r["chunk_id"] for r in rows]
-        self._projects = [r["project_name"] for r in rows]
-        self._codes = [r["project_code"] for r in rows]
-        self._years = [r["doc_year"] for r in rows]
-        dims = {int(r["dim"]) for r in rows}
-        if len(dims) > 1:
-            # 归档里混了两种维度，vstack 会直接崩在一个看不懂的错误上
-            raise RebuildError(
-                f"归档里混有多种向量维度 {sorted(dims)}，无法组成一个矩阵。"
-                "请执行 `python -m rag4prefa reindex` 全量重建。"
+
+        # dim 字段是声明，float32 字节数才是事实。两者对不上的行组不进矩阵，
+        # 硬拼的话 vstack 会抛一句既不说是哪行、也不说怎么办的 dimensions must match。
+        bad = {
+            r["chunk_id"]
+            for r in rows
+            if int(r["dim"] or 0) <= 0 or len(r["vec"]) != int(r["dim"]) * 4
+        }
+        usable = [r for r in rows if r["chunk_id"] not in bad]
+        if not usable:
+            self.notes.append(
+                f"归档里 {len(rows)} 条向量的字节长度与声明维度都不符，索引为空；"
+                "执行 `python -m rag4prefa reindex` 从原文重新生成向量"
             )
-        # dim 字段是声明，float32 字节数才是事实。两者对不上时 vstack 会抛
-        # "all the input array dimensions ... must match"——那句话既不说是哪一行、
-        # 也不说该怎么办。先自己判一遍，把损坏的行点出来。
-        broken = [r["chunk_id"] for r in rows if len(r["vec"]) != int(r["dim"] or 0) * 4]
-        if broken:
-            raise RebuildError(
-                f"归档里有 {len(broken)} 条向量的字节长度与声明的维度对不上"
-                f"（例如 {broken[0]}），这份归档已被写坏，无法组成索引。"
-                "请执行 `python -m rag4prefa reindex` 从原文重新生成向量。"
+            return
+
+        # 声明维度本身不一致（历史库混过多套）时，只能取条数最多的那一套：
+        # 剩下的照样跳过并如实说明，不假装它们在同一套向量空间里。
+        counts = Counter(int(r["dim"]) for r in usable)
+        dim = counts.most_common(1)[0][0]
+        kept = [r for r in usable if int(r["dim"]) == dim]
+        skipped = len(rows) - len(kept)
+        if skipped:
+            self.notes.append(
+                f"归档里有 {skipped} 条向量与主流维度 {dim} 不符（或字节长度与声明维度不符），"
+                "已跳过；索引因此少于归档，检索会被拒绝，执行 `python -m rag4prefa reindex` 修复"
             )
-        dim = dims.pop() if dims else 0
-        if dim:
-            self.dim = dim
-        self._mat = np.vstack([np.frombuffer(r["vec"], dtype=np.float32) for r in rows])
+
+        self._ids = [r["chunk_id"] for r in kept]
+        self._projects = [r["project_name"] for r in kept]
+        self._codes = [r["project_code"] for r in kept]
+        self._years = [r["doc_year"] for r in kept]
+        self.dim = dim
+        self._mat = np.vstack([np.frombuffer(r["vec"], dtype=np.float32) for r in kept])
 
     def _rebuild_slice(self) -> None:
         self._load()
@@ -175,16 +194,18 @@ class NumpyStore:
                 ),
             )
             new_rows.append((item, arr))
-        self._conn.commit()
-        self._rebuild_slice()
+        with sqlite_write():
+            self._conn.commit()
+            self._rebuild_slice()
 
     def delete(self, chunk_ids: Sequence[str]) -> None:
         if not chunk_ids:
             return
         marks = ",".join("?" * len(chunk_ids))
-        self._conn.execute(f"DELETE FROM vectors WHERE chunk_id IN ({marks})", list(chunk_ids))
-        self._conn.commit()
-        self._rebuild_slice()
+        with sqlite_write():
+            self._conn.execute(f"DELETE FROM vectors WHERE chunk_id IN ({marks})", list(chunk_ids))
+            self._conn.commit()
+            self._rebuild_slice()
 
     def search(
         self, vector: list[float], *, limit: int, filt: Filter | None = None
@@ -219,9 +240,10 @@ class NumpyStore:
         return set(self._ids)
 
     def clear(self) -> None:
-        self._conn.execute("DELETE FROM vectors")
-        self._conn.commit()
-        self._load()
+        with sqlite_write():
+            self._conn.execute("DELETE FROM vectors")
+            self._conn.commit()
+            self._load()
 
     def rebuild(self, items: Sequence[VectorItem]) -> None:
         """整体替换全部向量，允许维度变化（换模型后用）。
@@ -246,16 +268,17 @@ class NumpyStore:
                     array("f", arr.tolist()).tobytes(),
                 )
             )
-        with self._conn:
-            self._conn.execute("DELETE FROM vectors")
-            if rows:
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO vectors (chunk_id, project_name, project_code,"
-                    " doc_year, dim, model, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    rows,
-                )
-        self.dim = dim
-        self._load()
+        with sqlite_write():
+            with self._conn:
+                self._conn.execute("DELETE FROM vectors")
+                if rows:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO vectors (chunk_id, project_name, project_code,"
+                        " doc_year, dim, model, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        rows,
+                    )
+            self.dim = dim
+            self._load()
 
 
 class MilvusStore:

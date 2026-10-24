@@ -64,6 +64,7 @@ class IndexState:
     missing: int = 0  # 有正文但没有归档向量
     orphan: int = 0  # 有归档向量但没有正文
     unlabeled: int = 0  # model 为空的历史行
+    malformed: int = 0  # 声明维度与 vec 实际字节数对不上的行
     store_count: int | None = None  # 后端实际条数（None 表示没查）
     pending: str | None = None  # 上次索引切换未完成时的标记（meta.index_state）
 
@@ -110,6 +111,13 @@ class IndexState:
         if len(self.dims) > 1:
             listed = "、".join(str(d) for d in sorted(self.dims))
             problems.append(f"归档里混有多种向量维度（{listed}）")
+        if self.malformed:
+            # 这条挡的是一种"所有数字都对得上"的损坏：条数、模型名、dim 字段全都一致，
+            # 只有 vec 的字节数不对。numpy 后端组不出矩阵，Milvus 侧则会把坏向量当好的。
+            problems.append(
+                f"归档里有 {self.malformed} 条向量的字节长度与声明的维度对不上（归档已损坏），"
+                "执行 `python -m rag4prefa reindex` 从原文重新生成向量"
+            )
         if self.model and self.known_models and self.model not in self.known_models:
             actual = "、".join(sorted(self.known_models))
             problems.append(
@@ -159,6 +167,7 @@ def inspect(conn: sqlite3.Connection, *, store_count: int | None = None) -> Inde
         missing=repo.missing_vector_count(conn),
         orphan=repo.orphan_vector_count(conn),
         unlabeled=repo.unlabeled_vector_count(conn),
+        malformed=repo.malformed_vector_count(conn),
         store_count=store_count,
         pending=None if state == repo.INDEX_READY else state,
     )

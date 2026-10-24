@@ -13,9 +13,10 @@ from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import admin, ask, consistency, ingest, repo
+from . import admin, ask, concurrency, consistency, ingest, repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
+from .concurrency import MaintenanceBusy
 from .consistency import IndexMismatch
 from .credentials import (
     LLM_CHOICES,
@@ -98,6 +99,16 @@ def create_app(services: Services | None = None) -> FastAPI:
         app.state.services.close()
 
     app = FastAPI(title="RAG4Prefa", version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(MaintenanceBusy)
+    def _maintenance_busy(_: Request, exc: MaintenanceBusy) -> JSONResponse:
+        """维护动作互斥：抢不到锁不是服务器坏了，是"现在不行"。
+
+        用 409 而不是 500：前端要能区分"稍后重试"和"真的出错了"，否则用户会去
+        翻日志找一个根本不存在的 bug。
+        """
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
 
     def svc(request: Request) -> Services:
         """每个请求都按请求头换一次凭据。
@@ -284,6 +295,13 @@ def create_app(services: Services | None = None) -> FastAPI:
             services.require_embedder()
         except EmbeddingError as exc:
             raise HTTPException(503, str(exc)) from exc
+        # 重建/另一个入库正在跑时立刻拒绝，而不是收下文件后让任务在后台失败：
+        # 用户至少知道"该等一会儿"，而不是看到一条迟到的 failed。
+        busy = concurrency.is_busy(services.conn)
+        if busy:
+            raise HTTPException(
+                503, f"正在执行其他维护动作（{busy}），暂时不能入库，请稍后重试。"
+            )
         target = services.settings.upload_dir / _safe_name(project_name)
         target.mkdir(parents=True, exist_ok=True)
 
@@ -308,11 +326,15 @@ def create_app(services: Services | None = None) -> FastAPI:
         doc_year = year or (int(started_on[:4]) if started_on[:4].isdigit() else None)
 
         async def run() -> None:
+            # 后端指针取根服务**此刻**的值：本视图是请求进来到的瞬间拍的快照，
+            # 期间根服务可能已经迁到 Milvus。继续往视图里的旧 numpy 写，就成了
+            # "归档在 A、根服务查 B"。Key 仍然按这个请求的凭据走。
+            root = services.owner
             try:
                 await asyncio.to_thread(
                     ingest.ingest_batch,
-                    services.conn,
-                    services.store,
+                    root.conn,
+                    root.store,
                     services.require_embedder(),
                     services.settings,
                     job_id=job_id,
@@ -321,7 +343,9 @@ def create_app(services: Services | None = None) -> FastAPI:
                     project_code=code,
                     doc_year=doc_year,
                 )
-                services.maybe_promote()
+                # 迁移只能由根服务执行（`maybe_promote` 内部会转交），
+                # 在视图上迁移等于"迁完了根服务还不知道"。
+                root.maybe_promote()
             except Exception as exc:
                 repo.update_job(
                     services.conn,

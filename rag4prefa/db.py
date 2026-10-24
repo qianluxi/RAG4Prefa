@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .concurrency import sqlite_write
+
 SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -121,9 +123,17 @@ def init_db(db_path: Path) -> None:
 
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    """一个写事务。
+
+    **必须串行**：整进程共用一条连接，`check_same_thread=False` 只让它"能用"，不保证
+    "能交错"。两个线程同时开事务时，先到的那个 `COMMIT` 会把另一个还没写完的事务一起
+    提交，回滚同样会互相踩——这类问题的表现是"数据偶尔少几条"，最难复现。
+    锁在 `concurrency`，和 NumpyStore 的直写共用同一把。
+    """
+    with sqlite_write():
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise

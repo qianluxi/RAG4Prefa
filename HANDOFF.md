@@ -3,13 +3,13 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-24 23:10
-**交接时状态**：可运行、**183 项离线测试全绿**；真实厂商 API 已端到端验证
+**交接时间**：2026-10-24 23:55
+**交接时状态**：可运行、**192 项离线测试全绿**；真实厂商 API 已端到端验证
 （embedding 走硅基流动国际站 `Qwen/Qwen3-Embedding-0.6B`、LLM 走魔搭 `Qwen/Qwen3.5-35B-A3B`，
 `POST /api/credentials/verify` 两项均通，`dim=1024` 与服务端配置一致）。
-第十一轮修三处：可选迁移到 Milvus 失败时不得污染源后端与归档；空库上的未完成重建标记
-不再被"空"抵消；从归档恢复要交叉验证**实际字节长度**与声明维度。
-动手前请先读第 3 节的「索引不变量」，那十二条是这批代码存在的理由。
+第十二轮补**并发协调**：入库、全量重建、后端切换、删项目现在共用一把跨进程维护锁；
+恢复验收从"条数相等"升级为"id 集合相等"；迁移只能由根服务执行；归档损坏不再阻断启动。
+动手前请先读第 3 节的「索引不变量」，那十五条是这批代码存在的理由。
 
 ---
 
@@ -43,7 +43,7 @@
 
 ```bash
 cd "F:/project/课题/RAG4Prefa"
-./.venv/Scripts/python.exe -m pytest -q          # 期望：183 passed
+./.venv/Scripts/python.exe -m pytest -q          # 期望：192 passed
 ./.venv/Scripts/python.exe -m ruff check rag4prefa tests scripts   # 期望：All checks passed
 ./.venv/Scripts/python.exe -m rag4prefa doctor   # 看后端、维度、缺哪些凭据
 ./.venv/Scripts/python.exe -m rag4prefa verify   # 逐 id 核对片段/归档/索引（空库也返回 0）
@@ -51,31 +51,32 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（5 025 行 Python + 731 行单页 HTML + 3 967 行测试）
+## 3. 代码地图（5 520 行 Python + 731 行单页 HTML + 4 367 行测试）
 
 ```
 rag4prefa/
 ├── config.py      81    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读
 ├── domain.py     122    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
 ├── db.py         129    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
-├── repo.py       767    **全部 SQL 都在这里**，没有别处写 SQL
-├── consistency.py 315   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
-├── ingest.py     555    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
+├── repo.py       780    **全部 SQL 都在这里**，没有别处写 SQL
+├── consistency.py 324   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
+├── concurrency.py 266   **写入协调**：维护锁（进程内 + 操作系统文件锁）、写事务串行
+├── ingest.py     669    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
 ├── chunking.py    90+   按标题树切块；chunk_id 内容寻址（同 id 必同正文）
 ├── tokens.py      51    中英混排的 token 估算（非真实 tokenizer）
 ├── ask.py        186    混合召回 → RRF 融合 → 可选重排 → 流式生成
 ├── filters.py    103    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     38    系统提示词与引用格式
 ├── admin.py       64    项目/文档的查询与级联删除
-├── services.py   267    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── services.py   296    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
 ├── credentials.py 363   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
-├── api.py        509    FastAPI 路由（只做协议转换，不含业务逻辑）
+├── api.py        533    FastAPI 路由（只做协议转换，不含业务逻辑）
 ├── cli.py        290    init / serve / doctor / ingest / reindex / rebuild / ask / projects / verify
 └── adapters/     990+   embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
 ```
 
 前端只有一个文件 `rag4prefa/web/index.html`（731 行，原生 JS，无构建步骤）。
-`tests/` 183 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+`tests/` 192 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -159,6 +160,44 @@ rag4prefa/
       弄成不可检索（第十一轮修正，旧实现正是先删后建）；
     - 捕获范围是 `Exception`，不是 `ReindexError`/`RebuildError` 白名单。pymilvus 在
       造集合、写向量、加载集合、文件被占用时抛的是它自己的异常，一样只该降级。
+
+13. **改事实或改索引的动作必须互斥。** `ingest` / `reindex` / `rebuild` / 后端迁移 /
+    删项目共用一把**维护锁**（`concurrency.maintenance_lock`）。粒度是"一次动作"，
+    不是一条 SQL：
+    - `reindex` **从读片段快照到写完元数据全程独占**，中间那段 embedding 跑几分钟也算。
+      只锁写入的话，算完才发现事实表已经变了——那时条数可能仍然一样，只有 chunk_id
+      不一样，条数校验一条都发现不了；
+    - 跨进程：`uvicorn` 与 `python -m rag4prefa reindex` 是两个进程，所以用**操作系统
+      文件锁**（Windows `msvcrt.locking` / POSIX `flock`）。进程被杀时内核自动释放，
+      不会留下需要人工清理的锁文件；占锁者写成旁边的 `maintenance.lock.holder`，
+      拒绝时能说出"在等哪个动作、pid 多少、从几点开始"；
+    - 抢不到锁有两种语义，调用方按场景选：`timeout=0` 立刻抛 `MaintenanceBusy`
+      （API → 503/409，用户看到"稍后重试"而不是一个迟到的 failed），`timeout=None`
+      排队（CLI 维护命令）；
+    - 同一线程可重入（`ingest_batch`→`ingest_file`、`maybe_promote`→`rebuild_store`
+      都是嵌套的）。重入深度必须记在**线程**上，记在锁对象实例上等于没有可重入——
+      这条真的把线程锁死过一次。
+    - 另外，**写事务本身也要串行**（`db.transaction` 与 `NumpyStore` 直写共用一把
+      `RLock`）：整进程共用一条 SQLite 连接，`check_same_thread=False` 只让它"能用"。
+      读不加锁——共享连接上的读可能看到一次尚未提交的中间态，但写入是串行的，
+      最坏是读到一份马上要回滚的数据，不会写坏；要做到读隔离得改成每工作单元一条
+      连接，属于后续阶段。
+
+14. **恢复验收看 id 集合，条数只是必要条件。** `rebuild_store` 与全量 `reindex` 在
+    宣布 `ready` 之前都要 `store.ids()` == 目标 id 集合（`_assert_backend_matches`）。
+    两个版本的条数可以一模一样、id 完全不同（重建期间有并发写入时就是这样），那种库
+    能检索、`health` 也看不出异常。`verify_ids` 早就在做这件事，但它不在主路径上——
+    恢复动作的判据不能比日常校验还弱。
+
+15. **后端指针归根服务，坏归档不许阻断启动。**
+    - `for_credentials()` 生成的是**请求级视图**，它只是快照；`store` / `fell_back`
+      只能由 `services.owner`（根服务）改。在视图上迁移会出现"Milvus 建好了、meta 也
+      更新了、根服务还在查 numpy"的成功假象，而且根服务 `fell_back` 仍是 True，
+      下个请求再迁一遍。
+    - `NumpyStore` 的构造阶段**不因归档损坏而抛错**：它在 `build_services()` 里就被
+      创建，构造即失败等于归档一坏服务起不来、`reindex` 也进不去——而那条命令正是
+      唯一修复入口（按正文重算、整表重写，不需要读旧索引）。坏行只跳过并记 notes，
+      阻断交给 `consistency`（`IndexState.malformed`）。
 
 ### 请求链路（`/api/chat`）
 
@@ -626,6 +665,41 @@ ruff check                   → All checks passed
 教训（第十一轮）：**可选项的失败路径要和主路径一样明确"谁没被改动"。**
 "迁移是可选的"只是说它失败不该报错，不表示它可以先动共享数据再失败——
 对 numpy 而言，`vectors` 表就是它的索引本体，删一行就是删它的索引。
+
+第十二轮（2026-10-24 23:50）：基线 `06b5e19`。这轮是**架构级**的，前几轮都在补单次
+调用的异常边界，这一轮补的是"两件事同时发生"。
+
+```
+pytest -q                    → 192 passed（新增 9 项：6 项互斥、1 项 id 集合、1 项空库顺序、1 项根服务归属）
+ruff check                   → All checks passed
+跨进程烟测（真起一个 Python 进程持锁）：
+  子进程持锁                    → 主进程 is_busy 报出「跨进程重建，pid 12496，自 … 起」
+  主进程 timeout=0              → MaintenanceBusy（错误里写清在等谁）
+  主进程 timeout=30             → 排队 4.0s，子进程退出后立刻拿到
+  子进程正常退出                → holder 说明文件已清理，锁自动释放
+```
+
+1. **重建与入库并发（P1）。** `reindex` 的执行顺序是"读快照 → 算 embedding（几分钟）
+   → 置标记 → 写归档 → 换索引"。前两步期间新入库照跑，而入库只在入口检查一次一致性；
+   重建算完拿着旧快照写回去，条数可能仍然对得上、id 已经不一样。现在 `reindex`
+   全程持有维护锁，入库抢不到锁就明确失败。
+2. **两个上传任务同时跑、其中一个触发后端切换（P1）。** 根服务换到 Milvus 之后，
+   另一个任务还握着旧的 numpy 对象继续写。现在上传任务在启动时取**根服务当前**的
+   后端；迁移本身也在维护锁内，且只由根服务执行。
+3. **共享连接没有写串行（P1 附带）。** `check_same_thread=False` 只解决"能不能用"，
+   两个线程的事务可以互相 `COMMIT`/回滚。现在所有写事务经同一把 `RLock`。
+4. **请求级视图执行迁移（P2）。** 视图是 `replace()` 出来的临时对象，`store` 与
+   `fell_back` 改了也留不下。现在视图指回 `root`，`maybe_promote()` 转交给根服务。
+5. **空库重建先删归档再清后端（P2）。** 后端清空失败就停在"归档已改、索引还在"。
+   顺序改成先确认后端空了、再删归档。
+6. **恢复只核对条数（P2）。** 补 `store.ids()` 与目标 id 集合的比对。
+7. **坏归档导致 `reindex` 起不来（P2）。** `NumpyStore` 构造阶段不再抛错，坏行跳过并
+   记账；`consistency` 新增 `malformed` 阻断项，指向"从原文重新生成向量"。
+
+教训（第十二轮）：**"每一步都对"不等于"同时发生也对"。**
+前十一轮把单个动作的失败路径修得差不多了，但两个动作各自成功、结果仍然是错的库。
+互斥不是性能问题，是正确性问题——所以抢不到锁要说"稍后重试"，而不是排队等到一个
+真正的失败；锁的粒度也必须覆盖"算"的那段时间，不能只覆盖"写"的那一下。
 
 
 第四轮（2026-10-23 22:10）的冒烟记录仍然有效：

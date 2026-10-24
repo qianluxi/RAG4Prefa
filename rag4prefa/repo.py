@@ -463,6 +463,19 @@ def unlabeled_vector_count(conn: sqlite3.Connection) -> int:
     return int(row["c"])
 
 
+def malformed_vector_count(conn: sqlite3.Connection) -> int:
+    """声明维度与 float32 字节数对不上的归档行数。
+
+    这是唯一一种"条数、模型、维度三项全对得上、却组不出索引"的损坏：`dim` 写 1024，
+    `vec` 里只有 768 个浮点。SQLite 的 `length()` 对 BLOB 返回字节数，正好用来核对
+    `dim * 4`——只看 `dim` 字段是查不出来的。
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM vectors WHERE dim <= 0 OR LENGTH(vec) != dim * 4"
+    ).fetchone()
+    return int(row["c"])
+
+
 def all_chunk_ids(conn: sqlite3.Connection) -> set[str]:
     return {r["id"] for r in conn.execute("SELECT id FROM chunks")}
 

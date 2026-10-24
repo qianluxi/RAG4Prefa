@@ -16,12 +16,7 @@ from pathlib import Path
 import pytest
 
 from rag4prefa import consistency, repo
-from rag4prefa.adapters.vectors import (
-    NumpyStore,
-    RebuildError,
-    VectorItem,
-    to_archive_row,
-)
+from rag4prefa.adapters.vectors import NumpyStore, VectorItem, to_archive_row
 from rag4prefa.config import Settings
 from rag4prefa.domain import Filter
 from rag4prefa.ingest import ReindexError, ingest_file, rebuild_store, reindex
@@ -606,12 +601,17 @@ def test_rebuild_store_rejects_vectors_shorter_than_their_declared_dim(
     assert repo.vector_stats(conn) == before, "被拒绝时不该改动归档"
 
 
-def test_a_corrupt_archive_fails_with_a_readable_message_not_a_numpy_traceback(
+def test_a_corrupt_archive_does_not_block_startup_and_is_repairable(
     conn: sqlite3.Connection, settings: Settings, docx_file: Path
 ) -> None:
-    """字节长度坏掉时连 numpy 都拼不出矩阵；报错要指向"从原文重新生成"。"""
+    """字节长度坏掉时不能"连修复入口都进不去"。
+
+    numpy 后端在 `build_services()` 里就被创建。若构造阶段直接抛错，归档一坏服务就起不来，
+    `reindex`（唯一的修复入口，它按正文重算、整表重写，根本不需要读旧索引）也进不去。
+    所以构造阶段只跳过组不成的行并说明原因，判断"能不能检索"交给一致性检查。
+    """
     store = _store(conn)
-    _seed(conn, store, settings, docx_file)
+    total = _seed(conn, store, settings, docx_file)
     victim = sorted(repo.archived_chunk_ids(conn))[0]
     conn.execute(
         "UPDATE vectors SET vec = ? WHERE chunk_id = ?",
@@ -619,8 +619,22 @@ def test_a_corrupt_archive_fails_with_a_readable_message_not_a_numpy_traceback(
     )
     conn.commit()
 
-    with pytest.raises(RebuildError, match="字节长度"):
-        _store(conn)
+    broken = _store(conn)  # 不抛异常
+    assert broken.count() == total - 1, "坏行被跳过，条数因此少于归档"
+    assert any("字节长度" in n for n in broken.notes), "跳过的原因必须说出来"
+    assert broken.search(FakeEmbedder().embed_one("悬挑"), limit=5), "剩下的向量仍可检索"
+
+    # 一致性检查必须同时报"条数不符"和"归档损坏"，且拒绝检索
+    state = consistency.inspect(conn, store_count=broken.count())
+    assert state.malformed == 1
+    assert any("字节长度" in p for p in state.blockers)
+    with pytest.raises(consistency.IndexMismatch):
+        _query(conn, broken)
+
+    # 修复入口要能走通：reindex 按正文重算，整表重写
+    reindex(conn, broken, FakeEmbedder(), settings)
+    assert repo.malformed_vector_count(conn) == 0
+    _query(conn, broken)
 
 
 def test_ingest_is_refused_while_a_rebuild_is_pending(
@@ -639,3 +653,59 @@ def test_ingest_is_refused_while_a_rebuild_is_pending(
     assert "重建索引没有完成" in (outcome.error or "")
     assert repo.get_project(conn, "丙项目") is None, "被拒绝时不该留下空项目"
 
+
+
+def test_empty_reindex_clears_the_backend_before_touching_the_archive(
+    conn: sqlite3.Connection, settings: Settings
+) -> None:
+    """片段为空时的清理也必须"先后端、后归档"。
+
+    反过来的话，删完归档行、后端清空失败，就停在"归档已改、索引还在"的中间态；
+    这条路径未必带着 `rebuilding:*` 标记，事后没有任何线索能判断发生过什么。
+    """
+    repo.archive_vectors(
+        conn,
+        [
+            to_archive_row(
+                VectorItem(
+                    "孤儿", [0.1] * FakeEmbedder.dim, "甲项目", "", 2024, "fake-embedder"
+                )
+            )
+        ],
+    )
+    store = _store(conn)
+    assert store.count() == 1
+    repo.set_index_state(conn, "rebuilding:*")
+
+    class FailingClearStore(NumpyStore):
+        def rebuild(self, items) -> None:  # type: ignore[override]
+            raise RuntimeError("清空后端失败")
+
+    with pytest.raises(RuntimeError):
+        reindex(conn, FailingClearStore(conn, FakeEmbedder.dim), FakeEmbedder(), settings)
+
+    assert repo.vector_stats(conn)["count"] == 1, "后端没清干净之前不许删归档行"
+    assert repo.get_index_state(conn) == "rebuilding:*"
+
+
+def test_rebuild_refuses_a_backend_with_the_same_count_but_a_different_id_set(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """条数相同不算恢复完成。
+
+    两个版本的条数可以一模一样，只有 chunk_id 不同——重建期间有并发写入时就是这样。
+    那种库能检索、`health` 也看不出异常，只是检索到的是另一批内容。
+    """
+    store = _store(conn)
+    total = _seed(conn, store, settings, docx_file)
+    repo.set_index_state(conn, "rebuilding:*")
+
+    class ForeignIdsStore(NumpyStore):
+        def ids(self) -> set[str]:  # type: ignore[override]
+            return {f"别的-{i}" for i in range(len(self._ids))}
+
+    with pytest.raises(ReindexError, match="id 集合"):
+        rebuild_store(conn, ForeignIdsStore(conn, FakeEmbedder.dim))
+
+    assert repo.vector_stats(conn)["count"] == total, "被拒绝时不该改动归档"
+    assert repo.get_index_state(conn) == "rebuilding:*", "恢复没成功就留着标记"

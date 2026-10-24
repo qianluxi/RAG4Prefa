@@ -8,6 +8,7 @@ import sqlite3
 from . import repo
 from .adapters.llm import LLM
 from .adapters.vectors import VectorStore
+from .concurrency import maintenance_lock
 from .domain import DocumentInfo, Hit, ProjectInfo
 from .prompts import SYSTEM_SUMMARY, build_summary_prompt
 
@@ -57,8 +58,14 @@ def summarize_project(
 
 
 def delete_project(conn: sqlite3.Connection, store: VectorStore, name: str) -> dict:
-    if not repo.get_project(conn, name):
-        return {"deleted": False, "reason": "项目不存在"}
-    chunk_ids = repo.delete_project(conn, name)
-    store.delete(chunk_ids)
-    return {"deleted": True, "chunks": len(chunk_ids)}
+    """删项目：事实与索引一起删，所以和入库/重建是同一类动作，必须互斥。
+
+    不互斥的话，一次重建能在"片段已删、向量还在"的中间态读快照，算完再写回去；
+    条数可能仍然对得上，id 却对不上。
+    """
+    with maintenance_lock(conn, purpose=f"删除项目 {name}", timeout=0.0):
+        if not repo.get_project(conn, name):
+            return {"deleted": False, "reason": "项目不存在"}
+        chunk_ids = repo.delete_project(conn, name)
+        store.delete(chunk_ids)
+        return {"deleted": True, "chunks": len(chunk_ids)}
