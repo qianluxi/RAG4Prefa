@@ -116,3 +116,26 @@ class Embedder:
 
     def embed_one(self, text: str) -> list[float]:
         return self.embed([text])[0]
+
+    def probe(self, text: str = "凭据校验") -> int:
+        """最小代价试一次 Key 是否可用，返回维度。
+
+        刻意不走 `_call` 的退避重试：校验 Key 时错一次要等 1+2+4 秒才报错，
+        用户会以为按钮卡住了。也不写 `embed_cache`——校验不该污染缓存。
+        """
+        resp = self._client.embeddings.create(model=self._model, input=[text])
+        vectors = [item.embedding for item in resp.data]
+        if not vectors:
+            raise EmbeddingError("embedding 服务返回了空结果")
+        dim = len(vectors[0])
+        if self._dim and dim != self._dim:
+            raise EmbeddingError(
+                f"向量维度不一致：服务端按 {self._dim} 维建库，这把 Key 对应模型返回 {dim} 维。"
+                "换模型必须全量 reindex，不能靠换 Key 绕过。"
+            )
+        self._dim = dim
+        return dim
+
+    def close(self) -> None:
+        """释放底层连接。凭据池淘汰条目时调用。"""
+        self._client.close()

@@ -4,7 +4,7 @@
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
 **交接时间**：2026-10-23 22:10
-**交接时状态**：可运行、115 项离线测试全绿；**代码层的真实链路已用本地假 OpenAI 服务跑通，但真实厂商 API 尚未验证**——见第 7 节 P0-1。
+**交接时状态**：可运行、134 项离线测试全绿；**代码层的真实链路已用本地假 OpenAI 服务跑通，但真实厂商 API 尚未验证**——见第 7 节 P0-1。
 第四轮修复的重点不是加功能，而是让**不变量真正约束运行路径**：一致性检查从"能报告"变成"能阻断"，
 文档切换与全量重建改成"准备完整新版 → 校验 → 再切换"，并顺带查出一个 Windows 平台级限制（见第 6 节第 9 条）。
 动手前请先读第 3 节的「索引不变量」，那八条是这批代码存在的理由。
@@ -41,7 +41,7 @@
 
 ```bash
 cd "F:/project/课题/RAG4Prefa"
-./.venv/Scripts/python.exe -m pytest -q          # 期望：115 passed
+./.venv/Scripts/python.exe -m pytest -q          # 期望：134 passed
 ./.venv/Scripts/python.exe -m ruff check rag4prefa tests scripts   # 期望：All checks passed
 ./.venv/Scripts/python.exe -m rag4prefa doctor   # 看后端、维度、缺哪些凭据
 ./.venv/Scripts/python.exe -m rag4prefa verify   # 逐 id 核对片段/归档/索引（空库也返回 0）
@@ -49,7 +49,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（3 954 行 Python + 443 行单页 HTML + 2 400+ 行测试）
+## 3. 代码地图（4 326 行 Python + 670 行单页 HTML + 2 830 行测试）
 
 ```
 rag4prefa/
@@ -65,15 +65,18 @@ rag4prefa/
 ├── filters.py    103    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     38    系统提示词与引用格式
 ├── admin.py       64    项目/文档的查询与级联删除
-├── services.py   190+   组件装配；Milvus 不可用时回退 numpy，拿到维度后自动迁回
-├── api.py        258    FastAPI 路由（只做协议转换，不含业务逻辑）
+├── services.py   240    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── credentials.py 152   **按用户解析 Key**：请求头 → 凭据池（只换 Key，不换模型）
+├── api.py        378    FastAPI 路由（只做协议转换，不含业务逻辑）
 ├── cli.py        230+   init / serve / doctor / ingest / reindex / ask / projects / verify
 └── adapters/     990+   embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
 ```
 
-前端只有一个文件 `rag4prefa/web/index.html`（443 行，原生 JS，无构建步骤）。
-`tests/` 115 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+前端只有一个文件 `rag4prefa/web/index.html`（670 行，原生 JS，无构建步骤）。
+`tests/` 134 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
+`test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
+而不是"接口返回了 200 就以为配对了"；
 `test_consistency.py` / `test_ingest.py` 里有大量**故障注入**用例，反向断言"必须被拒绝""旧版本必须还在"，
 防止把"程序执行了预期操作"当成"业务不变量成立"。
 
@@ -104,6 +107,10 @@ rag4prefa/
    而不是给出一份看起来正常、实际无关的引用。判断依据含**后端实际条数**——只查 SQLite 发现不了"归档对、索引少写几条"。
 8. **chunk_id 由内容决定，不由位置决定**（`doc_id + 章节路径 + 正文哈希 + 同段内序号`）。
    同一 id 必是同一段正文；改一段只影响那一段，插入一段不会让后面全部换号。
+9. **多用户只能换 Key，不能换模型。** 前端「API 设置」里的 Key 随 `X-R4P-*` 头到达服务端，
+   `credentials.CredentialPool` 只替换 `settings` 里的两个 Key，`base_url` / `model` / `dim` 一律沿用服务端配置。
+   理由和第 1 条同源：允许每人自选模型，同一索引里就会并存两套向量。这是共享一个索引的前提，
+   不是权限设计——它不是鉴权（见第 6 节）。
 
 ### 请求链路（`/api/chat`）
 
@@ -239,8 +246,11 @@ API 一览（实现见 `api.py`，说明见 README）：
 **P0-1　接真实厂商 API 跑一遍**
 本地假 OpenAI 兼容服务已跑通 `ingest → ask --answer → SSE`，但**真实厂商**仍有三个未知数：
 `stream=True` 支持情况、embedding 批量上限、响应字段差异。
-- 做法：`cp .env.example .env` 后填 `R4P_EMBEDDING_API_KEY` / `R4P_LLM_API_KEY`（**不要**复用原仓库泄漏的 ModelScope token）。
-- 建议把 `R4P_EMBEDDING_DIM` 显式填成模型真实维度（gte-base-chinese 是 768）。
+- 做法：`cp .env.example .env` 后填 `R4P_EMBEDDING_API_KEY` / `R4P_LLM_API_KEY`
+  （**不要**复用原仓库泄漏的 ModelScope token）。
+- 默认组合是「硅基流动 `BAAI/bge-m3` 做 embedding + 魔搭 Qwen 做 LLM」，两家 key 分别申请、互不通用。
+- **换 embedding 厂商时五项要一起改**：`BASE_URL` / `API_KEY` / `MODEL` / `DIM` / `BATCH`。
+  批量上限是硬约束：硅基流动 32 可用，阿里百炼 `text-embedding-v3/v4` **只能 10**，超了直接 400。
 - 验收：`ask "缓粘结预应力的张拉控制要点" --answer` 返回带章节引用的答案；
   `/api/health` 的 `backend.name` 为 `milvus`（或已在 notes 里说明回退 numpy）、`vectors` > 0、`credentials_missing` 为空。
 - 注：若数据目录在含中文的路径下，Milvus 会被拒绝并回退 numpy —— 这是已知平台限制，不是配置错误。
@@ -282,7 +292,9 @@ Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milv
    短期加锁 + 并发测试；更好的做法是每线程独立连接。
 2. **任务不可恢复（部分解决）**：启动时已把遗留的 `running/queued` 任务与停在 `indexing` 的文档都标成 failed，
    但任务本身仍是进程内 `asyncio.create_task`，进程一死就得重跑；要真正可恢复得落持久化任务表 + 重试。
-3. **无鉴权**：上传/删除没有身份校验，只能部署在可信内网。
+3. **无身份认证（与「多用户 Key」不是一回事）**：上传/删除没有权限校验；前端「API 设置」里的
+   用户名只是标签，谁都能填自己的 Key 顶替，也都能取回本地保存的 Key。它解决的是"分摊额度 +
+   各自记住 Key"，不是"谁有权访问知识库"。公网部署前必须换成真正的登录 + 服务端密钥托管（加密、可吊销、可审计）。
 4. **上传无大小上限**：一次性读入内存，应改流式落盘 + 上限 + 清理策略。
 5. ~~模型一致性未强制校验~~ → 已在第三轮解决，见上表。
 6. ~~一致性检查只报告不阻断~~ → 已在第四轮解决：`blockers` 覆盖缺向量/孤儿/未标注/后端条数不符，检索与写入统一拒绝。
@@ -328,11 +340,23 @@ README / tests / eval 里的示例文字与路径按现状保留，**不要**再
 
 ---
 
-## 10. 交接时的验证记录（2026-10-23 22:10，第四轮修复后）
+## 10. 交接时的验证记录（2026-10-24 20:20，第五轮：多用户 Key）
 
 ```
-pytest -q                          → 115 passed
+pytest -q                          → 134 passed（新增 19 项凭据用例）
 ruff check rag4prefa tests scripts → All checks passed
+前端脚本                          → 提取 <script> 过 `node --check`，无语法错误
+真实服务（uvicorn + curl）：
+  GET /api/health（无头）         → user={source: server, label: 服务端公共 Key}
+                                    missing=[R4P_EMBEDDING_API_KEY, R4P_LLM_API_KEY]，backend=numpy
+  GET /api/health（带三头）       → user={source: user, label: 张三}（%E5%BC%A0%E4%B8%89 解码正确）
+                                    missing=[]，说明请求头确实覆盖了公共配置
+  GET /                           → 200，页面内含 X-R4P-* 注入逻辑
+```
+
+第四轮（2026-10-23 22:10）的冒烟记录仍然有效：
+
+```
 真实链路冒烟（真实申报书 + 真实 Milvus Lite + 真实 openai SDK，假服务兜住网络，零费用；
             Milvus 段跑在 C:/tmp_r4p_smoke4，因为中文路径下 faiss 无法建索引）：
   0 中文数据目录                   → MilvusStore 直接拒绝并说明两条出路

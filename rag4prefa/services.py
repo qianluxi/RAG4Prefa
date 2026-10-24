@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .adapters.embed import Embedder, EmbeddingError
@@ -20,6 +20,7 @@ from .adapters.vectors import (
 )
 from .config import Settings, get_settings
 from .consistency import collect_issues, inspect
+from .credentials import CredentialPool, UserCredentials
 from .db import connect, init_db
 from .repo import get_meta, mark_interrupted_documents, mark_interrupted_jobs
 
@@ -34,6 +35,34 @@ class Services:
     reranker: Reranker
     notes: list[str] = field(default_factory=list)
     fell_back: bool = False
+    # 多用户自带 Key：池子按指纹复用客户端，视图共享同一个池
+    credentials: CredentialPool | None = None
+    user_label: str | None = None
+    # 视图不拥有连接：一次请求结束若能关掉全局 SQLite 连接，下一个请求就全崩
+    owns_conn: bool = True
+
+    def __post_init__(self) -> None:
+        if self.credentials is None:
+            self.credentials = CredentialPool(self.settings, self.conn)
+
+    def for_credentials(self, creds: UserCredentials | None) -> Services:
+        """换上某个用户 Key 之后的视图，共享 conn / store / reranker。
+
+        没有凭据时原样返回 `self`，未登录访问继续用 `.env` 里的公共 Key——
+        CLI、测试和已有部署的行为完全不变。
+        """
+        if creds is None or self.credentials is None:
+            return self
+        embedder, llm = self.credentials.acquire(creds)
+        return replace(
+            self,
+            settings=self.credentials.settings_for(creds),
+            embedder=embedder,
+            llm=llm,
+            notes=list(self.notes),
+            user_label=creds.username,
+            owns_conn=False,
+        )
 
     @property
     def index_dim(self) -> int | None:
@@ -119,12 +148,28 @@ class Services:
                 "issues": issues,
             },
             "credentials_missing": self.settings.missing_credentials(),
+            # 前端要拿它提示"你自己的 Key 必须属于同一家服务商"——模型由服务端统一决定
+            "models": {
+                "embedding_model": self.settings.embedding_model,
+                "embedding_dim": self.settings.embedding_dim or self.store.dim,
+                "llm_model": self.settings.llm_model,
+            },
+            # 让前端能证明"请求头确实被认到了"，而不是以为自己配了其实没用上
+            "user": {
+                "label": self.user_label or "服务端公共 Key",
+                "source": "user" if self.user_label else "server",
+            },
             # 后端可能把恢复动作（如"已从上一版集合还原索引"）记在 notes 里；
             # 用 getattr 是为了让 health 在任何 VectorStore 实现上都不会因为缺属性而 500
             "notes": [*self.notes, *getattr(self.store, "notes", [])],
         }
 
     def close(self) -> None:
+        # 视图（owns_conn=False）可能在一堆请求之间共享，关它等于把全局连接掐了
+        if not self.owns_conn:
+            return
+        if self.credentials is not None:
+            self.credentials.close()
         self.conn.close()
 
 

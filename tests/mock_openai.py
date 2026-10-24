@@ -13,6 +13,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DIM = 32
 PIECES = ("据【1】所述，", "缓粘结预应力", "需控制张拉时机与摩阻损失。")
 
+# 记录每个路径最后一次收到的 Authorization，供测试断言"Key 真的被用上了"。
+# 多进程/多线程下不严谨，但被 TestClient 串行调用时足够。
+LAST_AUTH: dict[str, str] = {}
+
+# 以该前缀开头的 Key 一律 401，用来测"错 Key 会被明确拒绝"
+REJECT_PREFIX = "bad-"
+
+
+def reset() -> None:
+    LAST_AUTH.clear()
+
 
 def _embed(text: str) -> list[float]:
     digest = hashlib.sha256(text.encode("utf-8")).digest()
@@ -34,6 +45,25 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802 - http.server 的约定
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
+
+        auth = self.headers.get("Authorization", "")
+        LAST_AUTH[self.path] = auth
+        if auth.removeprefix("Bearer ").strip().startswith(REJECT_PREFIX):
+            raw = json.dumps(
+                {
+                    "error": {
+                        "message": "Incorrect API key provided",
+                        "type": "invalid_request_error",
+                        "code": "invalid_api_key",
+                    }
+                }
+            ).encode()
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
 
         if self.path.endswith("/embeddings"):
             texts = body["input"]

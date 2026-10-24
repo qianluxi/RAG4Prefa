@@ -14,9 +14,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import admin, ask, consistency, ingest, repo
-from .adapters.embed import EmbeddingError
-from .adapters.llm import LLMError
+from .adapters.embed import Embedder, EmbeddingError
+from .adapters.llm import LLM, LLMError
 from .consistency import IndexMismatch
+from .credentials import from_headers
 from .domain import Filter, JobState
 from .services import Services, build_services
 
@@ -37,6 +38,14 @@ class SearchRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     filter: Filter | None = None
     top_k: int = Field(default=8, ge=1, le=50)
+
+
+class CredentialCheck(BaseModel):
+    """校验用户填的 Key。空字段表示"用服务端公共 Key"，便于一键自检。"""
+
+    username: str = Field(default="", max_length=64)
+    embedding_key: str = Field(default="", max_length=4096)
+    llm_key: str = Field(default="", max_length=4096)
 
 
 # ── SSE ────────────────────────────────────────────────────
@@ -82,11 +91,103 @@ def create_app(services: Services | None = None) -> FastAPI:
     app = FastAPI(title="RAG4Prefa", version="0.1.0", lifespan=lifespan)
 
     def svc(request: Request) -> Services:
-        return request.app.state.services
+        """每个请求都按请求头换一次凭据。
+
+        没带 `X-R4P-*` 头时 `for_credentials` 返回同一个实例，等于沿用 `.env` 里的
+        公共 Key——所以旧客户端、curl 和 CLI 都不受影响。
+        """
+        return request.app.state.services.for_credentials(from_headers(request.headers))
 
     @app.get("/api/health")
     def health(request: Request) -> dict:
         return svc(request).health()
+
+    # ── 凭据 ────────────────────────────────────────────
+
+    @app.post("/api/credentials/verify")
+    def verify_credentials(request: Request, payload: CredentialCheck) -> dict:
+        """用给定的 Key 各试调一次，把"哪一项不通、为什么"说清楚。
+
+        返回 200 而不是 4xx：部分成功是常态（embedding 通了、LLM 没通），
+        用状态码表达会把另一项的结果一起丢掉。真正的失败写进各自字段。
+
+        这里刻意不写缓存、不建索引，只做一次最小调用：
+        `probe()` 不走退避重试，否则错 Key 要等十几秒，前端会以为按钮卡死。
+        """
+        services = svc(request)
+        base = services.settings
+        embedding_key = payload.embedding_key.strip() or base.embedding_api_key
+        llm_key = payload.llm_key.strip() or base.llm_api_key
+        local = base.model_copy(
+            update={"embedding_api_key": embedding_key, "llm_api_key": llm_key}
+        )
+        secrets = (
+            payload.embedding_key,
+            payload.llm_key,
+            base.embedding_api_key,
+            base.llm_api_key,
+        )
+
+        result: dict = {
+            # 前端要拿它提示"你的 Key 必须属于同一家服务商"——模型由服务端统一决定
+            "server": {
+                "embedding_base_url": local.embedding_base_url,
+                "embedding_model": local.embedding_model,
+                "embedding_dim": local.embedding_dim,
+                "llm_base_url": local.llm_base_url,
+                "llm_model": local.llm_model,
+            },
+            "user": payload.username.strip() or "anonymous",
+            "embedding": {"ok": False, "error": "未配置 Key"},
+            "llm": {"ok": False, "error": "未配置 Key"},
+        }
+
+        if embedding_key:
+            embedder: Embedder | None = None
+            try:
+                embedder = Embedder(local, services.conn)
+                dim = embedder.probe()
+                result["embedding"] = {
+                    "ok": True,
+                    "model": local.embedding_model,
+                    "dim": dim,
+                    # 留空会回落到服务端 Key，必须标明来源，否则用户会以为验的是自己的
+                    "source": "user" if payload.embedding_key.strip() else "server",
+                }
+            except Exception as exc:
+                result["embedding"] = {
+                    "ok": False,
+                    "source": "user" if payload.embedding_key.strip() else "server",
+                    "error": _redact(f"{type(exc).__name__}: {exc}", *secrets),
+                }
+            finally:
+                if embedder is not None:
+                    embedder.close()
+
+        if llm_key:
+            llm: LLM | None = None
+            try:
+                llm = LLM(local)
+                reply = llm.probe()
+                result["llm"] = {
+                    "ok": True,
+                    "model": local.llm_model,
+                    "source": "user" if payload.llm_key.strip() else "server",
+                    # 有些模型会把 16 个 token 全花在思考上、正文为空——连接是通的，
+                    # 所以只记长度，不把空回复当失败
+                    "reply_chars": len(reply),
+                }
+            except Exception as exc:
+                result["llm"] = {
+                    "ok": False,
+                    "source": "user" if payload.llm_key.strip() else "server",
+                    "error": _redact(f"{type(exc).__name__}: {exc}", *secrets),
+                }
+            finally:
+                if llm is not None:
+                    llm.close()
+
+        return result
 
     # ── 入库 ────────────────────────────────────────────
 
@@ -100,6 +201,11 @@ def create_app(services: Services | None = None) -> FastAPI:
         year: int | None = Form(default=None),
     ) -> JSONResponse:
         services = svc(request)
+        # 没有可用 key 时在"创建项目/落盘"之前就拒绝，别留一个空项目让人以为导过了
+        try:
+            services.require_embedder()
+        except EmbeddingError as exc:
+            raise HTTPException(503, str(exc)) from exc
         target = services.settings.upload_dir / _safe_name(project_name)
         target.mkdir(parents=True, exist_ok=True)
 
@@ -246,6 +352,18 @@ def create_app(services: Services | None = None) -> FastAPI:
         return FileResponse(WEB_DIR / "index.html")
 
     return app
+
+
+def _redact(message: str, *secrets: str) -> str:
+    """把错误信息里可能出现的 Key 抹掉。
+
+    客户端异常有时会把请求体或 header 带进文本里，直接回显等于把 Key 写进前端日志。
+    太短的串（如 "test"）替换会误伤正常文字，所以只处理有实际长度的。
+    """
+    for secret in secrets:
+        if secret and len(secret) >= 6:
+            message = message.replace(secret, "***")
+    return message[:600]
 
 
 def _safe_name(name: str) -> str:

@@ -83,6 +83,14 @@
   .job { margin-top: 10px; font-size: 12.5px; color: var(--muted); white-space: pre-wrap; }
   .err { color: #b91c1c; }
   .kbd { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted); }
+  .who {
+    font-size: 12px; color: var(--muted); cursor: pointer; padding: 3px 9px;
+    border-radius: 999px; border: 1px solid var(--line);
+  }
+  .who.on { background: #ecfdf5; border-color: #a7f3d0; color: #047857; }
+  .ok { color: #047857; }
+  .user-row { display: flex; gap: 6px; margin-bottom: 6px; }
+  .user-row button { padding: 4px 8px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -90,6 +98,8 @@
   <h1>RAG4Prefa</h1>
   <span class="sub">课题文档知识库 · 混合检索 + 流式问答</span>
   <span id="health" class="badge">检查中…</span>
+  <span id="who" class="who" title="点击配置自己的 API Key">公共密钥</span>
+  <button class="ghost" id="toggle-settings">API 设置</button>
   <button class="ghost" id="toggle-admin">项目管理</button>
 </header>
 
@@ -159,12 +169,81 @@
   </div>
 </div>
 
+<div class="drawer" id="settings">
+  <header>
+    <h1 style="font-size:14px">API 设置</h1>
+    <button class="ghost" id="close-settings" style="margin-left:auto">关闭</button>
+  </header>
+  <div class="body">
+    <p class="kbd" id="server-models">正在读取服务端模型配置…</p>
+
+    <label for="su-name">用户名</label>
+    <input id="su-name" placeholder="如：张三" autocomplete="off" />
+    <label for="su-embed">Embedding Key（入库与检索用）</label>
+    <input id="su-embed" type="password" placeholder="sk-..." autocomplete="off" />
+    <label for="su-llm">LLM Key（生成答案用，可留空沿用公共配置）</label>
+    <input id="su-llm" type="password" placeholder="sk-..." autocomplete="off" />
+
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="save-creds">保存并验证</button>
+      <button class="ghost" id="clear-creds">清除当前用户</button>
+    </div>
+    <div class="job" id="su-result"></div>
+
+    <h2 style="margin-top:18px;font-size:12px;color:var(--muted)">已保存的用户（仅本机浏览器）</h2>
+    <div id="user-list"></div>
+
+    <p class="kbd" style="margin-top:16px;line-height:1.9">
+      Key 只存在这台电脑的浏览器里，服务端不落库、不写日志。<br />
+      换电脑、换浏览器或清掉站点数据后需要重填。<br />
+      <strong>模型由服务端统一决定</strong>，你只能换「用谁的额度」，不能换模型——
+      否则同一批文档会混进两套向量，检索结果看起来正常却不可信。
+    </p>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const state = { projects: [], selected: new Set(), busy: false };
 
+/* ── 用户凭据（只存本机浏览器，服务端不落库）────────────── */
+const CRED_KEY = "r4p.credentials";
+
+function credStore() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CRED_KEY) || "{}");
+    return { users: raw.users || {}, current: raw.current || "" };
+  } catch {
+    return { users: {}, current: "" };
+  }
+}
+
+function saveCredStore(store) {
+  localStorage.setItem(CRED_KEY, JSON.stringify(store));
+}
+
+function currentCreds() {
+  const store = credStore();
+  const user = store.users[store.current];
+  return user ? { name: store.current, ...user } : null;
+}
+
+function authHeaders() {
+  const creds = currentCreds();
+  if (!creds) return {};
+  // HTTP 头只允许 ASCII：中文用户名必须编码，否则 fetch 直接抛 TypeError
+  return {
+    "X-R4P-User": encodeURIComponent(creds.name),
+    "X-R4P-Embedding-Key": creds.embeddingKey || "",
+    "X-R4P-LLM-Key": creds.llmKey || "",
+  };
+}
+
 async function api(path, options = {}) {
-  const res = await fetch(path, options);
+  const res = await fetch(path, {
+    ...options,
+    headers: { ...(options.headers || {}), ...authHeaders() },
+  });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -187,6 +266,7 @@ async function loadHealth() {
   const badge = $("health");
   try {
     const h = await api("/api/health");
+    renderServerModels(h.models);
     const backend = `${h.backend.name} · ${h.backend.vectors} 片段`;
     const issues = (h.index && h.index.issues) || [];
     // 索引与配置对不上时也报 !ok，这种情况下说"配置缺失"会误导人
@@ -312,7 +392,7 @@ async function ask() {
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
         question,
         filter: currentFilter(),
@@ -418,6 +498,143 @@ async function pollJob(jobId) {
   }
 }
 
+/* ── API 设置 ─────────────────────────────── */
+function syncWho() {
+  const creds = currentCreds();
+  const who = $("who");
+  who.textContent = creds ? `当前：${creds.name}` : "公共密钥";
+  who.classList.toggle("on", !!creds);
+}
+
+function renderServerModels(models) {
+  if (!models) return;
+  const dim = models.embedding_dim ? `${models.embedding_dim} 维` : "维度自动探测";
+  $("server-models").textContent =
+    `本服务器统一使用：embedding ${models.embedding_model}（${dim}）· LLM ${models.llm_model}。` +
+    `你的 Key 必须属于同一家服务商。`;
+}
+
+function renderUserList() {
+  const store = credStore();
+  const box = $("user-list");
+  box.innerHTML = "";
+  const names = Object.keys(store.users);
+  if (!names.length) {
+    box.appendChild(el("span", "kbd", "还没有保存过用户"));
+    return;
+  }
+  for (const name of names) {
+    const row = el("div", "user-row");
+    const pick = el("button", store.current === name ? "primary" : "ghost", name);
+    pick.style.flex = "1";
+    pick.onclick = () => {
+      store.current = name;
+      saveCredStore(store);
+      fillCredForm(name);
+      syncWho();
+      renderUserList();
+      $("su-result").textContent = `已切换为「${name}」`;
+      loadHealth();
+    };
+    const fill = el("button", "ghost", "编辑");
+    fill.onclick = () => fillCredForm(name);
+    const del = el("button", "ghost", "删除");
+    del.onclick = () => {
+      delete store.users[name];
+      if (store.current === name) store.current = "";
+      saveCredStore(store);
+      syncWho();
+      renderUserList();
+      $("su-result").textContent = `已删除「${name}」，后续请求按当前选择使用 Key`;
+      loadHealth();
+    };
+    row.append(pick, fill, del);
+    box.appendChild(row);
+  }
+}
+
+function fillCredForm(name) {
+  const user = credStore().users[name];
+  if (!user) return;
+  $("su-name").value = name;
+  $("su-embed").value = user.embeddingKey || "";
+  $("su-llm").value = user.llmKey || "";
+}
+
+function describeCheck(result) {
+  const line = (item, okText) => {
+    // 留空的项会回落到服务端 Key，必须标出来，否则用户以为验的是自己的额度
+    const who = item.source === "server" ? "公共 Key" : "你的 Key";
+    if (!item.ok) return `${okText} 失败（${who}）：${item.error}`;
+    const extra = okText === "embedding" ? `，${item.dim} 维` : "";
+    return `${okText} 可用（${who}${extra}）`;
+  };
+  return [line(result.embedding, "embedding"), line(result.llm, "LLM")].join("\n");
+}
+
+async function saveCreds() {
+  const name = $("su-name").value.trim();
+  const embeddingKey = $("su-embed").value.trim();
+  const llmKey = $("su-llm").value.trim();
+  if (!name) return alert("请填写用户名");
+  if (!embeddingKey && !llmKey) return alert("至少填一个 Key");
+
+  $("save-creds").disabled = true;
+  $("su-result").textContent = "正在验证…";
+  try {
+    const result = await api("/api/credentials/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: name, embedding_key: embeddingKey, llm_key: llmKey }),
+    });
+    renderServerModels(result.server);
+    if (!result.embedding.ok && !result.llm.ok) {
+      // 两个都不通就不保存：存下来只会让之后每次提问都失败
+      $("su-result").textContent = `验证未通过，未保存：\n${describeCheck(result)}`;
+      return;
+    }
+    const store = credStore();
+    // 允许只用自己的某一项额度，所以只要有一项通就保存，但把另一项的问题写清楚
+    store.users[name] = { embeddingKey, llmKey, savedAt: new Date().toISOString() };
+    store.current = name;
+    saveCredStore(store);
+    syncWho();
+    renderUserList();
+    $("su-result").textContent = `已保存并切换为「${name}」\n${describeCheck(result)}`;
+    await loadHealth();
+  } catch (err) {
+    $("su-result").textContent = `验证请求失败：${err.message}`;
+  } finally {
+    $("save-creds").disabled = false;
+  }
+}
+
+function clearCreds() {
+  const store = credStore();
+  if (!store.current) {
+    $("su-result").textContent = "当前没有使用用户 Key，已经是服务端公共配置";
+    return;
+  }
+  const name = store.current;
+  delete store.users[name];
+  store.current = "";
+  saveCredStore(store);
+  $("su-name").value = ""; $("su-embed").value = ""; $("su-llm").value = "";
+  $("su-result").textContent = `已清除「${name}」，后续请求使用服务端公共 Key`;
+  syncWho();
+  renderUserList();
+  loadHealth();
+}
+
+function openSettings() {
+  $("drawer").classList.remove("open");
+  $("settings").classList.add("open");
+  const creds = currentCreds();
+  if (creds) fillCredForm(creds.name);
+  renderUserList();
+  loadHealth();
+}
+
 /* ── 事件绑定 ─────────────────────────────── */
 $("send").onclick = ask;
 $("question").addEventListener("keydown", (event) => {
@@ -432,10 +649,20 @@ $("show-filtered").onclick = () => {
   const filter = currentFilter();
   $("status").textContent = filter ? `当前条件：${JSON.stringify(filter)}` : "当前条件：全库";
 };
-$("toggle-admin").onclick = () => $("drawer").classList.add("open");
+$("toggle-admin").onclick = () => {
+  $("settings").classList.remove("open");
+  $("drawer").classList.add("open");
+};
 $("close-admin").onclick = () => $("drawer").classList.remove("open");
 $("upload").onclick = upload;
 
+$("toggle-settings").onclick = openSettings;
+$("who").onclick = openSettings;
+$("close-settings").onclick = () => $("settings").classList.remove("open");
+$("save-creds").onclick = saveCreds;
+$("clear-creds").onclick = clearCreds;
+
+syncWho();
 loadHealth();
 loadProjects();
 </script>
