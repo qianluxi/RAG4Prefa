@@ -18,12 +18,12 @@ class Settings(BaseSettings):
     # 数据
     data_dir: Path = Path("data")
 
-    # 向量化
-    embedding_base_url: str = "https://api-inference.modelscope.cn/v1"
+    # 向量化（默认硅基流动 bge-m3：1024 维、免费、8192 token 上下文）
+    embedding_base_url: str = "https://api.siliconflow.cn/v1"
     embedding_api_key: str = ""
-    embedding_model: str = "iic/nlp_gte_sentence-embedding_chinese-base"
+    embedding_model: str = "BAAI/bge-m3"
     embedding_dim: int = 0  # 0 = 探测后写库
-    embedding_batch: int = 32
+    embedding_batch: int = 32  # 百炼 text-embedding-v3/v4 只能 10
     embedding_timeout: float = 60.0
 
     # 生成
