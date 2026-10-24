@@ -16,6 +16,7 @@ from .adapters.vectors import (
     BackendUnavailable,
     MilvusStore,
     NumpyStore,
+    RebuildError,
     VectorStore,
 )
 from .config import Settings, get_settings
@@ -99,9 +100,16 @@ class Services:
             self.notes.append(f"仍无法启用 Milvus：{exc}")
             return False
 
-        from .ingest import rebuild_store  # 局部导入，避免循环依赖
+        from .ingest import ReindexError, rebuild_store  # 局部导入，避免循环依赖
 
-        moved = rebuild_store(self.conn, milvus)
+        try:
+            moved = rebuild_store(self.conn, milvus)
+        except (ReindexError, RebuildError) as exc:
+            # 迁移到 Milvus 只是"换个更快的后端"，是可选项。归档本身不合格时留在
+            # numpy 上继续用，把原因记进 notes——不能因为一次可选迁移，把已经成功
+            # 的入库/启动变成失败。
+            self.notes.append(f"暂不迁移到 Milvus：{exc}")
+            return False
         self.store = milvus
         self.fell_back = False
         self.notes = [n for n in self.notes if "Milvus 不可用" not in n]
@@ -181,11 +189,16 @@ def open_store(settings: Settings, conn: sqlite3.Connection) -> tuple[VectorStor
             return MilvusStore(settings.milvus_uri, settings.milvus_collection, dim), notes, False
         except BackendUnavailable as exc:
             if settings.vector_backend == "milvus":
-                raise BackendUnavailable(
-                    f"{exc}。当前显式指定了 R4P_VECTOR_BACKEND=milvus，不会自动回退。"
-                    "处理办法二选一：① 把 R4P_EMBEDDING_DIM 填成模型的真实维度"
-                    "（如 gte-base-chinese 为 768）；② 改用 R4P_VECTOR_BACKEND=auto。"
-                ) from exc
+                hint = (
+                    f"{exc}。当前显式指定了 R4P_VECTOR_BACKEND=milvus，不会自动回退："
+                    "按上面的报错处理，或改成 auto / numpy 先把服务跑起来。"
+                )
+                # "维度未知"只是 Milvus 打不开的众多原因之一。路径不合法、缺 pymilvus、
+                # 中文路径，报的也是这一条——一律往"改维度"上引，会让人在不相关的
+                # 配置项上反复试，越试越远。
+                if "维度" in str(exc):
+                    hint += "（报的是维度未知时：把 R4P_EMBEDDING_DIM 填成模型的真实维度。）"
+                raise BackendUnavailable(hint) from exc
             notes.append(f"Milvus 不可用，已回退到 numpy 精确检索：{exc}")
             return NumpyStore(conn, dim), notes, True
     return NumpyStore(conn, dim), notes, False

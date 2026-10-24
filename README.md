@@ -195,3 +195,7 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
   `python -m rag4prefa verify`（代价是把索引主键全拉一遍，不能放进请求路径）。
   另外 SQLite 归档与向量库不在同一事务里，重建中断时会靠 `meta.index_state` 标记
   阻断检索——标记为 `ready` 之外的任何值都不提供服务，直到 `reindex` 或 `rebuild` 完成。
+- **`rebuild` 的"完成"有明确判据**：归档可用（无缺行、每行带模型名、全库一套模型与维度）
+  → 后端条数 = 归档条数 → 归档的模型与维度写回 `meta` 且标记回 `ready`（同一事务）。
+  任一条不满足就**保留标记并返回非零**，不会出现"命令说恢复成功、实际还是查不了"。
+  反过来说，归档本身残缺（有正文没向量）时 `rebuild` 帮不上忙，只能跑 `reindex` 重算。

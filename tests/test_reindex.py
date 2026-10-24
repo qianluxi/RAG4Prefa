@@ -319,6 +319,194 @@ def test_partial_reindex_cannot_clear_a_full_rebuild_marker(
     assert repo.get_index_state(conn) == repo.INDEX_READY
 
 
+# ── 恢复动作本身必须可验证：空范围不能清标记，rebuild 必须同步元数据 ──────
+
+
+def test_local_reindex_on_a_missing_scope_keeps_the_full_rebuild_marker(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """范围里没有片段 ≠ 全库已经一致。
+
+    这是最阴的一条：`reindex --project 不存在的项目` 会返回 0 条，如果顺手把状态
+    改成 ready，那笔没走完的全量重建就再没有任何痕迹能发现——归档和旧索引的条数、
+    模型、维度本来就可能完全一样。
+    """
+    store = _store(conn)
+    _seed(conn, store, settings, docx_file)
+    repo.set_index_state(conn, "rebuilding:*")
+
+    result = reindex(conn, store, FakeEmbedder(), settings, project_name="不存在的项目")
+
+    assert result["chunks"] == 0
+    assert repo.get_index_state(conn) == "rebuilding:*", "空范围不能清掉全量的标记"
+    with pytest.raises(consistency.IndexMismatch):
+        _query(conn, store)
+
+
+def test_local_reindex_on_a_missing_scope_keeps_other_projects_markers(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """同上，但标记属于另一个项目：局部操作只该管自己那摊事。"""
+    store = _store(conn)
+    _seed(conn, store, settings, docx_file)
+    repo.set_index_state(conn, "rebuilding:乙项目")
+
+    reindex(conn, store, FakeEmbedder(), settings, project_name="不存在的项目")
+
+    assert repo.get_index_state(conn) == "rebuilding:乙项目"
+
+
+def test_full_reindex_on_an_empty_database_clears_the_marker(
+    conn: sqlite3.Connection, settings: Settings
+) -> None:
+    """真的什么都没有时，标记才是可以清的——这是"空"唯一站得住的含义。"""
+    store = _store(conn)
+    repo.set_index_state(conn, "rebuilding:*")
+
+    result = reindex(conn, store, FakeEmbedder(), settings)
+
+    assert result["chunks"] == 0
+    assert repo.get_index_state(conn) == repo.INDEX_READY
+    _query(conn, store)
+
+
+def test_full_reindex_on_an_empty_database_clears_a_stale_index(
+    conn: sqlite3.Connection, settings: Settings
+) -> None:
+    """片段没了、索引里还留着向量：这不算"空"，清干净之后才能报 ready。"""
+    repo.archive_vectors(
+        conn,
+        [
+            to_archive_row(
+                VectorItem("孤儿", [0.1] * FakeEmbedder.dim, "甲项目", "", 2024, "fake-embedder")
+            )
+        ],
+    )
+    repo.set_index_state(conn, "rebuilding:*")
+    store = _store(conn)  # 重新加载才看得到刚写进去的残留
+    assert store.count() == 1
+
+    result = reindex(conn, store, FakeEmbedder(), settings)
+
+    assert result["chunks"] == 0
+    assert store.count() == 0, "没有正文的残留向量必须被清掉"
+    assert repo.get_index_state(conn) == repo.INDEX_READY
+
+
+def test_full_reindex_refuses_when_facts_cannot_be_read_back(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """片段表有正文、却一条都取不到重建输入：这是数据缺失，不是可以清理的残留。
+
+    若把它当成"空库"处理，全量重建会顺手清掉索引和标记——正文还在，向量却没了，
+    而且再没有任何标记提示这件事发生过。
+
+    构造办法：临时关掉外键约束，塞一条指向不存在文档的片段（外键开着时级联删除会让
+    这种状态根本存不下来，真实环境里它来自"手工清理数据库""老版本逻辑"这类路径）。
+    """
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(
+        "INSERT INTO chunks (id, doc_id, ordinal, chapter_path, title, text, token_count,"
+        " content_sha) VALUES ('孤儿片段', '不存在的文档', 0, '[]', '', '正文', 2, 'x')"
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+    repo.archive_vectors(
+        conn,
+        [
+            to_archive_row(
+                VectorItem(
+                    "孤儿片段", [0.1] * FakeEmbedder.dim, "甲项目", "", 2024, "fake-embedder"
+                )
+            )
+        ],
+    )
+    store = _store(conn)
+    assert repo.chunk_count(conn) == 1
+    assert repo.chunks_for_reindex(conn) == []
+
+    with pytest.raises(ReindexError, match="取不到重建输入"):
+        reindex(conn, store, FakeEmbedder(), settings)
+
+    assert store.count() == 1, "被拒绝时不能清索引"
+    assert repo.get_index_state(conn) == repo.INDEX_READY, "被拒绝时也不该动标记"
+
+
+def test_rebuild_store_restores_model_metadata_after_a_switch_failure(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """换模型重建中断后，归档是新模型、元数据还是旧模型。
+
+    只重建索引、不清标记与元数据的话，命令会报成功，但一致性检查仍然拒绝检索——
+    因为"元数据模型 ≠ 归档模型"。用户的感受是"恢复命令说好了，可还是查不了"。
+    """
+    store = _store(conn)
+    total = _seed(conn, store, settings, docx_file)
+
+    with pytest.raises(RuntimeError):
+        reindex(conn, FailingRebuildStore(conn, FakeEmbedder.dim), AltEmbedder(), settings)
+
+    # 中断现场：归档已经换成 alt 的向量，元数据还停在 fake-embedder
+    assert _archive_models(conn) == {"alt-embedder"}
+    assert repo.get_meta(conn, "embedding_model") == "fake-embedder"
+    assert repo.get_index_state(conn) == "rebuilding:*"
+
+    fresh = _store(conn)
+    assert rebuild_store(conn, fresh) == total
+
+    assert repo.get_meta(conn, "embedding_model") == "alt-embedder", "元数据必须跟着归档走"
+    assert repo.get_index_state(conn) == repo.INDEX_READY
+    # 恢复的判据不是"命令返回了"，而是"按当前配置真的能查"
+    consistency.ensure_queryable(
+        conn, AltEmbedder.model, fresh.dim, store_count=fresh.count()
+    )
+    assert fresh.search(AltEmbedder().embed_one("悬挑"), limit=5)
+
+
+def test_rebuild_store_restores_dim_metadata_after_a_dimension_change(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """维度变了同样要同步：只改索引不改 meta，检索照样被拒。"""
+    store = _store(conn)
+    total = _seed(conn, store, settings, docx_file)
+
+    with pytest.raises(RuntimeError):
+        reindex(conn, FailingRebuildStore(conn, FakeEmbedder.dim), SmallEmbedder(), settings)
+
+    assert repo.get_meta(conn, "embedding_dim") == str(FakeEmbedder.dim)
+    assert {r["dim"] for r in conn.execute("SELECT dim FROM vectors")} == {SmallEmbedder.dim}
+
+    fresh = NumpyStore(conn, FakeEmbedder.dim)  # 构造函数按归档加载，维度会跟过去
+    assert fresh.dim == SmallEmbedder.dim
+    assert rebuild_store(conn, fresh) == total
+
+    assert repo.get_meta(conn, "embedding_dim") == str(SmallEmbedder.dim)
+    assert repo.get_meta(conn, "embedding_model") == "small-embedder"
+    assert repo.get_index_state(conn) == repo.INDEX_READY
+    consistency.ensure_queryable(
+        conn, SmallEmbedder.model, fresh.dim, store_count=fresh.count()
+    )
+
+
+def test_rebuild_store_refuses_an_incomplete_archive_and_keeps_the_marker(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """归档本身缺向量时不能"恢复"——重建出来的索引仍然是残缺的，却会宣称 ready。"""
+    store = _store(conn)
+    total = _seed(conn, store, settings, docx_file)
+    repo.set_index_state(conn, "rebuilding:*")
+
+    victim = sorted(repo.archived_chunk_ids(conn))[0]
+    conn.execute("DELETE FROM vectors WHERE chunk_id = ?", (victim,))
+    conn.commit()
+
+    with pytest.raises(ReindexError, match="恢复源"):
+        rebuild_store(conn, _store(conn))
+
+    assert repo.get_index_state(conn) == "rebuilding:*", "恢复失败必须把标记留着"
+    assert repo.vector_stats(conn)["count"] == total - 1, "被拒绝时不该再改动归档"
+
+
 def test_ingest_is_refused_while_a_rebuild_is_pending(
     conn: sqlite3.Connection, settings: Settings, docx_file: Path
 ) -> None:

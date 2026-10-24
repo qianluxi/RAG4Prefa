@@ -281,13 +281,55 @@ class ReindexError(RuntimeError):
 def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
     """从 SQLite 归档重建向量索引（不重新 embedding，换后端/索引损坏时用）。
 
-    成功后顺手把切换标记恢复成 ready：重建做的事就是"索引 := 归档"，做完之后
-    两边必然一致，无论上次中断的是全量还是某个项目。它也是被阻断之后除 `reindex`
-    之外的一条更便宜的恢复路径（不重新调 embedding，不花钱）。
+    "恢复完成"= 索引、归档、元数据三者一起回到可服务状态，而不只是"重建函数没抛异常"。
+    这三步缺任何一步，命令都会报成功而系统仍然查不了：
+
+    1. **先证归档能当恢复源**：有正文就必须有归档向量，归档行必须带模型名，且全库
+       只有一套模型、一种维度。不合格就抛错并**保留**未完成标记，别在这里反复重试；
+    2. 再从归档重建索引，并核对后端实际条数——"写进去了"要以条数为证；
+    3. 最后把归档对应的模型、维度连同 `index_state=ready` 在**同一个事务**里提交。
+
+    第 3 步是必须的：换模型重建中断后，归档已经是新模型、元数据还停在旧模型。只恢复
+    索引和标记的话，一致性检查会因为"元数据模型 ≠ 归档模型"继续拒绝检索——用户看到
+    的是"恢复命令说成功，可还是查不了"。
     """
-    items = [from_archive_row(row) for row in repo.iter_archived_vectors(conn)]
+    # 只有仍有正文的行才算恢复源；孤儿行留着会让重建后的索引比事实表更大
+    rows = repo.iter_archived_vectors(conn)
+    models = {r["model"] for r in rows}
+    dims = {int(r["dim"]) for r in rows}
+
+    problems: list[str] = []
+    missing = repo.missing_vector_count(conn)
+    if missing:
+        problems.append(f"{missing} 个片段没有归档向量，这份归档是残缺的，无法作为恢复源")
+    if "" in models:
+        problems.append("有归档向量没有记录产生它的模型，无法确认向量空间")
+    if len(models) > 1:
+        problems.append(f"归档里混有多个模型的向量（{'、'.join(sorted(models))}）")
+    if len(dims) > 1:
+        problems.append(f"归档里混有多种维度（{'、'.join(str(d) for d in sorted(dims))}）")
+    if problems:
+        raise ReindexError(
+            "不能从归档恢复（索引与重建标记均未改动）：\n- "
+            + "\n- ".join(problems)
+            + "\n执行 `python -m rag4prefa reindex` 全量重算，别在这份归档上反复重试。"
+        )
+
+    # 校验通过了才动数据：下面这一步会物理删掉孤儿行
+    repo.delete_orphan_vectors(conn)
+    items = [from_archive_row(r) for r in rows]
     store.rebuild(items)
-    repo.set_index_state(conn, repo.INDEX_READY)
+
+    got = store.count()
+    if got != len(items):
+        raise ReindexError(
+            f"向量后端实际 {got} 条、归档 {len(items)} 条，恢复未完成，"
+            "重建标记保持原样。可直接重试 rebuild。"
+        )
+
+    model = next(iter(models), "") or (repo.get_meta(conn, "embedding_model") or "")
+    dim = str(next(iter(dims), 0) or store.dim)
+    repo.set_index_meta(conn, model=model, dim=dim, state=repo.INDEX_READY)
     return len(items)
 
 
@@ -295,6 +337,53 @@ def _contextual_text(row: dict) -> str:
     """与入库同一套上下文化规则：章节路径 + 正文，换模型重建时才不会改变检索语义。"""
     path = " > ".join(json.loads(row["chapter_path"]))
     return f"{path}\n{row['text']}" if path else row["text"]
+
+
+def _reindex_nothing(
+    conn: sqlite3.Connection, store: VectorStore, project_name: str | None
+) -> dict:
+    """重建范围里没有片段时的收尾。
+
+    这里最容易写错的一步是"没数据就等于已经一致"。两种情形必须分开：
+
+    - **局部重建**空范围：只能说明这个项目没内容，和"全库那笔重建没走完"毫无关系。
+      顺手指把 `rebuilding:*` 改成 ready，那笔失败就再没有任何痕迹能发现——归档与
+      旧索引的条数、模型、维度本来就可能一模一样。所以局部一律不动标记。
+    - **全量重建**空范围：先确认"真的空"再清。片段表非空却一条重建输入都取不到，
+      是数据缺失（JOIN 不上项目/文档），不是可以清理的残留；此时清索引等于把正文
+      留在库里、向量全丢掉，而且从此没有任何标记提示这件事发生过。
+    """
+    scope = project_name or "all"
+    if project_name:
+        pending = repo.get_index_state(conn)
+        note = "该项目没有可重建的片段，未做任何改动"
+        if pending != repo.INDEX_READY:
+            note += (
+                f"；索引仍处于未完成状态（{pending}），"
+                "需要全量 reindex（不带 --project）或 rebuild 才能清除"
+            )
+        return {"scope": scope, "chunks": 0, "rebuilt": False, "note": note}
+
+    chunks = repo.chunk_count(conn)
+    if chunks:
+        raise ReindexError(
+            f"片段表里有 {chunks} 条正文，却一条都取不到重建输入——"
+            "多半是所属项目或文档记录缺失（JOIN 不上），这不是可以清理的残留。"
+            "先跑 `python -m rag4prefa verify` 定位并修好数据，再重建。"
+            "索引与标记均未改动。"
+        )
+    # 片段真为空：归档里的行必然是孤儿，索引里也可能留着上一版的向量。
+    # 两者都清掉，才真的是"空得一致"。
+    removed = repo.delete_orphan_vectors(conn)
+    if store.count():
+        store.rebuild([])
+    repo.set_index_state(conn, repo.INDEX_READY)
+    return {
+        "scope": scope,
+        "chunks": 0,
+        "rebuilt": False,
+        "orphans_removed": removed,
+    }
 
 
 def reindex(
@@ -323,14 +412,12 @@ def reindex(
     范围语义：
     - 不给 project_name → 全量重建，允许换模型、换维度（唯一的换模型入口）；
     - 指定项目 → 只动这个项目，**绝不 clear 全库**；且必须沿用索引现有的模型——
-      维度相同不代表向量空间相同，局部换模型会得到"能查、但结果悄悄变差"的索引。
+      维度相同不代表向量空间相同，局部换模型会得到"能查、但结果悄悄变差"的索引；
+    - 范围内没有片段时见 `_reindex_nothing`：局部一律不动标记，全量要先确认"真的空"。
     """
     rows = repo.chunks_for_reindex(conn, project_name)
     if not rows:
-        # 没有可重建的内容：此时不存在"新归档 vs 旧索引"的差异，遗留标记可以直接清掉，
-        # 否则用户会被一次早已没有对象的失败永久挡在门外。
-        repo.set_index_state(conn, repo.INDEX_READY)
-        return {"scope": project_name or "all", "chunks": 0, "rebuilt": False}
+        return _reindex_nothing(conn, store, project_name)
 
     # 标记里带范围：`rebuilding:*` 表示全量没走完，`rebuilding:<项目>` 只表示那个项目。
     # 带范围才能判断"这次重建能不能把上次的坑填上"——局部重建填不了全量的坑。

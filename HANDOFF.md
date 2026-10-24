@@ -3,13 +3,13 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-24 22:00
-**交接时状态**：可运行、**165 项离线测试全绿**；真实厂商 API 已端到端验证
+**交接时间**：2026-10-24 22:20
+**交接时状态**：可运行、**173 项离线测试全绿**；真实厂商 API 已端到端验证
 （embedding 走硅基流动国际站 `Qwen/Qwen3-Embedding-0.6B`、LLM 走魔搭 `Qwen/Qwen3.5-35B-A3B`，
 `POST /api/credentials/verify` 两项均通，`dim=1024` 与服务端配置一致）。
-第九轮修复的是**失败路径**，不是功能：跨组件的索引切换留痕、入库部分写入的撤回清单、
-凭据校验的回退来源、以及"只用公共额度换模型"在界面上做不到。
-动手前请先读第 3 节的「索引不变量」，那十条是这批代码存在的理由。
+第十轮只修**恢复契约**两处：空范围的 `reindex` 不得清除与自己无关的重建标记；
+`rebuild` 必须"归档可用 + 元数据同步 + 条数对得上"三条齐了才算恢复完成。
+动手前请先读第 3 节的「索引不变量」，那十一条是这批代码存在的理由。
 
 ---
 
@@ -30,7 +30,7 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | 以 `git log -1 --oneline` 为准；本轮修复的基线是 `8fa40bf`（本地与 `origin/main` 一致，工作区干净） |
+| 当前提交 | 以 `git log -1 --oneline` 为准；本轮修复的基线是 `14eb273`（本地与 `origin/main` 一致，工作区干净） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -43,7 +43,7 @@
 
 ```bash
 cd "F:/project/课题/RAG4Prefa"
-./.venv/Scripts/python.exe -m pytest -q          # 期望：165 passed
+./.venv/Scripts/python.exe -m pytest -q          # 期望：173 passed
 ./.venv/Scripts/python.exe -m ruff check rag4prefa tests scripts   # 期望：All checks passed
 ./.venv/Scripts/python.exe -m rag4prefa doctor   # 看后端、维度、缺哪些凭据
 ./.venv/Scripts/python.exe -m rag4prefa verify   # 逐 id 核对片段/归档/索引（空库也返回 0）
@@ -51,7 +51,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（3 797 行 Python + 731 行单页 HTML + 3 429 行测试）
+## 3. 代码地图（4 969 行 Python + 731 行单页 HTML + 3 617 行测试）
 
 ```
 rag4prefa/
@@ -60,22 +60,22 @@ rag4prefa/
 ├── db.py         129    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
 ├── repo.py       767    **全部 SQL 都在这里**，没有别处写 SQL
 ├── consistency.py 305   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
-├── ingest.py     447    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
+├── ingest.py     533    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
 ├── chunking.py    90+   按标题树切块；chunk_id 内容寻址（同 id 必同正文）
 ├── tokens.py      51    中英混排的 token 估算（非真实 tokenizer）
 ├── ask.py        186    混合召回 → RRF 融合 → 可选重排 → 流式生成
 ├── filters.py    103    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     38    系统提示词与引用格式
 ├── admin.py       64    项目/文档的查询与级联删除
-├── services.py   240    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── services.py   253    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
 ├── credentials.py 363   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
 ├── api.py        509    FastAPI 路由（只做协议转换，不含业务逻辑）
-├── cli.py        270    init / serve / doctor / ingest / reindex / rebuild / ask / projects / verify
+├── cli.py        290    init / serve / doctor / ingest / reindex / rebuild / ask / projects / verify
 └── adapters/     990+   embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
 ```
 
 前端只有一个文件 `rag4prefa/web/index.html`（731 行，原生 JS，无构建步骤）。
-`tests/` 165 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+`tests/` 173 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -130,6 +130,17 @@ rag4prefa/
     一致**，逐项校验一条都挑不出来，而检索会拿旧向量去配新正文。
     恢复正常态有两条路：`reindex`（重新算向量、花钱）或 `rebuild`（直接用归档里的
     现成向量，不花钱）。局部重建只能消除**同项目**的标记；全量的坑必须全量填。
+
+11. **"恢复完成"必须可验证，不能只是"函数返回了"。** `rebuild_store` 的完成条件有三条，
+    缺一条都不算恢复：① 归档能当恢复源（有正文就有归档向量、每行都带模型名、全库一套
+    模型与维度）；② 后端实际条数 = 归档条数；③ 归档的模型与维度写回 `meta`
+    **并且**标记回 `ready`（同一个事务）。
+    为什么第 ③ 条不能省：换模型重建中断时，归档已经是新模型、元数据还停在旧模型。
+    只恢复索引和标记，一致性检查会继续以"元数据模型 ≠ 归档模型"拒绝检索——命令报成功、
+    系统查不了，是最容易把人带偏的一种"假恢复"。
+    推论：**空范围的重建不得清除与自己无关的标记**。`reindex --project 某项目` 在没有
+    片段时只返回 0 条，不动标记；只有"真的全空（片段、归档、索引都是空的）"才允许置
+    `ready`，否则等于替一笔没走完的全量重建宣布成功。
 
 ### 请求链路（`/api/chat`）
 
@@ -534,6 +545,40 @@ verify                           → ok=true，三类差异全为 0
 这次冒烟的价值在于**证明了"条数相同"确实发现不了问题**：中断之后索引与归档的条数、
 模型名、维度一模一样，`verify` 的三类 id 差异也全是 0——唯一的证据就是那条标记。
 numpy 后端跑不出这个场景（索引与归档是同一张表），所以这条验证必须在 Milvus 上做。
+
+第十轮（2026-10-24 22:20）：补**恢复契约**。基线 `14eb273`，两处都是"恢复动作自己不可靠"。
+
+```
+pytest -q                    → 173 passed（新增 8 项恢复边界用例）
+ruff check                   → All checks passed
+```
+
+1. **空范围的 reindex 会清掉全量标记。** `reindex --project 某个不存在的项目` 走到
+   `rows` 为空的分支，旧代码直接 `set_index_state(ready)`。于是那笔没走完的全量重建
+   被"替它"宣布成功：归档已是新版、索引还是旧版、条数/模型/维度全都一致，从此再没有
+   任何痕迹能发现。现在**只有局部范围就返回 0 条、不动任何标记**，并在返回值里说明
+   还差哪一步；全量且无片段时，先确认"片段表真的空"（`chunk_count == 0`）再清；
+   片段表非空却一条重建输入都取不到（JOIN 不上项目/文档）属于数据缺失，直接拒绝。
+2. **`rebuild` 只恢复索引、不同步元数据。** 换模型重建中断后归档是新模型、`meta`
+   还是旧模型；`rebuild` 把索引和标记弄好了，一致性检查却继续以"元数据模型 ≠ 归档模型"
+   拒绝检索——**命令报成功、系统查不了**。现在完成条件是三条：归档能当恢复源（无缺行、
+   每行带模型名、全库一套模型与维度）→ 后端条数 = 归档条数 → 归档的模型与维度连同
+   `ready` 在一个事务里写回。任一不满足就抛错并**保留**标记，`rebuild` 返回非零退出码。
+
+真实 Milvus 闭环（`C:/tmp_r4p_smoke10`，真 embedding + 真 Milvus Lite + 假"换模型"）：
+
+```
+入库 2 块（Qwen3-Embedding-0.6B）      → 索引=归档=2
+换模型 + store.rebuild 直接失败         → 归档条数 2→2（完全没变）、模型已换成新名、
+                                        元数据仍是旧模型、标记 rebuilding:* → 检索被拒
+rebuild                                → 元数据模型=新名、维度=1024、标记=ready、
+                                        索引 2 条、verify ok=true、检索 2 条命中
+reindex --project 不存在的项目          → 0 条，标记仍为 rebuilding:*（不再被误清）
+```
+
+教训（第十轮）：**"恢复完成"不能用"恢复函数没有抛异常"来定义。** 恢复动作本身是一条
+业务路径，它的完成条件要能被复核——否则最坏的情况是它把保护标记清了、把系统留在
+"看起来正常、其实查不了"的状态里，比不恢复更难排查。
 
 
 第四轮（2026-10-23 22:10）的冒烟记录仍然有效：

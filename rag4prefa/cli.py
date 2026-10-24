@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from . import admin, ask, consistency, ingest, repo
+from .adapters.vectors import RebuildError
 from .config import get_settings
 from .consistency import IndexMismatch
 from .db import init_db
@@ -115,12 +116,31 @@ def cmd_rebuild(_: argparse.Namespace) -> int:
     为什么单独有这个命令：`reindex` 会把每段重新算一遍向量，而重建失败之后归档里
     本来就存着完整的向量副本——再花钱算一遍纯属浪费。两者都是"清除索引切换标记"
     的合法出口，区别只在要不要重新付 embedding 的钱。
+
+    恢复是否成功不看"函数有没有抛异常"，而看三条一起到位：索引条数 = 归档条数、
+    元数据 = 归档里的模型与维度、标记回到 ready。任何一条不满足都返回非零，
+    并把标记留在原处。
     """
     services = build_services()
     try:
         total = ingest.rebuild_store(services.conn, services.store)
-        _print({"rebuilt": total, "index_state": repo.get_index_state(services.conn)})
+        _print(
+            {
+                "rebuilt": total,
+                "model": repo.get_meta(services.conn, "embedding_model"),
+                "dim": repo.get_meta(services.conn, "embedding_dim"),
+                "index_state": repo.get_index_state(services.conn),
+                # 恢复用的是归档里的模型，它可能和当前配置不同——指出来，否则用户
+                # 会在下一次检索被拒时一头雾水
+                "configured_model": (
+                    services.embedder.model if services.embedder else None
+                ),
+            }
+        )
         return 0
+    except (ingest.ReindexError, RebuildError) as exc:
+        print(f"rebuild 未完成：{exc}", file=sys.stderr)
+        return 1
     finally:
         services.close()
 
