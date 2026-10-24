@@ -76,6 +76,64 @@ def from_headers(headers: Mapping[str, str]) -> UserCredentials | None:
     return UserCredentials(name, embedding_key, llm_key)
 
 
+# Key 的形态能认出平台。只收能确定的：认不出来就交给厂商判断，不要瞎猜。
+_SIGNATURES = (
+    ("ms-", "魔搭（ModelScope）"),
+    ("ds-", "魔搭（ModelScope）"),
+    ("sk-", "硅基流动 / 阿里百炼 / OpenAI"),
+)
+
+# 端点接受哪种前缀。硅基流动、百炼、OpenAI 都发 sk- 开头的 Key，所以这层只能
+# 判断"明显不是这家的"（例如把 ms- 填给硅基流动），判断不了 sk- 之间的串用。
+_ENDPOINTS = (
+    ("modelscope.cn", ("ms-", "ds-"), "魔搭（ModelScope）"),
+    ("siliconflow.cn", ("sk-",), "硅基流动"),
+    ("dashscope.aliyuncs.com", ("sk-",), "阿里百炼"),
+    ("api.openai.com", ("sk-",), "OpenAI"),
+)
+
+
+def platform_of(base_url: str) -> str:
+    """从接口地址认出是哪家平台，认不出就返回空串。"""
+    url = (base_url or "").lower()
+    for domain, _, name in _ENDPOINTS:
+        if domain in url:
+            return name
+    return ""
+
+
+def platform_mismatch(key: str, base_url: str, *, label: str = "embedding") -> str | None:
+    """Key 与接口地址明显不属于同一家时，返回一句能照着改的提示；否则 None。
+
+    场景很具体：设置面板里只有两个输入框、形状完全一样，把魔搭令牌填进 embedding
+    一栏是很容易发生的事。用户随后收到硅基流动的 `401 Token is invalid`，自然会去
+    反复核对令牌有没有复制错——方向从一开始就偏了。这层判断不发请求、零成本。
+    """
+    if not key:
+        return None
+    url = (base_url or "").lower()
+    for domain, accepted, name in _ENDPOINTS:
+        if domain not in url:
+            continue
+        if key.startswith(accepted):
+            return None
+        owner = next((label_ for prefix, label_ in _SIGNATURES if key.startswith(prefix)), "")
+        lead = f"这个 Key 看起来是{owner}签发的，" if owner else ""
+        return (
+            f"{lead}但 {label} 请求发往{name}（{domain}）。"
+            f"每一家的 Key 只能配它自己的接口地址，请换成{name}签发的 Key。"
+        )
+    return None
+
+
+def auth_failure_hint(base_url: str) -> str:
+    """鉴权失败时补一句通用提醒：Key 有效但填错平台，表现同样是 401。"""
+    name = platform_of(base_url)
+    if not name:
+        return ""
+    return f"（该 Key 未被{name}接受：确认它由{name}签发，不同平台的 Key 不能混用）"
+
+
 class CredentialPool:
     """按 Key 指纹复用 Embedder / LLM 客户端。
 

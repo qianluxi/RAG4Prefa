@@ -20,7 +20,7 @@ from rag4prefa.adapters.embed import Embedder
 from rag4prefa.adapters.llm import LLM
 from rag4prefa.adapters.rerank import NoopReranker
 from rag4prefa.adapters.vectors import NumpyStore
-from rag4prefa.api import _redact, create_app
+from rag4prefa.api import _redact, _with_model_hint, create_app
 from rag4prefa.config import Settings
 from rag4prefa.credentials import UserCredentials
 from rag4prefa.db import connect, init_db
@@ -244,3 +244,44 @@ def test_missing_embedder_blocks_upload_before_creating_project(
         "SELECT COUNT(*) FROM projects"
     ).fetchone()[0]
     assert rows == 0, "被拒绝的上传不该在库里留下空项目"
+
+
+def test_verify_blocks_a_token_from_another_platform(
+    api_env: tuple[Services, Settings],
+) -> None:
+    """把魔搭令牌填给 embedding 时，应当在发请求之前就说清是哪一步错了。
+
+    端点用 `.invalid` 结尾：即便预检失效，请求也只会 DNS 失败，不会真的打到厂商
+    接口——离线测试不该产生外部调用，也不该依赖网络是否可达。
+    """
+    services, settings = api_env
+    services.settings = settings.model_copy(
+        update={"embedding_base_url": "https://api.siliconflow.cn.invalid/v1"}
+    )
+
+    with TestClient(create_app(services)) as client:
+        data = client.post(
+            "/api/credentials/verify",
+            json={"username": "alice", "embedding_key": "ms-alice-token", "llm_key": ""},
+        ).json()
+
+    assert data["embedding"]["ok"] is False
+    assert data["embedding"]["source"] == "user"
+    assert "魔搭" in data["embedding"]["error"]
+    assert "硅基流动" in data["embedding"]["error"], "必须说清请求发往哪一家"
+
+
+def test_missing_model_points_at_the_model_list() -> None:
+    """模型下线时给的是 400，看起来像鉴权问题；提示必须把人引到模型名上。"""
+    message = _with_model_hint(
+        "BadRequestError: Error code: 400 - Model id : Qwen/X , has no provider supported",
+        "https://api-inference.modelscope.cn/v1",
+    )
+
+    assert "v1/models" in message
+    assert "api-inference.modelscope.cn" in message
+
+
+def test_model_hint_stays_quiet_on_other_errors() -> None:
+    """别的错误不能被加上模型提示，否则会指向错误的方向。"""
+    assert _with_model_hint("RateLimitError: 429", "https://x/v1") == "RateLimitError: 429"

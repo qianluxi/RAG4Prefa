@@ -126,3 +126,40 @@ def test_pool_close_releases_everything(
 
     assert one.closed and two.closed
     assert len(pool) == 0
+
+
+# ── Key 与端点是否配对 ──────────────────────────────────────
+
+
+def test_modelscope_token_on_siliconflow_is_caught_before_request() -> None:
+    """把魔搭令牌填进 embedding 一栏，是这套界面最容易犯的错。
+
+    靠厂商返回的 `401 Token is invalid` 排查，会把人引去核对令牌有没有复制错；
+    而真正的问题是两个输入框长得一样。这一层必须在发请求之前就说清楚。
+    """
+    hint = credentials.platform_mismatch("ms-abc123", "https://api.siliconflow.cn/v1")
+
+    assert hint
+    assert "魔搭" in hint and "硅基流动" in hint
+
+
+def test_matching_platform_passes_silently() -> None:
+    """配对正确时不能多嘴：假阳性会让正常配置看起来有毛病。"""
+    assert credentials.platform_mismatch("ms-abc", "https://api-inference.modelscope.cn/v1") is None
+    assert credentials.platform_mismatch("sk-abc", "https://api.siliconflow.cn/v1") is None
+
+
+def test_unknown_endpoint_is_not_judged() -> None:
+    """认不出的端点（自建、代理、测试假服务）一律不判断。"""
+    assert credentials.platform_mismatch("ms-abc", "http://127.0.0.1:8123/v1") is None
+    assert credentials.platform_mismatch("", "https://api.siliconflow.cn/v1") is None
+
+
+def test_sk_keys_cannot_be_told_apart() -> None:
+    """硅基流动、百炼、OpenAI 都发 sk-，这层判断不假装能区分。"""
+    assert credentials.platform_mismatch("sk-bailian", "https://api.siliconflow.cn/v1") is None
+
+
+def test_auth_failure_hint_names_the_platform() -> None:
+    assert "硅基流动" in credentials.auth_failure_hint("https://api.siliconflow.cn/v1")
+    assert credentials.auth_failure_hint("http://127.0.0.1:8123/v1") == ""

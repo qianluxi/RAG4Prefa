@@ -17,7 +17,7 @@ from . import admin, ask, consistency, ingest, repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
 from .consistency import IndexMismatch
-from .credentials import from_headers
+from .credentials import auth_failure_hint, from_headers, platform_mismatch
 from .domain import Filter, JobState
 from .services import Services, build_services
 
@@ -142,7 +142,15 @@ def create_app(services: Services | None = None) -> FastAPI:
             "llm": {"ok": False, "error": "未配置 Key"},
         }
 
-        if embedding_key:
+        # 先做本地预检：明显填错平台的 Key 不必真发请求，也免得把厂商那句
+        # "Token is invalid" 原样转给用户——那句话会把人引去检查令牌有没有复制错。
+        emb_source = "user" if payload.embedding_key.strip() else "server"
+        emb_hint = platform_mismatch(
+            payload.embedding_key.strip(), local.embedding_base_url, label="embedding"
+        )
+        if emb_hint:
+            result["embedding"] = {"ok": False, "source": emb_source, "error": emb_hint}
+        elif embedding_key:
             embedder: Embedder | None = None
             try:
                 embedder = Embedder(local, services.conn)
@@ -152,19 +160,26 @@ def create_app(services: Services | None = None) -> FastAPI:
                     "model": local.embedding_model,
                     "dim": dim,
                     # 留空会回落到服务端 Key，必须标明来源，否则用户会以为验的是自己的
-                    "source": "user" if payload.embedding_key.strip() else "server",
+                    "source": emb_source,
                 }
             except Exception as exc:
+                message = _redact(f"{type(exc).__name__}: {exc}", *secrets)
                 result["embedding"] = {
                     "ok": False,
-                    "source": "user" if payload.embedding_key.strip() else "server",
-                    "error": _redact(f"{type(exc).__name__}: {exc}", *secrets),
+                    "source": emb_source,
+                    "error": _with_auth_hint(message, local.embedding_base_url),
                 }
             finally:
                 if embedder is not None:
                     embedder.close()
 
-        if llm_key:
+        llm_source = "user" if payload.llm_key.strip() else "server"
+        llm_hint = platform_mismatch(
+            payload.llm_key.strip(), local.llm_base_url, label="LLM"
+        )
+        if llm_hint:
+            result["llm"] = {"ok": False, "source": llm_source, "error": llm_hint}
+        elif llm_key:
             llm: LLM | None = None
             try:
                 llm = LLM(local)
@@ -172,16 +187,21 @@ def create_app(services: Services | None = None) -> FastAPI:
                 result["llm"] = {
                     "ok": True,
                     "model": local.llm_model,
-                    "source": "user" if payload.llm_key.strip() else "server",
+                    "source": llm_source,
                     # 有些模型会把 16 个 token 全花在思考上、正文为空——连接是通的，
                     # 所以只记长度，不把空回复当失败
                     "reply_chars": len(reply),
                 }
             except Exception as exc:
+                message = _redact(f"{type(exc).__name__}: {exc}", *secrets)
                 result["llm"] = {
                     "ok": False,
-                    "source": "user" if payload.llm_key.strip() else "server",
-                    "error": _redact(f"{type(exc).__name__}: {exc}", *secrets),
+                    "source": llm_source,
+                    # 模型名不在该平台的当前目录里时，鉴权是通的、报的是 400，
+                    # 用户的直觉却是"我的 token 有问题"，所以把排查方向写清楚
+                    "error": _with_model_hint(
+                        _with_auth_hint(message, local.llm_base_url), local.llm_base_url
+                    ),
                 }
             finally:
                 if llm is not None:
@@ -364,6 +384,39 @@ def _redact(message: str, *secrets: str) -> str:
         if secret and len(secret) >= 6:
             message = message.replace(secret, "***")
     return message[:600]
+
+
+def _with_auth_hint(message: str, base_url: str) -> str:
+    """401 类错误补一句"Key 可能不属于这个平台"。
+
+    同一个 401 有两种成因：Key 复制错了，或者 Key 是别家的。后者更常见于
+    "两个输入框长得一样"的设置面板，而报错文本本身永远只说 Token 无效。
+    """
+    lowered = message.lower()
+    if "401" in message or "authentication" in lowered or "token is invalid" in lowered:
+        return message + auth_failure_hint(base_url)
+    return message
+
+
+def _with_model_hint(message: str, base_url: str) -> str:
+    """模型名不在该平台目录里时，指出正确的排查方向与查法。
+
+    这种失败很像鉴权问题（都是调不通），但 token 其实是好的。不写清楚的话，
+    用户会反复重建 Key，而真正该改的是模型名。
+    """
+    lowered = message.lower()
+    missing_model = (
+        "no provider supported" in lowered
+        or "model not found" in lowered
+        or "invalid model" in lowered
+    )
+    if missing_model:
+        host = base_url.split("//")[-1].split("/")[0]
+        return (
+            f"{message}\n该平台的模型目录会下线旧 ID。列出当前可调用的模型（无需 Key）："
+            f"curl -s https://{host}/v1/models"
+        )
+    return message
 
 
 def _safe_name(name: str) -> str:
