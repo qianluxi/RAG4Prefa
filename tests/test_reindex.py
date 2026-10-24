@@ -10,12 +10,18 @@
 from __future__ import annotations
 
 import sqlite3
+from array import array
 from pathlib import Path
 
 import pytest
 
 from rag4prefa import consistency, repo
-from rag4prefa.adapters.vectors import NumpyStore, VectorItem, to_archive_row
+from rag4prefa.adapters.vectors import (
+    NumpyStore,
+    RebuildError,
+    VectorItem,
+    to_archive_row,
+)
 from rag4prefa.config import Settings
 from rag4prefa.domain import Filter
 from rag4prefa.ingest import ReindexError, ingest_file, rebuild_store, reindex
@@ -505,6 +511,116 @@ def test_rebuild_store_refuses_an_incomplete_archive_and_keeps_the_marker(
 
     assert repo.get_index_state(conn) == "rebuilding:*", "恢复失败必须把标记留着"
     assert repo.vector_stats(conn)["count"] == total - 1, "被拒绝时不该再改动归档"
+
+
+class BrokenTargetStore:
+    """站在"另一个后端"（如 Milvus）的位置上：不与 SQLite 共享存储。
+
+    与 `FailingRebuildStore` 的区别在于它不继承 NumpyStore：重建失败时，
+    numpy 的内存索引和 `vectors` 表是不是还对得上，完全取决于调用方有没有提前改表。
+    """
+
+    name = "broken-target"
+
+    def __init__(self, dim: int) -> None:
+        self.dim = dim
+        self.notes: list[str] = []
+
+    def rebuild(self, items) -> None:  # type: ignore[override]
+        raise RuntimeError("create_collection failed: code=1")
+
+    def count(self) -> int:  # pragma: no cover
+        raise AssertionError("重建已经失败，不该再问条数")
+
+
+def test_a_failed_rebuild_leaves_the_archive_untouched(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """目标后端重建失败时，归档必须原样——numpy 的内存索引就是这张表的缓存。
+
+    旧实现是"先删孤儿行、再重建索引"：删完、重建失败、调用方继续用原来的 numpy
+    对象，而它的内存索引里还留着那些行，条数从此对不上，一致性检查开始拒绝检索。
+    一次可选迁移于是把本来状态明确的库弄成了不可用。
+    """
+    store = _store(conn)
+    _seed(conn, store, settings, docx_file)
+    repo.archive_vectors(
+        conn,
+        [
+            to_archive_row(
+                VectorItem(
+                    "chunk-已删除", [0.5] * FakeEmbedder.dim, "甲项目", "", 2024, "fake-embedder"
+                )
+            )
+        ],
+    )
+    before = repo.vector_stats(conn)
+
+    with pytest.raises(RuntimeError):
+        rebuild_store(conn, BrokenTargetStore(FakeEmbedder.dim))
+
+    assert repo.vector_stats(conn) == before, "目标后端没成功之前不许删归档行"
+    # 源后端按归档重新加载后条数仍然对得上，才叫"能继续用"
+    assert _store(conn).count() == before["count"]
+
+
+def test_a_failed_rebuild_keeps_the_source_backend_queryable(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """归档本来就健康时，迁移失败不该让检索也停下来。"""
+    store = _store(conn)
+    total = _seed(conn, store, settings, docx_file)
+
+    with pytest.raises(RuntimeError):
+        rebuild_store(conn, BrokenTargetStore(FakeEmbedder.dim))
+
+    assert store.count() == total
+    _query(conn, store)
+    assert store.search(FakeEmbedder().embed_one("悬挑"), limit=5)
+
+
+def test_rebuild_store_rejects_vectors_shorter_than_their_declared_dim(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """`dim` 是声明、`vec` 的字节长度才是事实，两者必须交叉验证。
+
+    只比声明的话，"每行都写 16 维、实际只存 8 个浮点"的归档能通过全部检查，
+    恢复出来的索引与 meta 对不上：命令报成功，检索却继续被拒。
+    """
+    store = _store(conn)
+    _seed(conn, store, settings, docx_file)
+    repo.set_index_state(conn, "rebuilding:*")
+
+    victim = sorted(repo.archived_chunk_ids(conn))[0]
+    conn.execute(
+        "UPDATE vectors SET vec = ? WHERE chunk_id = ?",
+        (array("f", [0.1] * (FakeEmbedder.dim // 2)).tobytes(), victim),
+    )
+    conn.commit()
+    before = repo.vector_stats(conn)
+
+    with pytest.raises(ReindexError, match="实际长度"):
+        rebuild_store(conn, store)
+
+    assert repo.get_index_state(conn) == "rebuilding:*", "恢复失败必须留着标记"
+    assert repo.vector_stats(conn) == before, "被拒绝时不该改动归档"
+
+
+def test_a_corrupt_archive_fails_with_a_readable_message_not_a_numpy_traceback(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """字节长度坏掉时连 numpy 都拼不出矩阵；报错要指向"从原文重新生成"。"""
+    store = _store(conn)
+    _seed(conn, store, settings, docx_file)
+    victim = sorted(repo.archived_chunk_ids(conn))[0]
+    conn.execute(
+        "UPDATE vectors SET vec = ? WHERE chunk_id = ?",
+        (array("f", [0.1] * (FakeEmbedder.dim // 2)).tobytes(), victim),
+    )
+    conn.commit()
+
+    with pytest.raises(RebuildError, match="字节长度"):
+        _store(conn)
 
 
 def test_ingest_is_refused_while_a_rebuild_is_pending(

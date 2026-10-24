@@ -291,3 +291,55 @@ def test_orphan_archive_rows_are_not_read_back(conn: sqlite3.Connection) -> None
     )
     assert repo.iter_archived_vectors(conn) == []
     assert repo.delete_orphan_vectors(conn) == 1
+
+
+# ── 空库不等于"没有未完成的事" ────────────────────────────────
+
+
+def test_an_empty_database_does_not_cancel_a_pending_rebuild(
+    conn: sqlite3.Connection,
+) -> None:
+    """空库只说明没有可比对的数据，不能证明那笔重建已经走完。
+
+    旧逻辑在 `is_empty` 时直接返回空列表，于是空库上带着 `rebuilding:*` 会被判成
+    "一致"：先放行写入，新内容一落地又撞上这条标记——等于把数据收进来再拒绝检索。
+    """
+    repo.set_index_state(conn, "rebuilding:*")
+
+    state = inspect(conn, store_count=0)
+    assert state.is_empty is True
+    assert state.blockers, "空库不能抵消未完成的重建标记"
+    assert "重建索引没有完成" in state.blockers[0]
+
+    with pytest.raises(IndexMismatch, match="重建索引没有完成"):
+        consistency.ensure_queryable(conn, FakeEmbedder.model, FakeEmbedder.dim, store_count=0)
+    with pytest.raises(IndexMismatch, match="重建索引没有完成"):
+        consistency.ensure_writable(conn, FakeEmbedder.model, FakeEmbedder.dim, store_count=0)
+
+
+def test_an_empty_database_still_allows_retrying_the_same_project(
+    conn: sqlite3.Connection,
+) -> None:
+    """唯一的例外要保住：同项目的局部重建正是清除自己标记的方式。"""
+    repo.set_index_state(conn, "rebuilding:甲项目")
+
+    state = consistency.ensure_writable(
+        conn,
+        FakeEmbedder.model,
+        FakeEmbedder.dim,
+        store_count=0,
+        action="局部重建",
+        retry_scope="甲项目",
+    )
+    assert state.pending == "rebuilding:甲项目"
+
+    # 别的项目、以及全量标记，都不能借用这个例外
+    with pytest.raises(IndexMismatch):
+        consistency.ensure_writable(
+            conn,
+            FakeEmbedder.model,
+            FakeEmbedder.dim,
+            store_count=0,
+            action="局部重建",
+            retry_scope="乙项目",
+        )

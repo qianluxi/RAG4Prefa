@@ -284,19 +284,25 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
     "恢复完成"= 索引、归档、元数据三者一起回到可服务状态，而不只是"重建函数没抛异常"。
     这三步缺任何一步，命令都会报成功而系统仍然查不了：
 
-    1. **先证归档能当恢复源**：有正文就必须有归档向量，归档行必须带模型名，且全库
-       只有一套模型、一种维度。不合格就抛错并**保留**未完成标记，别在这里反复重试；
+    1. **先证归档能当恢复源**：有正文就必须有归档向量，归档行必须带模型名，全库只有
+       一套模型、一种维度，且每行向量的**实际字节长度**与声明的维度相符。不合格就抛错
+       并**保留**未完成标记，别在这里反复重试；
     2. 再从归档重建索引，并核对后端实际条数——"写进去了"要以条数为证；
-    3. 最后把归档对应的模型、维度连同 `index_state=ready` 在**同一个事务**里提交。
+    3. 最后清掉孤儿归档行，并把归档对应的模型、维度连同 `index_state=ready` 在
+       **同一个事务**里提交。
 
     第 3 步是必须的：换模型重建中断后，归档已经是新模型、元数据还停在旧模型。只恢复
     索引和标记的话，一致性检查会因为"元数据模型 ≠ 归档模型"继续拒绝检索——用户看到
     的是"恢复命令说成功，可还是查不了"。
+
+    顺序同理不能反：**目标后端重建成功之前，归档一个字节都不许动**。numpy 后端的内存
+    索引就是 `vectors` 表的缓存，先删孤儿行再失败，它的条数就和归档对不上了——一次
+    "可选迁移失败"会把本来能用的后端变成不可检索。旧实现正是在这个位置先删后建。
     """
     # 只有仍有正文的行才算恢复源；孤儿行留着会让重建后的索引比事实表更大
     rows = repo.iter_archived_vectors(conn)
     models = {r["model"] for r in rows}
-    dims = {int(r["dim"]) for r in rows}
+    dims = {int(r["dim"] or 0) for r in rows}
 
     problems: list[str] = []
     missing = repo.missing_vector_count(conn)
@@ -308,6 +314,19 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
         problems.append(f"归档里混有多个模型的向量（{'、'.join(sorted(models))}）")
     if len(dims) > 1:
         problems.append(f"归档里混有多种维度（{'、'.join(str(d) for d in sorted(dims))}）")
+    elif rows and 0 in dims:
+        problems.append("有归档向量记录的维度是 0，无法确认向量空间")
+    bad = [r for r in rows if len(r["vec"]) != int(r["dim"] or 0) * 4]
+    if bad:
+        # `dim` 字段只是声明，float32 字节长度才是事实。只比声明的话，"每行都写 1024、
+        # 实际只有 768 个浮点"的归档照样通过校验，恢复出来的索引和 meta 对不上，
+        # 命令报成功、检索却继续被拒。
+        first = bad[0]
+        problems.append(
+            f"有 {len(bad)} 条归档向量的实际长度与声明的维度对不上"
+            f"（例如 {first['chunk_id']}：声明 {first['dim']} 维、"
+            f"实际 {len(first['vec']) / 4:g} 个浮点数）——归档已被写坏"
+        )
     if problems:
         raise ReindexError(
             "不能从归档恢复（索引与重建标记均未改动）：\n- "
@@ -315,8 +334,6 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
             + "\n执行 `python -m rag4prefa reindex` 全量重算，别在这份归档上反复重试。"
         )
 
-    # 校验通过了才动数据：下面这一步会物理删掉孤儿行
-    repo.delete_orphan_vectors(conn)
     items = [from_archive_row(r) for r in rows]
     store.rebuild(items)
 
@@ -327,6 +344,9 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
             "重建标记保持原样。可直接重试 rebuild。"
         )
 
+    # 到这里目标后端已经是新的一套，再清孤儿行就伤不到任何一方：
+    # 归档里剩下的孤儿本来也不在 items 里，删掉只是让"归档 = 索引"成立。
+    repo.delete_orphan_vectors(conn)
     model = next(iter(models), "") or (repo.get_meta(conn, "embedding_model") or "")
     dim = str(next(iter(dims), 0) or store.dim)
     repo.set_index_meta(conn, model=model, dim=dim, state=repo.INDEX_READY)
@@ -469,10 +489,11 @@ def reindex(
     if project_name:
         store.upsert(items)  # 局部：只覆盖本次范围内的 chunk_id
     else:
-        # 全量：归档、索引、片段三者要对齐，先把归档里的孤儿清掉，
-        # 否则 rebuild_store 会把已经没有正文的旧向量重新灌回索引。
-        repo.delete_orphan_vectors(conn)
+        # 全量：先把索引整体换掉，再清没有任何正文的归档行——顺序不能反。
+        # 先清的话，重建一旦失败，归档已经少了行而索引还停在旧的一套；numpy 后端
+        # 的内存索引更是直接与表脱节，后面的修复动作反而更难判断起点。
         store.rebuild(items)
+        repo.delete_orphan_vectors(conn)
     # 全量重建重写了所有范围，一定能恢复 ready；局部重建只能抵消**同范围**的标记，
     # 若上一笔失败是全量的，状态要原样留着，否则会把全库的坑说成已经填了。
     settled = (

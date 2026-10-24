@@ -3,13 +3,13 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-24 22:20
-**交接时状态**：可运行、**173 项离线测试全绿**；真实厂商 API 已端到端验证
+**交接时间**：2026-10-24 23:10
+**交接时状态**：可运行、**183 项离线测试全绿**；真实厂商 API 已端到端验证
 （embedding 走硅基流动国际站 `Qwen/Qwen3-Embedding-0.6B`、LLM 走魔搭 `Qwen/Qwen3.5-35B-A3B`，
 `POST /api/credentials/verify` 两项均通，`dim=1024` 与服务端配置一致）。
-第十轮只修**恢复契约**两处：空范围的 `reindex` 不得清除与自己无关的重建标记；
-`rebuild` 必须"归档可用 + 元数据同步 + 条数对得上"三条齐了才算恢复完成。
-动手前请先读第 3 节的「索引不变量」，那十一条是这批代码存在的理由。
+第十一轮修三处：可选迁移到 Milvus 失败时不得污染源后端与归档；空库上的未完成重建标记
+不再被"空"抵消；从归档恢复要交叉验证**实际字节长度**与声明维度。
+动手前请先读第 3 节的「索引不变量」，那十二条是这批代码存在的理由。
 
 ---
 
@@ -30,7 +30,7 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | 以 `git log -1 --oneline` 为准；本轮修复的基线是 `14eb273`（本地与 `origin/main` 一致，工作区干净） |
+| 当前提交 | 以 `git log -1 --oneline` 为准；本轮修复的基线是 `6217664`（本地与 `origin/main` 一致，工作区干净） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -43,7 +43,7 @@
 
 ```bash
 cd "F:/project/课题/RAG4Prefa"
-./.venv/Scripts/python.exe -m pytest -q          # 期望：173 passed
+./.venv/Scripts/python.exe -m pytest -q          # 期望：183 passed
 ./.venv/Scripts/python.exe -m ruff check rag4prefa tests scripts   # 期望：All checks passed
 ./.venv/Scripts/python.exe -m rag4prefa doctor   # 看后端、维度、缺哪些凭据
 ./.venv/Scripts/python.exe -m rag4prefa verify   # 逐 id 核对片段/归档/索引（空库也返回 0）
@@ -51,7 +51,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（4 969 行 Python + 731 行单页 HTML + 3 617 行测试）
+## 3. 代码地图（5 025 行 Python + 731 行单页 HTML + 3 967 行测试）
 
 ```
 rag4prefa/
@@ -59,15 +59,15 @@ rag4prefa/
 ├── domain.py     122    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
 ├── db.py         129    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
 ├── repo.py       767    **全部 SQL 都在这里**，没有别处写 SQL
-├── consistency.py 305   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
-├── ingest.py     533    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
+├── consistency.py 315   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
+├── ingest.py     555    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
 ├── chunking.py    90+   按标题树切块；chunk_id 内容寻址（同 id 必同正文）
 ├── tokens.py      51    中英混排的 token 估算（非真实 tokenizer）
 ├── ask.py        186    混合召回 → RRF 融合 → 可选重排 → 流式生成
 ├── filters.py    103    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     38    系统提示词与引用格式
 ├── admin.py       64    项目/文档的查询与级联删除
-├── services.py   253    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── services.py   267    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
 ├── credentials.py 363   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
 ├── api.py        509    FastAPI 路由（只做协议转换，不含业务逻辑）
 ├── cli.py        290    init / serve / doctor / ingest / reindex / rebuild / ask / projects / verify
@@ -75,7 +75,7 @@ rag4prefa/
 ```
 
 前端只有一个文件 `rag4prefa/web/index.html`（731 行，原生 JS，无构建步骤）。
-`tests/` 173 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+`tests/` 183 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -131,16 +131,34 @@ rag4prefa/
     恢复正常态有两条路：`reindex`（重新算向量、花钱）或 `rebuild`（直接用归档里的
     现成向量，不花钱）。局部重建只能消除**同项目**的标记；全量的坑必须全量填。
 
-11. **"恢复完成"必须可验证，不能只是"函数返回了"。** `rebuild_store` 的完成条件有三条，
+11. **"恢复完成"必须可验证，不能只是"函数返回了"。** `rebuild_store` 的完成条件有四条，
     缺一条都不算恢复：① 归档能当恢复源（有正文就有归档向量、每行都带模型名、全库一套
-    模型与维度）；② 后端实际条数 = 归档条数；③ 归档的模型与维度写回 `meta`
-    **并且**标记回 `ready`（同一个事务）。
+    模型与维度、**且每行向量的实际字节长度 = 声明维度 × 4**）；② 后端实际条数 = 归档条数；
+    ③ 归档的模型与维度写回 `meta` **并且**标记回 `ready`（同一个事务）；④ 孤儿归档行在
+    ①②之后才清理。
     为什么第 ③ 条不能省：换模型重建中断时，归档已经是新模型、元数据还停在旧模型。
     只恢复索引和标记，一致性检查会继续以"元数据模型 ≠ 归档模型"拒绝检索——命令报成功、
     系统查不了，是最容易把人带偏的一种"假恢复"。
-    推论：**空范围的重建不得清除与自己无关的标记**。`reindex --project 某项目` 在没有
+    为什么第 ① 条要查字节长度：`dim` 是声明，`vec` 的 float32 字节数才是事实。只比声明时，
+    "每行都写 1024 维、实际只有 768 个浮点"的归档能通过全部检查，恢复出来的索引与 meta
+    对不上；numpy 后端更会直接崩在 `vstack` 的一句 "dimensions must match" 上。
+    推论一：**空范围的重建不得清除与自己无关的标记**。`reindex --project 某项目` 在没有
     片段时只返回 0 条，不动标记；只有"真的全空（片段、归档、索引都是空的）"才允许置
     `ready`，否则等于替一笔没走完的全量重建宣布成功。
+    推论二：**"空库"不能抵消未完成标记**。`IndexState.blockers` 先判 `pending` 再判
+    `is_empty`：空只说明没有可比对的数据，证明不了那笔重建走完了。反过来先放行写入，
+    新内容一落地又会撞上标记，等于把数据收进来再拒绝检索。
+
+12. **自动迁移到 Milvus 是可选升级，失败必须原地降级。** 启动时因维度未知回退到 numpy，
+    首次入库拿到维度后 `maybe_promote()` 试图迁回 Milvus。这条路径挂在入库成功之后
+    （`api.py` / `cli.py` 都紧跟 `ingest_batch`），所以它**任何异常都不许外溢**——
+    api 那个 `try` 块会把任务状态改写成 `failed`，而数据其实已经写好了。
+    两条实现约束：
+    - **目标后端重建成功之前，归档一个字节都不许动**。numpy 的内存索引就是 `vectors`
+      表的缓存，先删孤儿行再失败会让它的条数与归档脱节，一次可选迁移把本来能用的后端
+      弄成不可检索（第十一轮修正，旧实现正是先删后建）；
+    - 捕获范围是 `Exception`，不是 `ReindexError`/`RebuildError` 白名单。pymilvus 在
+      造集合、写向量、加载集合、文件被占用时抛的是它自己的异常，一样只该降级。
 
 ### 请求链路（`/api/chat`）
 
@@ -579,6 +597,35 @@ reindex --project 不存在的项目          → 0 条，标记仍为 rebuildin
 教训（第十轮）：**"恢复完成"不能用"恢复函数没有抛异常"来定义。** 恢复动作本身是一条
 业务路径，它的完成条件要能被复核——否则最坏的情况是它把保护标记清了、把系统留在
 "看起来正常、其实查不了"的状态里，比不恢复更难排查。
+
+第十一轮（2026-10-24 23:05）：基线 `6217664`。这轮盯的是**"可选动作失败后留下什么"**。
+
+```
+pytest -q                    → 183 passed（新增 10 项：4 项迁移降级、4 项归档校验、2 项空库标记）
+ruff check                   → All checks passed
+```
+
+1. **可选迁移失败会把能用的后端弄成不可用。** `rebuild_store` 先 `delete_orphan_vectors()`
+   再 `store.rebuild()`。目标后端是 Milvus、源后端是 numpy 时两者共用 `vectors` 表：
+   删完孤儿、Milvus 建集合失败、`maybe_promote` 捕获后继续用原来的 numpy 对象，而它的
+   内存索引里还留着那些行。"迁移失败"于是变成了"条数对不上、检索被拒"。
+   现在**归档在目标后端校验通过之前一个字节都不动**，孤儿行放到最后清。
+   `reindex` 的全量分支同理（原来也是先删后建）。
+2. **可选迁移的异常没被接住。** `maybe_promote` 只捕获 `ReindexError`/`RebuildError`，
+   而 `MilvusStore.rebuild()` 在建集合/写向量/load 失败时抛的是 pymilvus 自己的异常。
+   它挂在 `ingest_batch` 之后、同一个 `try` 里——一次没接住就把已经 done 的任务改成
+   failed。现在构造与重建两段都按 `Exception` 兜底，只记 notes、保留原后端。
+3. **空库会把未完成的重建标记"抵消"掉。** `IndexState.blockers` 先判 `is_empty` 再返回，
+   空库上带着 `rebuilding:*` 也报一致；`ensure_writable` 复用它，于是新内容被收进来，
+   再被同一条标记拒绝检索。现在标记先判、空判后置，同项目局部重建的例外照旧保留。
+4. **`dim` 字段没和实际字节长度交叉验证。** 每行都声明 1024 维、实际只有 768 个浮点时，
+   只比声明的校验全部通过；numpy 会崩在 `vstack` 的 "dimensions must match"，
+   Milvus 侧则会先把这份坏归档宣布为恢复成功。现在逐行核对 `len(vec) == dim * 4`，
+   不符就抛 `ReindexError` 并保留标记，指向"从原文重新生成向量"。
+
+教训（第十一轮）：**可选项的失败路径要和主路径一样明确"谁没被改动"。**
+"迁移是可选的"只是说它失败不该报错，不表示它可以先动共享数据再失败——
+对 numpy 而言，`vectors` 表就是它的索引本体，删一行就是删它的索引。
 
 
 第四轮（2026-10-23 22:10）的冒烟记录仍然有效：

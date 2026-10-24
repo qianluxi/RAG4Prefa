@@ -78,18 +78,28 @@ class IndexState:
 
     @property
     def is_empty(self) -> bool:
-        """全空（新库）：此时没有任何东西可以不一致。"""
+        """全空（新库）：没有可以互相比对的数据。
+
+        注意它**不等于"一致"**：空库上仍可能留着一条没走完的重建标记，那一条
+        与数据无关、不能被"空"抵消，所以 `blockers` 会先判标记再判空。
+        """
         return not self.chunks and not self.count and not self.store_count
 
     @property
     def blockers(self) -> list[str]:
         """索引不能自证一致——出现任意一条，检索和增量写入都必须拒绝。"""
-        if self.is_empty:
-            return []
         problems: list[str] = []
 
+        # 未完成的重建标记必须排在"空库"判断**之前**：
+        # 空库只说明没有可以互相比对的数据，它证明不了那笔重建已经走完。反过来，
+        # 空库上带着 `rebuilding:*` 还放行写入，新内容一落地就会撞上这条标记——
+        # 等于先把数据收进来，再拒绝检索，比一开始就报错更难收拾。
+        # 唯一例外仍留在 `_check(retry_scope=...)`：同项目的局部重建可以消自己的标记。
         if self.pending:
             problems.append(pending_message(self.pending))
+        if self.is_empty:
+            return problems
+
         if len(self.known_models) > 1:
             listed = "、".join(sorted(self.known_models))
             problems.append(f"归档里混有两套模型的向量（{listed}），检索语义不可信")

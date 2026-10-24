@@ -131,6 +131,16 @@ class NumpyStore:
                 f"归档里混有多种向量维度 {sorted(dims)}，无法组成一个矩阵。"
                 "请执行 `python -m rag4prefa reindex` 全量重建。"
             )
+        # dim 字段是声明，float32 字节数才是事实。两者对不上时 vstack 会抛
+        # "all the input array dimensions ... must match"——那句话既不说是哪一行、
+        # 也不说该怎么办。先自己判一遍，把损坏的行点出来。
+        broken = [r["chunk_id"] for r in rows if len(r["vec"]) != int(r["dim"] or 0) * 4]
+        if broken:
+            raise RebuildError(
+                f"归档里有 {len(broken)} 条向量的字节长度与声明的维度对不上"
+                f"（例如 {broken[0]}），这份归档已被写坏，无法组成索引。"
+                "请执行 `python -m rag4prefa reindex` 从原文重新生成向量。"
+            )
         dim = dims.pop() if dims else 0
         if dim:
             self.dim = dim

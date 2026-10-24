@@ -16,7 +16,6 @@ from .adapters.vectors import (
     BackendUnavailable,
     MilvusStore,
     NumpyStore,
-    RebuildError,
     VectorStore,
 )
 from .config import Settings, get_settings
@@ -24,6 +23,13 @@ from .consistency import collect_issues, inspect
 from .credentials import CredentialPool, UserCredentials
 from .db import connect, init_db
 from .repo import get_meta, mark_interrupted_documents, mark_interrupted_jobs
+
+
+def _describe(exc: BaseException) -> str:
+    """异常摘要。有些异常（裸 `RuntimeError()`）没有消息，那就只留类型名，
+    否则 notes 里会出现一条以冒号结尾的空话。"""
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
 @dataclass
@@ -88,27 +94,35 @@ class Services:
         """启动时若因维度未知回退到 numpy，首次入库拿到维度后迁回 Milvus。
 
         避免"先写进 numpy、下次启动换成 Milvus 却查不到数据"的静默不一致。
+
+        整个动作是**可选升级**，因此异常一律在这里截住。上传接口是在 `ingest_batch`
+        成功之后直接调它的：一次没接住的异常会把已经 done 的任务改写成 failed，
+        用户看到失败、数据其实已经写好了，还会照着"失败"去重导一遍。
         """
         if not self.fell_back or self.settings.vector_backend != "auto":
             return False
         dim = (self.embedder.dim if self.embedder else 0) or self.index_dim or 0
         if not dim:
             return False
+        from .ingest import rebuild_store  # 局部导入，避免循环依赖
+
         try:
             milvus = MilvusStore(self.settings.milvus_uri, self.settings.milvus_collection, dim)
-        except BackendUnavailable as exc:
-            self.notes.append(f"仍无法启用 Milvus：{exc}")
+        except Exception as exc:  # noqa: BLE001 - 见方法说明：可选升级不能外溢
+            # 以前只认 BackendUnavailable，但 pymilvus 在 Lite 文件被占用、版本不匹配时
+            # 抛的是它自己的异常，那类失败同样只该降级、不该中断调用方。
+            self.notes.append(f"仍无法启用 Milvus：{_describe(exc)}")
             return False
-
-        from .ingest import ReindexError, rebuild_store  # 局部导入，避免循环依赖
 
         try:
             moved = rebuild_store(self.conn, milvus)
-        except (ReindexError, RebuildError) as exc:
-            # 迁移到 Milvus 只是"换个更快的后端"，是可选项。归档本身不合格时留在
-            # numpy 上继续用，把原因记进 notes——不能因为一次可选迁移，把已经成功
-            # 的入库/启动变成失败。
-            self.notes.append(f"暂不迁移到 Milvus：{exc}")
+        except Exception as exc:  # noqa: BLE001 - 同上
+            # 迁移到 Milvus 只是"换个更快的后端"，是可选项。归档本身不合格、或 SDK 在
+            # 建集合/写向量时报错，都留在原后端继续用，把原因记进 notes。
+            # rebuild_store 只在校验通过后才动归档，所以这里不需要回收任何东西。
+            self.notes.append(
+                f"暂不迁移到 Milvus（继续用 {self.store.name} 检索）：{_describe(exc)}"
+            )
             return False
         self.store = milvus
         self.fell_back = False
