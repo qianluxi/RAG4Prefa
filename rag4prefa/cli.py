@@ -109,6 +109,22 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         services.close()
 
 
+def cmd_rebuild(_: argparse.Namespace) -> int:
+    """按 SQLite 归档重建向量索引，**不重新调用 embedding**。
+
+    为什么单独有这个命令：`reindex` 会把每段重新算一遍向量，而重建失败之后归档里
+    本来就存着完整的向量副本——再花钱算一遍纯属浪费。两者都是"清除索引切换标记"
+    的合法出口，区别只在要不要重新付 embedding 的钱。
+    """
+    services = build_services()
+    try:
+        total = ingest.rebuild_store(services.conn, services.store)
+        _print({"rebuilt": total, "index_state": repo.get_index_state(services.conn)})
+        return 0
+    finally:
+        services.close()
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     services = build_services()
     try:
@@ -168,11 +184,21 @@ def cmd_verify(_: argparse.Namespace) -> int:
         report = consistency.verify_ids(services.conn, services.store)
         _print(report)
         if not report["ok"]:
-            print(
-                "\n索引与事实不一致。先用 `python -m rag4prefa reindex` 全量重建，"
-                "重建后重跑本命令确认干净。",
-                file=sys.stderr,
-            )
+            # 两种"不一致"要说清是哪一种：id 对得上、只是上次切换没走完时，
+            # 让人去查"哪里少了几条"只会白费功夫。
+            if report.get("pending_rebuild") and not any(report.get("counts", {}).values()):
+                print(
+                    f"\n上次索引重建没有走完（{report['pending_rebuild']}）：三方 id 全都对得上，"
+                    "但索引里的向量可能还是旧的。执行 `python -m rag4prefa reindex`"
+                    "（不带 --project）重建，或 `rebuild` 直接从归档恢复。",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "\n索引与事实不一致。先用 `python -m rag4prefa reindex` 全量重建，"
+                    "重建后重跑本命令确认干净。",
+                    file=sys.stderr,
+                )
             return 1
         return 0
     finally:
@@ -215,6 +241,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("reindex", help="按 SQLite 重建向量索引")
     p.add_argument("--project", default=None)
     p.set_defaults(func=cmd_reindex)
+
+    p = sub.add_parser("rebuild", help="用归档里的现成向量重建索引（不重新 embedding）")
+    p.set_defaults(func=cmd_rebuild)
 
     p = sub.add_parser("ask", help="命令行检索/问答")
     p.add_argument("question")

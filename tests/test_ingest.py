@@ -306,10 +306,68 @@ def test_failure_before_fact_switch_keeps_old_version_intact(
     assert repo.fts_search(conn, "缓粘结预应力", limit=5), "旧版本仍应可检索"
 
 
+class FullWriteThenRaiseStore(NumpyStore):
+    """全部写完之后才抛：模拟"最后一批写完、连接断在返回路上"。
+
+    这是最狠的部分写入——残留里**一定**包含本次新增的 chunk_id，正好用来验证
+    撤回是不是按"写入前算好的清单"执行。只写前半批的那种故障，前半批很可能全是
+    沿用旧 id 的片段（内容没变的段落），撤回与不撤回看起来一样，测不出问题。
+    """
+
+    def upsert(self, items) -> None:  # type: ignore[override]
+        super().upsert(list(items))
+        raise RuntimeError("模拟最后一批写入后连接断开")
+
+
+def test_partial_write_rollback_covers_newly_created_chunks(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """故障发生前确实写入了新 id，撤回也必须把它删干净。
+
+    为什么这条要单独测：`written` 曾经是在 `store.upsert()` 正常返回之后才算的，
+    而 upsert 抛异常时根本不会返回——撤回清单永远是空的，逻辑等于不存在。残留的
+    向量条数多于归档，检索会被一致性检查拒绝：不会给出错答案，但"旧版本照常可用"
+    这个承诺没兑现。
+    """
+    store = _store(conn)
+    first = ingest_file(
+        conn, store, FakeEmbedder(), settings, path=docx_file, project_name="测试项目"
+    )
+    assert first.status == "indexed"
+    before_chunks = repo.chunk_count(conn)
+    before_ids = repo.archived_chunk_ids(conn)
+
+    _update_docx(docx_file, "补充：陶土砖反打工艺的验收要点。")
+
+    broken = FullWriteThenRaiseStore(conn, FakeEmbedder.dim)
+    failed = ingest_file(
+        conn, broken, FakeEmbedder(), settings, path=docx_file, project_name="测试项目"
+    )
+
+    assert failed.status == "failed"
+    assert "已撤回本次新增的" in (failed.error or "")
+    # 这条用例的前提：故障发生前确实写入了新 id。否则它和"什么都没写"的用例等价，
+    # 撤回清单是不是空的就都看不出来了。
+    rolled_back = int((failed.error or "").split("已撤回本次新增的 ")[1].split(" 条")[0])
+    assert rolled_back > 0, "这份文档的修改必须真的产生新 chunk_id"
+    # 逐 id 比对，而不是只比条数：新 id 进去了、旧 id 掉了一个，条数照样可能相等
+    assert repo.archived_chunk_ids(conn) == before_ids
+    assert repo.chunk_count(conn) == before_chunks, "事实表不该有任何变化"
+    assert repo.get_index_state(conn) == repo.INDEX_READY, "入库不该动索引切换标记"
+    clean = _store(conn)
+    assert _state_is_clean(conn, clean), "撤回之后索引必须仍然自洽"
+    assert repo.fts_search(conn, "缓粘结预应力", limit=5), "旧版本仍应可检索"
+
+
 def test_index_failure_midway_leaves_previous_version_searchable(
     conn: sqlite3.Connection, settings: Settings, docx_file: Path
 ) -> None:
-    """索引写到一半就失败：事实不该被改动，旧版本必须完整可用。"""
+    """索引写到一半就失败：事实不该被改动，旧版本必须完整可用。
+
+    注意它覆盖的是"只写完前半批"的情形：这份文档是在末尾追加段落，前半批大多是
+    内容未变、沿用旧 id 的片段，所以**不能**用它证明"新 id 被撤回了"——
+    那件事由 `test_partial_write_rollback_covers_newly_created_chunks` 负责。
+    """
     first_store = _store(conn)
     first = ingest_file(
         conn, first_store, FakeEmbedder(), settings, path=docx_file, project_name="测试项目"

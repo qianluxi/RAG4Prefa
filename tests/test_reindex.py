@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from rag4prefa import repo
+from rag4prefa import consistency, repo
 from rag4prefa.adapters.vectors import NumpyStore, VectorItem, to_archive_row
 from rag4prefa.config import Settings
 from rag4prefa.domain import Filter
@@ -202,3 +202,136 @@ def test_reindex_on_empty_store_returns_zero(
     result = reindex(conn, store, FakeEmbedder(), settings)
     assert result["chunks"] == 0
     assert result["rebuilt"] is False
+
+
+# ── 跨组件失败窗口：归档写完了、向量索引没跟上 ─────────────────────
+
+
+class FailingRebuildStore(NumpyStore):
+    """全量重建直接失败：模拟向量后端在切换前报错。"""
+
+    def rebuild(self, items) -> None:  # type: ignore[override]
+        raise RuntimeError("模拟向量后端重建失败")
+
+
+class FailingUpsertStore(NumpyStore):
+    """局部重建写入失败：模拟覆盖本次范围时后端报错。"""
+
+    def upsert(self, items) -> None:  # type: ignore[override]
+        raise RuntimeError("模拟向量后端写入失败")
+
+
+def _query(conn: sqlite3.Connection, store: NumpyStore) -> None:
+    consistency.ensure_queryable(
+        conn, FakeEmbedder.model, store.dim, store_count=store.count()
+    )
+
+
+def test_full_reindex_failure_blocks_queries_until_recovered(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """全量重建失败：归档已是新版、索引还是旧版，此时**必须**拒绝检索。
+
+    这个场景的可怕之处是它看起来毫无问题：归档写完了，索引重建失败但旧集合还在，
+    两边的条数、模型名、维度完全一致——逐项校验一条都挑不出来。所以判断依据只能
+    是写归档之前留的那条标记。
+    """
+    store = _store(conn)
+    total = _seed(conn, store, settings, docx_file)
+    before_stats = repo.vector_stats(conn)
+
+    with pytest.raises(RuntimeError):
+        reindex(conn, FailingRebuildStore(conn, FakeEmbedder.dim), FakeEmbedder(), settings)
+
+    # 先把"这个场景确实无法靠比对发现"钉死：数字全都一样
+    assert repo.vector_stats(conn) == before_stats, "归档内容与重建前完全相同"
+    assert store.count() == total, "旧索引也还在，条数一样"
+    assert repo.get_meta(conn, "embedding_model") == FakeEmbedder.model
+
+    # 唯一的证据是标记
+    assert repo.get_index_state(conn) == "rebuilding:*"
+    with pytest.raises(consistency.IndexMismatch) as excinfo:
+        _query(conn, store)
+    assert "重建索引没有完成" in str(excinfo.value)
+
+    # verify 命令也不能因为"id 全对"就报 ok——否则运维拿到这个结论就不会再查了
+    report = consistency.verify_ids(conn, store)
+    assert report["pending_rebuild"] == "rebuilding:*"
+    assert report["ok"] is False
+    assert not any(report["counts"].values()), "这个场景下三方 id 确实一个不差"
+
+    # 恢复一：归档是完整的，直接按归档重建索引即可（不必重新 embedding、不花钱）
+    assert rebuild_store(conn, _store(conn)) == total
+    assert repo.get_index_state(conn) == repo.INDEX_READY
+    _query(conn, store)  # 恢复之后必须立刻可检索
+
+
+def test_partial_reindex_failure_is_retryable_for_the_same_project(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """局部重建失败：标记带项目名，重跑**同一个项目**就能清掉它。
+
+    挡住自己是不行的：局部重建正是消除这条标记的方式，若它也要求库先自洽，
+    用户就只能去做代价更大的全量重建。
+    """
+    store = _store(conn)
+    _seed(conn, store, settings, docx_file)
+
+    with pytest.raises(RuntimeError):
+        reindex(
+            conn,
+            FailingUpsertStore(conn, FakeEmbedder.dim),
+            FakeEmbedder(),
+            settings,
+            project_name="甲项目",
+        )
+
+    assert repo.get_index_state(conn) == "rebuilding:甲项目"
+    with pytest.raises(consistency.IndexMismatch):
+        _query(conn, store)
+
+    # 重跑同一个项目：前置检查放过同范围的标记，成功后恢复 ready
+    result = reindex(conn, store, FakeEmbedder(), settings, project_name="甲项目")
+    assert result["rebuilt"] is False
+    assert repo.get_index_state(conn) == repo.INDEX_READY
+    _query(conn, store)
+
+
+def test_partial_reindex_cannot_clear_a_full_rebuild_marker(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """全量重建的坑，局部重建填不上——所以它会明确拒绝，而不是假装修好。
+
+    如果放开这一步，只重建一个项目就会把 `rebuilding:*` 恢复成 ready，
+    其余项目仍旧是新归档配旧索引，而且再没有任何标记能发现它。
+    """
+    store = _store(conn)
+    _seed(conn, store, settings, docx_file)
+    repo.set_index_state(conn, "rebuilding:*")
+
+    with pytest.raises(ReindexError) as excinfo:
+        reindex(conn, store, FakeEmbedder(), settings, project_name="甲项目")
+    assert "全量" in str(excinfo.value)
+    assert repo.get_index_state(conn) == "rebuilding:*", "标记不能被局部重建抹掉"
+
+    # 全量重建是唯一出口
+    reindex(conn, store, FakeEmbedder(), settings)
+    assert repo.get_index_state(conn) == repo.INDEX_READY
+
+
+def test_ingest_is_refused_while_a_rebuild_is_pending(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """重建没走完时不许再入库：新向量会按当前模型写进一个来路不明的索引。"""
+    store = _store(conn)
+    _seed(conn, store, settings, docx_file)
+    repo.set_index_state(conn, "rebuilding:*")
+
+    outcome = ingest_file(
+        conn, store, FakeEmbedder(), settings, path=docx_file, project_name="丙项目"
+    )
+
+    assert outcome.status == "failed"
+    assert "重建索引没有完成" in (outcome.error or "")
+    assert repo.get_project(conn, "丙项目") is None, "被拒绝时不该留下空项目"
+

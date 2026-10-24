@@ -155,6 +155,7 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 | `X-R4P-LLM-Model` | 选哪个对话模型，取值须在 `GET /api/llm-models` 返回的清单里 |
 
 两个 Key 可以只给一个：只带 embedding 就是"入库花我的额度，问答走公共配置"。
+**两个 Key 都不给、只带 `X-R4P-LLM-Model` 也合法**：用服务端公共额度跑自选对话模型。
 四个头都不带时完全沿用 `.env` 里的公共配置，旧脚本与 CLI 行为不变。
 清单以外的模型名不会报错，而是静默回落到服务端默认——避免浏览器里存着已下线的名字
 时整个请求失败。
@@ -189,3 +190,8 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
   程序会提前拒绝并自动回退 numpy；要跑 Milvus 请把数据目录指到纯 ASCII 路径。Linux 不受影响。
 - **重建期间有极短不可用窗口**：全量重建（含同维度）走"写暂存集合 → rename 切换"，
   两次 rename 之间检索可能拿到集合不存在的错误。换来的是"绝不会返回新旧混杂的结果"。
+- **日常一致性检查是必要条件，不是充分条件**：每个请求只比条数与模型/维度，发现不了
+  "索引少了一个 id、同时多了另一个 id"这种等量替换。要确认到 id 级请跑
+  `python -m rag4prefa verify`（代价是把索引主键全拉一遍，不能放进请求路径）。
+  另外 SQLite 归档与向量库不在同一事务里，重建中断时会靠 `meta.index_state` 标记
+  阻断检索——标记为 `ready` 之外的任何值都不提供服务，直到 `reindex` 或 `rebuild` 完成。

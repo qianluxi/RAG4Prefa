@@ -11,8 +11,13 @@
 判断依据（缺一不可）：
 
 - `meta.embedding_model` / `meta.embedding_dim`：上一次成功建索引时声明的模型与维度；
+- `meta.index_state`：上一次索引切换有没有走完（不是 `ready` 就一律阻断）；
 - `vectors.model` / `vectors.dim`：归档里每一行实际是谁算的（事实）；
 - 片段与归档的**逐 id 对应**，以及后端实际条数与归档的交叉校验。
+
+为什么要单独记那条切换状态：SQLite 归档与向量库不在同一个事务里。归档写完、
+向量库还没跟上时，两边条数、模型名、维度可以**完全一致**，逐项校验一条都挑不出
+毛病，检索却会拿旧向量去配新正文。这类窗口没法靠事后比对发现，只能靠写之前留痕。
 
 分两级：
 - `blockers`：索引不能自证一致，检索/写入必须拒绝；
@@ -31,6 +36,23 @@ class IndexMismatch(RuntimeError):
     """索引与当前配置或自身事实对不上，必须人工处理后再继续。"""
 
 
+def pending_message(marker: str) -> str:
+    """「上次索引切换没走完」的说明。
+
+    为什么单独一种表述：这种情况和"库坏了"不一样，它的特征是**所有数字都对得上**。
+    SQLite 归档已经写进新向量，向量索引还停在旧的一版；条数、模型名、维度全都一致，
+    逐项校验一条都挑不出毛病，检索却可能返回旧向量配上新正文。所以这里不能靠比对
+    发现，只能靠写之前留下的标记。
+    """
+    scope = "全量" if marker.endswith(":*") else f"项目「{marker.split(':', 1)[-1]}」"
+    return (
+        f"上次{scope}重建索引没有完成（标记 {marker}）：向量索引可能还停在上一版，"
+        "而归档已经更新——两边条数、模型名、维度完全一致也证明不了内容一致。"
+        "重建完成前检索一律拒绝。执行 `python -m rag4prefa reindex`（不带 --project）"
+        "重建即可清除该标记；只想用归档里现成的向量，也可以用 rebuild。"
+    )
+
+
 @dataclass(frozen=True)
 class IndexState:
     model: str | None  # meta 里记录的模型（声明）
@@ -43,6 +65,7 @@ class IndexState:
     orphan: int = 0  # 有归档向量但没有正文
     unlabeled: int = 0  # model 为空的历史行
     store_count: int | None = None  # 后端实际条数（None 表示没查）
+    pending: str | None = None  # 上次索引切换未完成时的标记（meta.index_state）
 
     @property
     def known_models(self) -> set[str]:
@@ -65,6 +88,8 @@ class IndexState:
             return []
         problems: list[str] = []
 
+        if self.pending:
+            problems.append(pending_message(self.pending))
         if len(self.known_models) > 1:
             listed = "、".join(sorted(self.known_models))
             problems.append(f"归档里混有两套模型的向量（{listed}），检索语义不可信")
@@ -113,6 +138,7 @@ def inspect(conn: sqlite3.Connection, *, store_count: int | None = None) -> Inde
     """
     stats = repo.vector_stats(conn)
     dim_value = repo.get_meta(conn, "embedding_dim")
+    state = repo.get_index_state(conn)
     return IndexState(
         model=repo.get_meta(conn, "embedding_model"),
         dim=int(dim_value) if dim_value and dim_value.isdigit() else None,
@@ -124,6 +150,7 @@ def inspect(conn: sqlite3.Connection, *, store_count: int | None = None) -> Inde
         orphan=repo.orphan_vector_count(conn),
         unlabeled=repo.unlabeled_vector_count(conn),
         store_count=store_count,
+        pending=None if state == repo.INDEX_READY else state,
     )
 
 
@@ -152,10 +179,19 @@ def _check(
     store_count: int | None,
     *,
     action: str,
+    retry_scope: str | None = None,
 ) -> IndexState:
-    """检索与写入共用的唯一入口：不自洽就抛，绝不返回"可能还行"的结果。"""
+    """检索与写入共用的唯一入口：不自洽就抛，绝不返回"可能还行"的结果。
+
+    `retry_scope` 只给「重跑同一个项目的重建」用：上一次局部重建失败会留下
+    `rebuilding:<项目名>` 标记，而重跑它正是消除该标记的方式。若连它也被自己挡住，
+    用户就只能全量重建——那比必要的代价大得多。只放过**完全同名**的标记，
+    全量标记（`rebuilding:*`）不在此列：一个项目的重建修不了全库。
+    """
     state = inspect(conn, store_count=store_count)
     problems = list(state.blockers)
+    if retry_scope and state.pending == f"rebuilding:{retry_scope}":
+        problems = [p for p in problems if p != pending_message(state.pending)]
     # 索引自身自洽还不够，还要和**当前配置**对得上：换模型/换维度都属于这一类
     if state.count or state.chunks:
         if state.known_models and model not in state.known_models:
@@ -174,6 +210,7 @@ def ensure_writable(
     *,
     store_count: int | None = None,
     action: str = "写入",
+    retry_scope: str | None = None,
 ) -> IndexState:
     """入库 / 重建前的检查。
 
@@ -181,7 +218,9 @@ def ensure_writable(
     不等于"库是空的"：片段表可能有几百条、向量全丢了。那种情况下继续写入只会让
     不一致越滚越大，所以现在只有**真的全空**才放行。
     """
-    return _check(conn, model, dim, store_count, action=action)
+    return _check(
+        conn, model, dim, store_count, action=action, retry_scope=retry_scope
+    )
 
 
 def ensure_queryable(
@@ -228,6 +267,11 @@ def verify_ids(conn: sqlite3.Connection, store) -> dict:
     """
     facts = repo.all_chunk_ids(conn)
     archived = repo.archived_chunk_ids(conn)
+    # 切换标记要在这里一并报出来：逐 id 比对只能证明"三条链的 id 一样"，证明不了
+    # "索引里的向量就是归档里的那些向量"。重建中断时 id 可以完全一致，若此处仍报 ok，
+    # 运维人员拿着这个结论就再也不会去看真正的差距在哪。
+    state = repo.get_index_state(conn)
+    pending = None if state == repo.INDEX_READY else state
     try:
         indexed = store.ids()
     except Exception as exc:  # 后端读不出来也要给出可读结论，而不是抛栈
@@ -236,6 +280,7 @@ def verify_ids(conn: sqlite3.Connection, store) -> dict:
             "error": f"读不到向量索引的主键：{type(exc).__name__}: {exc}",
             "chunks": len(facts),
             "archived": len(archived),
+            "pending_rebuild": pending,
         }
 
     missing_in_archive = facts - archived  # 有正文、没有归档向量
@@ -249,11 +294,12 @@ def verify_ids(conn: sqlite3.Connection, store) -> dict:
         "索引有但归档缺": extra_in_index,
     }
     return {
-        "ok": not any(problems.values()),
+        "ok": not any(problems.values()) and not pending,
         "chunks": len(facts),
         "archived": len(archived),
         "indexed": len(indexed),
         "counts": {k: len(v) for k, v in problems.items()},
         # 只给样例，避免几万条 id 把终端刷满；条数在 counts 里是全的
         "samples": {k: sorted(v)[:10] for k, v in problems.items() if v},
+        "pending_rebuild": pending,
     }

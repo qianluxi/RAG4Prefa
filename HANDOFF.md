@@ -3,11 +3,13 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-23 22:10
-**交接时状态**：可运行、134 项离线测试全绿；**代码层的真实链路已用本地假 OpenAI 服务跑通，但真实厂商 API 尚未验证**——见第 7 节 P0-1。
-第四轮修复的重点不是加功能，而是让**不变量真正约束运行路径**：一致性检查从"能报告"变成"能阻断"，
-文档切换与全量重建改成"准备完整新版 → 校验 → 再切换"，并顺带查出一个 Windows 平台级限制（见第 6 节第 9 条）。
-动手前请先读第 3 节的「索引不变量」，那八条是这批代码存在的理由。
+**交接时间**：2026-10-24 22:00
+**交接时状态**：可运行、**165 项离线测试全绿**；真实厂商 API 已端到端验证
+（embedding 走硅基流动国际站 `Qwen/Qwen3-Embedding-0.6B`、LLM 走魔搭 `Qwen/Qwen3.5-35B-A3B`，
+`POST /api/credentials/verify` 两项均通，`dim=1024` 与服务端配置一致）。
+第九轮修复的是**失败路径**，不是功能：跨组件的索引切换留痕、入库部分写入的撤回清单、
+凭据校验的回退来源、以及"只用公共额度换模型"在界面上做不到。
+动手前请先读第 3 节的「索引不变量」，那十条是这批代码存在的理由。
 
 ---
 
@@ -28,7 +30,7 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | `4f3c25d` 之后的本轮修复提交，工作区干净，本地与 `origin/main` 一致；历史为 17 个分层提交 + 后续修复（见第 8 节） |
+| 当前提交 | 以 `git log -1 --oneline` 为准；本轮修复的基线是 `8fa40bf`（本地与 `origin/main` 一致，工作区干净） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -41,7 +43,7 @@
 
 ```bash
 cd "F:/project/课题/RAG4Prefa"
-./.venv/Scripts/python.exe -m pytest -q          # 期望：134 passed
+./.venv/Scripts/python.exe -m pytest -q          # 期望：165 passed
 ./.venv/Scripts/python.exe -m ruff check rag4prefa tests scripts   # 期望：All checks passed
 ./.venv/Scripts/python.exe -m rag4prefa doctor   # 看后端、维度、缺哪些凭据
 ./.venv/Scripts/python.exe -m rag4prefa verify   # 逐 id 核对片段/归档/索引（空库也返回 0）
@@ -49,16 +51,16 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（4 326 行 Python + 670 行单页 HTML + 2 830 行测试）
+## 3. 代码地图（3 797 行 Python + 731 行单页 HTML + 3 429 行测试）
 
 ```
 rag4prefa/
 ├── config.py      81    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读
 ├── domain.py     122    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
 ├── db.py         129    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
-├── repo.py       700+   **全部 SQL 都在这里**，没有别处写 SQL
-├── consistency.py 240+  **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）
-├── ingest.py     370+   解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
+├── repo.py       767    **全部 SQL 都在这里**，没有别处写 SQL
+├── consistency.py 305   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
+├── ingest.py     447    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex
 ├── chunking.py    90+   按标题树切块；chunk_id 内容寻址（同 id 必同正文）
 ├── tokens.py      51    中英混排的 token 估算（非真实 tokenizer）
 ├── ask.py        186    混合召回 → RRF 融合 → 可选重排 → 流式生成
@@ -67,13 +69,13 @@ rag4prefa/
 ├── admin.py       64    项目/文档的查询与级联删除
 ├── services.py   240    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
 ├── credentials.py 363   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
-├── api.py        378    FastAPI 路由（只做协议转换，不含业务逻辑）
-├── cli.py        230+   init / serve / doctor / ingest / reindex / ask / projects / verify
+├── api.py        509    FastAPI 路由（只做协议转换，不含业务逻辑）
+├── cli.py        270    init / serve / doctor / ingest / reindex / rebuild / ask / projects / verify
 └── adapters/     990+   embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
 ```
 
-前端只有一个文件 `rag4prefa/web/index.html`（670 行，原生 JS，无构建步骤）。
-`tests/` 134 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+前端只有一个文件 `rag4prefa/web/index.html`（731 行，原生 JS，无构建步骤）。
+`tests/` 165 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -119,6 +121,15 @@ rag4prefa/
    MiniMax-M3、Step-3.5-Flash 都在，调用却一律 `has no provider supported`。
    只有逐条真调通的才收——列在目录里 ≠ 真的能调。清单外的名字一律静默回落服务端默认，
    避免旧浏览器存着已下线模型名时整个请求失败。
+
+10. **跨组件的切换必须留痕，而不是靠事后比对。** SQLite 归档与向量库不在同一个事务里，
+    没法用 `BEGIN/COMMIT` 做两阶段提交，所以 `reindex` 在写归档**之前**把
+    `meta.index_state` 置成 `rebuilding:<范围>`，全部切换成功后才连同模型、维度一起
+    改回 `ready`（`repo.set_index_meta`，三者同事务）。只要这个值不是 `ready`，
+    检索与增量写入一律拒绝——因为中断那一刻，归档与索引的**条数、模型名、维度可以完全
+    一致**，逐项校验一条都挑不出来，而检索会拿旧向量去配新正文。
+    恢复正常态有两条路：`reindex`（重新算向量、花钱）或 `rebuild`（直接用归档里的
+    现成向量，不花钱）。局部重建只能消除**同项目**的标记；全量的坑必须全量填。
 
 ### 请求链路（`/api/chat`）
 
@@ -251,9 +262,17 @@ API 一览（实现见 `api.py`，说明见 README）：
 
 ### P0 · 仍待完成
 
-**P0-1　接真实厂商 API 跑一遍**
-本地假 OpenAI 兼容服务已跑通 `ingest → ask --answer → SSE`，但**真实厂商**仍有三个未知数：
-`stream=True` 支持情况、embedding 批量上限、响应字段差异。
+**P0-1　接真实厂商 API 跑一遍　→ 2026-10-24 已完成**
+第九轮已在**真实 Milvus + 真实厂商**上跑通全链路（详见第 8 节第九轮记录）：
+入库 3 块 → 中断重建被阻断 → `rebuild` 恢复 → `verify` 三方一致 → 检索命中 →
+LLM 返回带 `[1]` 引用的答案。embedding 与 LLM 分属硅基流动国际站与魔搭，
+`stream=False` 的短回答、批量上限、响应字段都没有意外。
+
+尚未覆盖的真实链路只有两项，都不影响正确性：**SSE 流式**只在假服务上验证过
+（`test_real_sdk_chain.py` 走真实 openai SDK，但目标是本地假服务），
+以及**多用户并发**（`CredentialPool` 的驱逐与连接复用还没在真实并发下压过）。
+
+具体做法与换厂商时的注意事项：
 - 做法：`cp .env.example .env` 后填 `R4P_EMBEDDING_API_KEY` / `R4P_LLM_API_KEY`
   （**不要**复用原仓库泄漏的 ModelScope token）。
 - 默认组合是「硅基流动**国际站** `Qwen/Qwen3-Embedding-0.6B` 做 embedding + 魔搭 Qwen 做 LLM」，
@@ -469,6 +488,52 @@ POST /api/credentials/verify：
 
 `fingerprint` 必须把 `llm_model` 算进去：只按 Key 取缓存的话，同名用户换模型会拿到
 池子里的旧 LLM 实例——界面显示已切换、实际还在跑旧模型，而且不会报任何错。
+
+第九轮（2026-10-24 22:00）：补失败路径。基线 `8fa40bf`，四项都只改行为、不加功能。
+
+```
+pytest -q                    → 165 passed（新增 7 项失败路径 / 回退来源用例）
+ruff check                   → All checks passed
+node --check（前端脚本）      → 通过
+```
+
+1. **reindex 的跨组件窗口。** 归档是 SQLite、索引是向量库，两者不在一个事务里；中断时
+   条数/模型名/维度可以完全一致，靠比对根本发现不了。新增 `meta.index_state`
+   （`rebuilding:*` / `rebuilding:<项目>` / `ready`），写归档前置位、成功后与模型维度
+   同事务改回 `ready`；非 `ready` 时检索与增量写入一律拒绝。`verify` 命令也会因此报
+   `ok=false`，并在 id 全对的情况下去掉"哪里少了几条"这种误导性指引。
+   恢复有两条路：`reindex`（重算向量、花钱）和新增的 `rebuild` 子命令（用归档里现成的
+   向量，不花钱）。局部重建只能消除同项目的标记，遇到全量标记会明确拒绝。
+2. **入库部分写入的撤回清单。** `planned` 改成在 `store.upsert()` **之前**算出来。
+   原来是等 upsert 正常返回后才统计"本次新增了哪些 id"，而它抛异常时不会返回——
+   撤回清单永远是空的，逻辑等于不存在。新增用例让故障前确实写入新 id，并断言撤回后
+   归档 id 集合逐项不变。
+3. **凭据校验的回退来源。** `/api/credentials/verify` 原来用 `svc(request)`（当前用户
+   视图）当空字段的回退值：A 已登录、给 B 只填 embedding 时，验的其实是 A 的 Key，
+   却标成 `source=server`。改为取根服务的公共配置。回归测试在请求头放一把可用用户
+   Key、请求体留空，断言真正发出的是 `sk-server`。
+4. **"只用公共额度换模型"在前端做不了。** `saveCreds()` 曾强制至少填一个 Key，与后端
+   已支持"只带模型头"的能力不一致。放开后补了一条端到端用例：无 Key + 只带
+   `X-R4P-LLM-Model` 走 `/api/chat`，断言实际调用的是选中的模型、用的是服务端 Key。
+
+教训：**"失败后旧版本完整可用"这类承诺，必须在故障注入下逐条验证，不能靠成功路径推断。**
+本轮四个问题全都是"代码执行了预期操作、但业务不变量没成立"，正常路径的测试一个都抓不到。
+
+真实链路冒烟（真实 Milvus Lite + 真实厂商，数据目录 `C:/tmp_r4p_smoke9` 为纯 ASCII 路径）：
+
+```
+入库 3 块                        → chunks=3, 索引=归档=3, index_state=ready
+把 store.rebuild 打成故障后 reindex → 索引=归档=3（**条数完全相同**）
+                                    index_state=rebuilding:* → 检索被拒绝
+rebuild（用归档里的现成向量）      → 3 条, index_state=ready, 检索恢复
+verify                           → ok=true，三类差异全为 0
+真实检索                          → 3 条命中，首条「第1章 结构方案」
+真实 LLM（魔搭 Qwen3.5-35B-A3B）  → 89 字，答案带 [1] 引用
+```
+
+这次冒烟的价值在于**证明了"条数相同"确实发现不了问题**：中断之后索引与归档的条数、
+模型名、维度一模一样，`verify` 的三类 id 差异也全是 0——唯一的证据就是那条标记。
+numpy 后端跑不出这个场景（索引与归档是同一张表），所以这条验证必须在 Milvus 上做。
 
 
 第四轮（2026-10-23 22:10）的冒烟记录仍然有效：

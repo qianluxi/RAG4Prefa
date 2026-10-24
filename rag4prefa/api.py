@@ -160,7 +160,11 @@ def create_app(services: Services | None = None) -> FastAPI:
         这里刻意不写缓存、不建索引，只做一次最小调用：
         `probe()` 不走退避重试，否则错 Key 要等十几秒，前端会以为按钮卡死。
         """
-        services = svc(request)
+        # 注意这里取的是**根服务**的配置，不是 `svc(request)` 那个按用户视图：
+        # 留空字段要回落到服务端公共 Key，若回落到"当前登录用户"的 Key，就会验出
+        # 一次假的通过——A 已登录、给 B 只填 embedding、LLM 栏留空，验的其实是 A 的
+        # Key，却被标成 source=server；B 保存后真正发请求走的是服务端 Key，直接失败。
+        services = request.app.state.services
         base = services.settings
         embedding_key = payload.embedding_key.strip() or base.embedding_api_key
         llm_key = payload.llm_key.strip() or base.llm_api_key

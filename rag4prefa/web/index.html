@@ -202,6 +202,7 @@
     <p class="kbd" style="margin-top:16px;line-height:1.9">
       Key 只存在这台电脑的浏览器里，服务端不落库、不写日志。<br />
       换电脑、换浏览器或清掉站点数据后需要重填。<br />
+      两项 Key 都可以留空：那就完全使用服务端公共额度，这时这个面板只用来选对话模型。<br />
       <strong>Embedding 模型由服务端统一决定</strong>，不能按用户切换——
       否则同一批文档会混进两套向量，检索结果看起来正常却不可信。
     </p>
@@ -620,7 +621,8 @@ async function saveCreds() {
   const llmKey = $("su-llm").value.trim();
   const llmModel = $("su-llm-model").value || "";
   if (!name) return alert("请填写用户名");
-  if (!embeddingKey && !llmKey) return alert("至少填一个 Key");
+  // 不填 Key 也是合法的：用服务端公共额度跑自选模型。后端 `from_headers` 早就支持
+  // 只带模型头，这里再硬要求填 Key，就会出现"后端能做的事，界面做不了"。
 
   $("save-creds").disabled = true;
   $("su-result").textContent = "正在验证…";
@@ -653,7 +655,9 @@ async function saveCreds() {
     saveCredStore(store);
     syncWho();
     renderUserList();
-    $("su-result").textContent = `已保存并切换为「${name}」\n${describeCheck(result)}`;
+    const quotaNote = embeddingKey || llmKey ? "" : "\n（未填 Key：问答与入库都走服务端公共额度）";
+    $("su-result").textContent =
+      `已保存并切换为「${name}」\n${describeCheck(result)}${quotaNote}`;
     await loadHealth();
   } catch (err) {
     $("su-result").textContent = `验证请求失败：${err.message}`;

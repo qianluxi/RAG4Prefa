@@ -595,6 +595,42 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
         conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
 
 
+# 索引切换标记。SQLite 归档与向量库不在同一个事务里，跨组件的"两阶段提交"没法靠
+# BEGIN/COMMIT 表达，只能显式记一条状态：写归档之前置位，全部切换成功后才恢复 ready。
+# 只要这个值不是 ready，归档与向量索引就可能分属两个版本——此时**检索必须拒绝**，
+# 因为两边条数、模型名、维度都可能完全一致，逐项校验根本发现不了差异。
+INDEX_STATE_KEY = "index_state"
+INDEX_READY = "ready"
+
+
+def get_index_state(conn: sqlite3.Connection) -> str:
+    """读索引切换状态。历史库没有这条记录，按 ready 处理（等价于旧行为）。"""
+    return get_meta(conn, INDEX_STATE_KEY) or INDEX_READY
+
+
+def set_index_state(conn: sqlite3.Connection, state: str) -> None:
+    set_meta(conn, INDEX_STATE_KEY, state)
+
+
+def set_index_meta(
+    conn: sqlite3.Connection, *, model: str, dim: str, state: str = INDEX_READY
+) -> None:
+    """模型、维度、切换状态一次提交。
+
+    分开写会留下"模型已更新、状态还是 rebuilding"的中间态，而读方看到模型对得上
+    就会放行检索——那正是这个标记要消除的窗口，所以三者必须在同一个事务里落地。
+    """
+    with transaction(conn):
+        conn.executemany(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            [
+                ("embedding_model", model),
+                ("embedding_dim", dim),
+                (INDEX_STATE_KEY, state),
+            ],
+        )
+
+
 # ── 管理视图（给 admin 用，避免上层写 SQL）─────────────────
 
 

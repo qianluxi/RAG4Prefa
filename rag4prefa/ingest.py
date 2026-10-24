@@ -86,7 +86,10 @@ def ingest_file(
     filename = path.name
     doc_id = _doc_id(project_name, filename)
     stage = "预检查"
-    written: list[str] = []  # 只在索引里新出现的 chunk_id，用于失败时精确撤回
+    # 本次"可能新增"的 chunk_id。为什么是"可能"：它在调用向量后端**之前**就算好了，
+    # 因为后端中途失败时不会返回，事后无法知道写进去过哪些。删多算的几个是无害的
+    # （id 不存在就是空操作），删少了才会留下没有正文的向量。
+    planned: list[str] = []
     facts_committed = False
     doc_row_exists = False
     try:
@@ -158,10 +161,15 @@ def ingest_file(
         # 派生索引先落：此时事实还是旧版本，检索照常可用。
         # 记下切换前该文档已有的 id——chunk_id 是内容寻址的，改一版时未变的片段会沿用
         # 原 id，撤回时只该删"这一版新增的"，否则会把旧版本的向量一起抹掉。
+        #
+        # **这一版可能新增哪些 id，必须在写入之前算出来**：`upsert()` 是一批批写的，
+        # 中途抛异常就不会返回，那时再算 `written` 只会得到空列表，撤回逻辑等于不存在
+        # ——残留的向量条数多于归档，检索因此被拒绝（不会给错答案，但"旧版本照常可用"
+        # 这个承诺没兑现）。所以先算后写：删多算的几个 id 是无害的，删少了才留垃圾。
         stage = "写入向量索引"
         preexisting = set(repo.chunk_ids_of_doc(conn, doc_id))
+        planned = [i.chunk_id for i in items if i.chunk_id not in preexisting]
         store.upsert(items)
-        written = [i.chunk_id for i in items if i.chunk_id not in preexisting]
 
         # 事实与归档在同一个事务里切换：读方要么看到旧版、要么看到新版
         stage = "切换文档片段"
@@ -192,12 +200,13 @@ def ingest_file(
         return FileOutcome(filename, "indexed", len(sections), len(chunks))
     except Exception as exc:  # 单文件失败不该拖垮整批
         detail = f"{type(exc).__name__}: {exc}"
-        if written and not facts_committed:
-            # 索引已写、事实没切换：索引里多出的是"没有正文的向量"，检索会跳过它们，
-            # 但会把召回名额占掉。撤回失败也不算灾难——一致性检查会因此报错并拒绝检索。
+        if planned and not facts_committed:
+            # 索引已（可能部分）写、事实没切换：索引里多出的是"没有正文的向量"，
+            # 检索会跳过它们，但会把召回名额占掉。撤回失败也不算灾难——一致性检查
+            # 会因此报错并拒绝检索。
             try:
-                store.delete(written)
-                detail += f"（{stage}失败，已撤回本次新增的 {len(written)} 条向量，库仍是上一版）"
+                store.delete(planned)
+                detail += f"（{stage}失败，已撤回本次新增的 {len(planned)} 条向量，库仍是上一版）"
             except Exception as rollback_exc:
                 detail += (
                     f"（{stage}失败，且撤回写入的向量也失败：{rollback_exc}；"
@@ -270,9 +279,15 @@ class ReindexError(RuntimeError):
 
 
 def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
-    """从 SQLite 归档重建向量索引（不重新 embedding，换后端/索引损坏时用）。"""
+    """从 SQLite 归档重建向量索引（不重新 embedding，换后端/索引损坏时用）。
+
+    成功后顺手把切换标记恢复成 ready：重建做的事就是"索引 := 归档"，做完之后
+    两边必然一致，无论上次中断的是全量还是某个项目。它也是被阻断之后除 `reindex`
+    之外的一条更便宜的恢复路径（不重新调 embedding，不花钱）。
+    """
     items = [from_archive_row(row) for row in repo.iter_archived_vectors(conn)]
     store.rebuild(items)
+    repo.set_index_state(conn, repo.INDEX_READY)
     return len(items)
 
 
@@ -295,9 +310,15 @@ def reindex(
     执行顺序刻意如此：
     1. 先做前置校验（模型、维度），不满足就直接拒绝，一个字节都不改；
     2. 再把整个范围的向量算完放在内存里——中途失败时索引与归档都还是旧的一套，不留半成品；
-    3. 然后写 SQLite 归档（事实），最后写向量索引（派生）——索引写坏还能用
+    3. **写归档之前先置 `index_state` 标记**。SQLite 与向量库不在同一个事务里，这笔
+       "两阶段提交"没法用 BEGIN 表达，只能显式留痕；
+    4. 然后写 SQLite 归档（事实），最后写向量索引（派生）——索引写坏还能用
        rebuild_store 从归档补回，反过来则会把已经把新向量算完的成果弄丢；
-    4. 全部成功后才更新 meta，避免"元数据说新模型、索引里还是旧模型"。
+    5. 全部成功后才把模型、维度、状态一起提交，避免"元数据说新模型、索引里还是旧模型"。
+
+    第 3 步是关键：归档写完、索引没跟上的那个窗口里，两边的条数、模型名、维度可以
+    完全一致，事后逐项校验一条都挑不出毛病。只有写之前留的标记能让检索在这段时间里
+    停住，而不是拿旧向量去配新正文。
 
     范围语义：
     - 不给 project_name → 全量重建，允许换模型、换维度（唯一的换模型入口）；
@@ -306,10 +327,20 @@ def reindex(
     """
     rows = repo.chunks_for_reindex(conn, project_name)
     if not rows:
+        # 没有可重建的内容：此时不存在"新归档 vs 旧索引"的差异，遗留标记可以直接清掉，
+        # 否则用户会被一次早已没有对象的失败永久挡在门外。
+        repo.set_index_state(conn, repo.INDEX_READY)
         return {"scope": project_name or "all", "chunks": 0, "rebuilt": False}
 
+    # 标记里带范围：`rebuilding:*` 表示全量没走完，`rebuilding:<项目>` 只表示那个项目。
+    # 带范围才能判断"这次重建能不能把上次的坑填上"——局部重建填不了全量的坑。
+    marker = "rebuilding:*" if project_name is None else f"rebuilding:{project_name}"
+    previous = repo.get_index_state(conn)
+
     if project_name:
-        _ensure_same_model(conn, embedder.model, store.count())
+        _ensure_same_model(
+            conn, embedder.model, store.count(), retry_scope=project_name
+        )
 
     items: list[VectorItem] = []
     batch_size = max(1, settings.embedding_batch)
@@ -339,7 +370,15 @@ def reindex(
             f"无法只重建项目「{project_name}」。请去掉 --project 执行全量 reindex。"
         )
 
-    repo.archive_vectors(conn, [to_archive_row(i) for i in items])
+    # 从这一行起开始改真正的数据：先留痕，再写归档。
+    repo.set_index_state(conn, marker)
+    try:
+        repo.archive_vectors(conn, [to_archive_row(i) for i in items])
+    except Exception:
+        # 归档写入本身是一个事务，失败就是一个字节都没变；索引也还没动，
+        # 所以状态可以原样退回，不必让用户去跑一次全量重建。
+        repo.set_index_state(conn, previous)
+        raise
     if project_name:
         store.upsert(items)  # 局部：只覆盖本次范围内的 chunk_id
     else:
@@ -347,8 +386,14 @@ def reindex(
         # 否则 rebuild_store 会把已经没有正文的旧向量重新灌回索引。
         repo.delete_orphan_vectors(conn)
         store.rebuild(items)
-    repo.set_meta(conn, "embedding_model", embedder.model)
-    repo.set_meta(conn, "embedding_dim", str(new_dim))
+    # 全量重建重写了所有范围，一定能恢复 ready；局部重建只能抵消**同范围**的标记，
+    # 若上一笔失败是全量的，状态要原样留着，否则会把全库的坑说成已经填了。
+    settled = (
+        repo.INDEX_READY
+        if project_name is None or previous in (repo.INDEX_READY, marker)
+        else previous
+    )
+    repo.set_index_meta(conn, model=embedder.model, dim=str(new_dim), state=settled)
     return {
         "scope": project_name or "all",
         "chunks": len(items),
@@ -360,16 +405,27 @@ def reindex(
 
 
 def _ensure_same_model(
-    conn: sqlite3.Connection, model: str, store_count: int | None = None
+    conn: sqlite3.Connection,
+    model: str,
+    store_count: int | None = None,
+    *,
+    retry_scope: str | None = None,
 ) -> None:
     """局部重建只允许在"索引本身自洽"的前提下沿用现有模型。
 
     局部重建修不了全库的不一致（缺向量、混模型、索引与归档对不上），只会让状态更复杂，
     所以这类前提不满足时直接拒绝，把"全量 reindex"指给用户。
+
+    `retry_scope` 让"上一次同项目的局部重建失败"不挡自己：那种标记正是重跑要消除的，
+    挡住它只会逼用户去做代价更大的全量重建。
     """
     try:
         consistency.ensure_writable(
-            conn, model, store_count=store_count, action="局部重建"
+            conn,
+            model,
+            store_count=store_count,
+            action="局部重建",
+            retry_scope=retry_scope,
         )
     except IndexMismatch as exc:
         raise ReindexError(

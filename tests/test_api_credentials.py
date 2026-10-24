@@ -122,6 +122,79 @@ def test_verify_calls_provider_with_the_user_key(
     assert mock_openai.LAST_AUTH["/v1/chat/completions"] == "Bearer sk-alice-llm"
 
 
+def test_verify_falls_back_to_server_key_not_the_current_user(
+    api_env: tuple[Services, Settings],
+) -> None:
+    """留空的字段必须回落到**服务端**公共 Key，不能是"当前登录用户"的那把。
+
+    场景是真实会发生的：Alice 已登录且 Key 可用，现在给 Bob 只填 embedding、LLM 留空。
+    前端的通用请求会顺手带上 Alice 的请求头，如果 verify 拿这个"按用户视图"当回退
+    来源，验的其实是 Alice 的 Key，却对外标成 `source=server`。Bob 保存之后真正发
+    请求走的是服务端 Key——那时才失败，而校验早就绿了。
+    """
+    services, _ = api_env
+    with TestClient(create_app(services)) as client:
+        mock_openai.reset()
+        data = client.post(
+            "/api/credentials/verify",
+            # 关键：请求头里放一把**可用**的用户 Key，与"留空"形成对照
+            headers=_user_headers("alice", embedding="sk-alice-embed", llm="sk-alice-llm"),
+            json={"username": "bob", "embedding_key": "", "llm_key": ""},
+        ).json()
+
+    assert data["llm"]["ok"] is True
+    assert data["llm"]["source"] == "server"
+    assert data["embedding"]["source"] == "server"
+    assert data["llm"]["model"] == "mock-chat", "回退的模型也该是服务端配的那个"
+    # 这是全部要点：真正发出去的必须是服务端那把 sk-server，而不是 Alice 的
+    assert mock_openai.LAST_AUTH["/v1/chat/completions"] == "Bearer sk-server"
+    assert mock_openai.LAST_AUTH["/v1/embeddings"] == "Bearer sk-server"
+
+
+def test_verify_accepts_model_switch_with_server_keys(
+    api_env: tuple[Services, Settings], docx_file: Path
+) -> None:
+    """只换对话模型、两个 Key 都留空：界面允许保存，接口也必须能验通。
+
+    后端早就支持只带模型头（`from_headers` 因此要连模型一起判空），但前端曾经强制
+    "至少填一个 Key"，于是"用公共额度换个模型"这件事在浏览器里根本做不到。
+    """
+    services, settings = api_env
+    ingest_file(
+        services.conn,
+        services.store,
+        services.require_embedder(),
+        settings,
+        path=docx_file,
+        project_name="甲项目",
+    )
+
+    headers = {"X-R4P-User": "carol", "X-R4P-LLM-Model": LLM_CHOICES[1].id}
+    with TestClient(create_app(services)) as client:
+        mock_openai.reset()
+        data = client.post(
+            "/api/credentials/verify",
+            json={"username": "carol", "embedding_key": "", "llm_key": ""},
+        ).json()
+        assert data["llm"]["ok"] is True
+
+        # 这是前端保存后真正发出的请求形态：没有 Key，只有一个模型头
+        mock_openai.reset()
+        with client.stream(
+            "POST", "/api/chat", json={"question": "张拉控制要点有哪些？", "top_k": 3},
+            headers=headers,
+        ) as resp:
+            body = "".join(resp.iter_text())
+
+    assert "event: error" not in body
+    assert mock_openai.LAST_MODEL["/v1/chat/completions"] == LLM_CHOICES[1].id, (
+        "只带模型头时，真正调用的必须是选中的那个模型"
+    )
+    assert mock_openai.LAST_AUTH["/v1/chat/completions"] == f"Bearer {settings.llm_api_key}", (
+        "没填 Key 就该用服务端公共额度，而不是报错"
+    )
+
+
 def test_verify_rejects_bad_key_without_echoing_it(
     api_env: tuple[Services, Settings],
 ) -> None:
