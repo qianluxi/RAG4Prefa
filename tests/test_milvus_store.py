@@ -260,6 +260,41 @@ def test_non_ascii_path_is_rejected_before_touching_disk(tmp_path) -> None:
         MilvusStore(str(tmp_path / "课题" / "vectors.db"), "chunks_vec", dim=4)
 
 
+def test_relative_uri_is_checked_against_absolute_path(tmp_path, monkeypatch) -> None:
+    """相对路径的字面量干净，不代表落盘位置干净。
+
+    默认配置就是 `data/vectors.db`。工程放在中文目录下时，这个字符串里没有半个
+    非 ASCII 字符，旧检查直接放行，直到 MilvusClient(uri) 才报
+    "Open local milvus failed"——那条报错既没提 faiss 也没提中文，
+    看的人根本不知道要改什么。所以必须按 abspath 判断。
+    """
+    import os
+
+    if os.name != "nt":
+        pytest.skip("该限制只在 Windows 上出现")
+
+    workdir = tmp_path / "课题"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    with pytest.raises(BackendUnavailable, match="非 ASCII"):
+        MilvusStore("data/vectors.db", "chunks_vec", dim=4)
+
+
+def test_relative_uri_in_ascii_dir_is_allowed(tmp_path, monkeypatch) -> None:
+    """反方向也要钉住：ASCII 工作目录下的相对路径不能因为这次收紧被误杀。"""
+    import os
+
+    if os.name != "nt":
+        pytest.skip("该限制只在 Windows 上出现")
+
+    monkeypatch.chdir(tmp_path)
+    try:
+        MilvusStore("vectors.db", "chunks_vec", dim=4)
+    except BackendUnavailable as exc:
+        pytest.skip(f"Milvus 不可用：{exc}")
+
+
 def test_non_ascii_collection_name_is_rejected(tmp_path) -> None:
     """uri 干净但集合名带中文，索引文件路径照样是中文，同样要拒绝。"""
     import os

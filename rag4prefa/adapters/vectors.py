@@ -42,11 +42,17 @@ def _reject_non_ascii_uri(uri: str) -> None:
 
     这条限制是实测出来的，不是猜的：同一份数据放 `C:/tmp/...` 一切正常，
     放到 `F:/project/课题/...` 下 rebuild 立即失败。
+
+    必须按**绝对路径**判断。默认配置是相对路径 `data/vectors.db`，字面量干净，
+    真正落盘的位置却由工作目录决定；只看字面量的话，工程放在中文目录下时这道检查
+    形同虚设，要等 MilvusClient(uri) 打开才报 "Open local milvus failed"——
+    那条报错既不提 faiss 也不提中文，根因完全看不出来。
     """
     if os.name != "nt":
         return
-    if any(ord(ch) > 127 for ch in str(uri)):
-        raise BackendUnavailable(f"{NON_ASCII_PATH_HINT}（当前 uri：{uri}）")
+    absolute = os.path.abspath(str(uri))
+    if any(ord(ch) > 127 for ch in absolute):
+        raise BackendUnavailable(f"{NON_ASCII_PATH_HINT}（实际路径：{absolute}）")
 
 
 @dataclass(slots=True)
