@@ -85,9 +85,14 @@ _SIGNATURES = (
 
 # 端点接受哪种前缀。硅基流动、百炼、OpenAI 都发 sk- 开头的 Key，所以这层只能
 # 判断"明显不是这家的"（例如把 ms- 填给硅基流动），判断不了 sk- 之间的串用。
+#
+# 硅基流动分国内站与国际站，是两套独立账号：Key 不通用，向量模型目录也不同
+# （国内站 BAAI/bge-m3，国际站 Qwen3-Embedding 系列）。两个域名互不为子串，
+# 所以要分别列出，否则国际站的地址会认不出来、连平台名都提示不了。
 _ENDPOINTS = (
     ("modelscope.cn", ("ms-", "ds-"), "魔搭（ModelScope）"),
-    ("siliconflow.cn", ("sk-",), "硅基流动"),
+    ("siliconflow.cn", ("sk-",), "硅基流动（国内站）"),
+    ("siliconflow.com", ("sk-",), "硅基流动（国际站）"),
     ("dashscope.aliyuncs.com", ("sk-",), "阿里百炼"),
     ("api.openai.com", ("sk-",), "OpenAI"),
 )
@@ -127,24 +132,29 @@ def platform_mismatch(key: str, base_url: str, *, label: str = "embedding") -> s
 
 
 def auth_failure_hint(base_url: str, key: str = "") -> str:
-    """鉴权失败时补一句通用提醒：Key 有效但填错平台，表现同样是 401。"""
+    """鉴权失败时补一句能照做的提醒：Key 有效但填错平台，表现同样是 401。"""
     name = platform_of(base_url)
     if not name:
         return ""
     hint = f"（该 Key 未被{name}接受：确认它由{name}签发，不同平台的 Key 不能混用）"
-    # 前缀能对上也不能证明是这家的：sk- 被硅基流动 / 百炼 / DeepSeek / 智谱共用，
-    # 所以 `platform_mismatch()` 对 sk- 一律放行。真报错时这里再补一句，
-    # 否则用户会以为是"复制漏了几位"。
-    if key.startswith("sk-") and name in _SK_SHARED:
+    if name.startswith("硅基流动"):
+        # 这家的国内站与国际站是两套独立账号，两边都发 sk-、都叫硅基流动，
+        # 唯一的区别是 Application 域名。填串了会收到 30014 "Token is invalid"，
+        # 与「Key 被删」是同一个错误码——不说这一条，用户只会反复重建 Key。
+        hint += (
+            "硅基流动的国内站（siliconflow.cn）与国际站（siliconflow.com）是两套独立账号，"
+            "Key 与向量模型目录都不通用；在其中一个站点申请的 Key 填给另一个站点的地址，"
+            "收到的正是这个错误。请核对申请 Key 时的域名。"
+        )
+    elif key.startswith("sk-"):
+        # 前缀能对上也不能证明是这家的：sk- 被硅基流动 / 百炼 / DeepSeek / 智谱共用，
+        # 所以 `platform_mismatch()` 对 sk- 一律放行。真报错时这里再补一句，
+        # 否则用户会以为是"复制漏了几位"。
         hint += (
             f"sk- 前缀被多家共用，请确认这把 Key 确实在{name}控制台生成"
             f"（别家签发的 sk- 在{name}这里同样报 Token 无效）。"
         )
     return hint
-
-
-# 这些平台都发 sk- 开头的 Key，光看形态分不出来
-_SK_SHARED = frozenset({"硅基流动", "阿里百炼", "OpenAI"})
 
 # 「Key 没错，是账号状态不让调」的厂商特征词。这类失败常被误读成 Key 失效，
 # 用户于是反复重建 Key，而真正要做的是去控制台完成验证或充值。
@@ -162,10 +172,12 @@ _ACCOUNT_MARKERS: tuple[tuple[str, str], ...] = (
     ("欠费", "账号欠费"),
 )
 
-# 厂商没在错误里给自助链接时，按域名兜一个准确性已知的入口
+# 厂商没在错误里给自助链接时，按域名兜一个准确性已知的入口。
+# 硅基流动两站的域名互不为子串，各配各的，不会串。
 _ACCOUNT_PAGES = {
     "modelscope.cn": "https://modelscope.cn/my/settings/account",
     "siliconflow.cn": "https://cloud.siliconflow.cn/account/overview",
+    "siliconflow.com": "https://cloud.siliconflow.com/account/overview",
 }
 
 

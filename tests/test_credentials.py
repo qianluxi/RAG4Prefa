@@ -171,10 +171,30 @@ def test_shared_sk_prefix_is_called_out_on_failure() -> None:
     `platform_mismatch()` 因此对 sk- 一律放行；真报错时若不补这句，用户会以为是
     复制漏了几位，把同一个 Key 反复粘十遍。
     """
-    hint = credentials.auth_failure_hint("https://api.siliconflow.cn/v1", "sk-abc")
+    hint = credentials.auth_failure_hint(
+        "https://dashscope.aliyuncs.com/compatible-mode/v1", "sk-abc"
+    )
 
     assert "多家共用" in hint
     # ms- 是魔搭专属，不该出现这句多余的提醒
     assert "多家共用" not in credentials.auth_failure_hint(
         "https://api-inference.modelscope.cn/v1", "ms-abc"
     )
+
+
+def test_siliconflow_two_sites_are_told_apart() -> None:
+    """硅基流动的 .cn 与 .com 是两套独立账号，Key 不通用。
+
+    真机上踩过：用户的 Key 在国际站申请，服务端配的是国内站地址，第一次调用收到
+    30014 "Token is invalid"——与「Key 被删」完全同一个错误码。不点破这一点，
+    用户只会反复重建 Key。
+    """
+    domestic = credentials.auth_failure_hint("https://api.siliconflow.cn/v1", "sk-abc")
+    overseas = credentials.auth_failure_hint("https://api.siliconflow.com/v1", "sk-abc")
+
+    assert "国内站" in domestic and "国际站" in domestic
+    assert "siliconflow.com" in domestic, "要写清另一半域名，否则用户不知道去哪对照"
+    assert "国际站" in overseas
+    # 两站都应被认出是硅基流动，而不是落到"认不出的端点"
+    assert credentials.platform_of("https://api.siliconflow.com/v1") == "硅基流动（国际站）"
+    assert credentials.platform_of("https://api.siliconflow.cn/v1") == "硅基流动（国内站）"

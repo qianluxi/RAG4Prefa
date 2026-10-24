@@ -248,9 +248,25 @@ API 一览（实现见 `api.py`，说明见 README）：
 `stream=True` 支持情况、embedding 批量上限、响应字段差异。
 - 做法：`cp .env.example .env` 后填 `R4P_EMBEDDING_API_KEY` / `R4P_LLM_API_KEY`
   （**不要**复用原仓库泄漏的 ModelScope token）。
-- 默认组合是「硅基流动 `BAAI/bge-m3` 做 embedding + 魔搭 Qwen 做 LLM」，两家 key 分别申请、互不通用。
+- 默认组合是「硅基流动**国际站** `Qwen/Qwen3-Embedding-0.6B` 做 embedding + 魔搭 Qwen 做 LLM」，
+  两家 key 分别申请、互不通用。
+- **硅基流动的国内站与国际站是两套独立账号**，这一点务必先确认再填 Key：
+
+  | | 国内站 | 国际站 |
+  |---|---|---|
+  | 控制台 | cloud.siliconflow.cn | cloud.siliconflow.com |
+  | 接口 | `api.siliconflow.cn/v1` | `api.siliconflow.com/v1` |
+  | 向量模型 | `BAAI/bge-m3`（1024 维） | `Qwen/Qwen3-Embedding-0.6B/4B/8B`（1024/2560/4096） |
+  | 重排 | `BAAI/bge-reranker-v2-m3` | `Qwen/Qwen3-Reranker-0.6B/8B` |
+
+  两站都发 `sk-` 开头的 Key、都叫硅基流动，**唯一的区别是域名**。填串了第一次调用就收到
+  `30014 Token is invalid`，与「Key 被删」同一个错误码，看报错分不出来。本机实测过：
+  国际站申请的 Key 打国内站地址，100% 复现。
 - **换 embedding 厂商时五项要一起改**：`BASE_URL` / `API_KEY` / `MODEL` / `DIM` / `BATCH`。
-  批量上限是硬约束：硅基流动 32 可用，阿里百炼 `text-embedding-v3/v4` **只能 10**，超了直接 400。
+  批量上限是硬约束：硅基流动 32 可用（国际站实测 40 条一次也过），阿里百炼
+  `text-embedding-v3/v4` **只能 10**，超了直接 400。
+- 一个部署只能配一个 `embedding_base_url`，而用户只能换 Key、不能换地址。所以**同一部署的
+  所有用户必须用同一个站的 Key**；混用时 Key 会一直 401，`auth_failure_hint()` 会提示去核对域名。
 - 验收：`ask "缓粘结预应力的张拉控制要点" --answer` 返回带章节引用的答案；
   `/api/health` 的 `backend.name` 为 `milvus`（或已在 notes 里说明回退 numpy）、`vectors` > 0、`credentials_missing` 为空。
 - 注：若数据目录在含中文的路径下，Milvus 会被拒绝并回退 numpy —— 这是已知平台限制，不是配置错误。
@@ -394,6 +410,32 @@ Key 根本没被认出来。**不要用 `GET /v1/models` 判断 Key 有效性—
 三类根因的判定顺序（`api._explain_error`）：账号阻断 → 模型不在目录 → 鉴权失败。
 它们互斥且结论相反：账号阻断意味着「Key 已通过鉴权」，此时再补一句「Key 未被接受」
 会把人带去重建 Key，所以只补最先命中的那条。
+
+第七轮（2026-10-24 21:15）：两把真实 Key 都打通了，根因是**硅基流动双站**：
+
+```
+pytest -q                          → 150 passed（新增双站识别用例）
+ruff check rag4prefa tests scripts → All checks passed
+POST /api/credentials/verify（国际站 Key + 魔搭 Key）：
+  embedding → OK  model=Qwen/Qwen3-Embedding-0.6B  dim=1024
+  llm       → OK  model=Qwen/Qwen3.5-35B-A3B       reply_chars=2
+```
+
+用户那把 `sk-` 是**国际站**（cloud.siliconflow.com）申请的，项目默认配的却是国内站
+`api.siliconflow.cn`。同一把 Key 打国际站返回 `20012 Model does not exist`（模型名不对），
+打国内站返回 `30014 Token invalid`。**两个错误码的差异本身就指明了问题在站点而不在 Key。**
+
+向量模型选型（同平台，5 句中文探针，单条调用）：
+
+| 模型 | 维度 | 近义 | 同域 | 弱相关 | 无关 | 区分度 |
+|---|---|---|---|---|---|---|
+| Qwen3-Embedding-0.6B | 1024 | 0.939 | 0.615 | 0.329 | 0.163 | **0.775** |
+| Qwen3-Embedding-4B | 2560 | 0.917 | 0.608 | 0.377 | 0.326 | 0.591 |
+| Qwen3-Embedding-8B | 4096 | 0.917 | 0.614 | 0.446 | 0.273 | 0.644 |
+
+本项目的 chunk 上限 480 token，短文本检索上 0.6B 的分离度并不输大模型，而存储与检索
+成本分别是 1 / 2.5 / 4 倍，故默认选 0.6B。样本只有 5 句，不足以断言「小模型更强」，
+但足以说明「更大 ≠ 对本任务更好」；真要换 4B/8B，必须全量 reindex。
 
 第四轮（2026-10-23 22:10）的冒烟记录仍然有效：
 

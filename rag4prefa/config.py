@@ -18,10 +18,15 @@ class Settings(BaseSettings):
     # 数据
     data_dir: Path = Path("data")
 
-    # 向量化（默认硅基流动 bge-m3：1024 维、免费、8192 token 上下文）
-    embedding_base_url: str = "https://api.siliconflow.cn/v1"
+    # 向量化。默认硅基流动国际站 + Qwen3-Embedding-0.6B：1024 维，与下面的 1024 对得上。
+    #
+    # 硅基流动的国内站（siliconflow.cn）与国际站（siliconflow.com）是**两套独立账号**，
+    # Key 不通用，模型目录也不同：国内站有 BAAI/bge-m3，国际站只有 Qwen3-Embedding 系列。
+    # 在 .com 申请的 Key 填给 .cn 的地址只会在第一次调用时收到 "Token is invalid"，
+    # 看起来像 Key 被删——这是本项目最容易搞错的一处，两站对应关系写在 .env.example。
+    embedding_base_url: str = "https://api.siliconflow.com/v1"
     embedding_api_key: str = ""
-    embedding_model: str = "BAAI/bge-m3"
+    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 0  # 0 = 探测后写库
     embedding_batch: int = 32  # 百炼 text-embedding-v3/v4 只能 10
     embedding_timeout: float = 60.0
