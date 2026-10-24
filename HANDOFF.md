@@ -363,7 +363,8 @@ ruff check rag4prefa tests scripts → All checks passed
   embedding = sk-…（用户填的）
     → AuthenticationError 401 {"code":30014,"message":"Token is invalid."}
     → 同一把 Key 另测 DeepSeek / 百炼 / 月之暗面 / 智谱，四家全部拒绝
-    → 判定：Key 本身无效（不是复制问题、不是填错平台），须重新签发
+    → 硅基流动对任意不被接受的 Token 一律回 30014（连 "abc123" 也是），
+      所以这个错误码只能证明「硅基流动不认它」，推不出具体原因
   llm = ms-…（用户填的）
     → 403 Forbidden: For account security, please complete your profile via email verification
     → 追加提示后：明确指出「这不是 Key 的问题：账号还没完成邮箱验证」并给处理入口
@@ -372,6 +373,23 @@ ruff check rag4prefa tests scripts → All checks passed
   /v1/embeddings 对 Qwen3-Embedding-*、BAAI/bge-m3 一律 "Invalid model id"。
   → embedding 与 LLM 分属两家时，embedding 只能选硅基流动 / 百炼 / 智谱这类提供向量接口的。
 ```
+
+**判断一把 Key 是「有效但被账号状态挡住」还是「根本认不出来」，用假 Key 对照**：
+
+```
+POST /v1/chat/completions（魔搭）
+  真 Key  → 403 Forbidden: complete your profile via email verification
+  假 Key  → 401 Authentication failed, please make sure that a valid ModelScope token is supplied.
+  无 Key  → 401（同上）
+```
+
+两者错误文本不同，就证明这把 Token 被平台成功识别了，卡点在账号状态；错误文本一致则说明
+Key 根本没被认出来。**不要用 `GET /v1/models` 判断 Key 有效性——该接口匿名可访问**，
+带假 Key、不带 Key 都返回同样的 37 个模型，用它当证据会把无效 Key 判成有效。
+
+值得注意的是 `sk-` 前缀并不专属某一家：硅基流动 / 百炼 / DeepSeek / 月之暗面 / 智谱都发
+`sk-`，因此 `platform_mismatch()` 对 `sk-` 只能放行。判断归属只能靠"这把 Key 是在哪个
+控制台生成的"，外部无法从形态推断。
 
 三类根因的判定顺序（`api._explain_error`）：账号阻断 → 模型不在目录 → 鉴权失败。
 它们互斥且结论相反：账号阻断意味着「Key 已通过鉴权」，此时再补一句「Key 未被接受」
