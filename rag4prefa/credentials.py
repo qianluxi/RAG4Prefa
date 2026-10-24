@@ -126,12 +126,75 @@ def platform_mismatch(key: str, base_url: str, *, label: str = "embedding") -> s
     return None
 
 
-def auth_failure_hint(base_url: str) -> str:
+def auth_failure_hint(base_url: str, key: str = "") -> str:
     """鉴权失败时补一句通用提醒：Key 有效但填错平台，表现同样是 401。"""
     name = platform_of(base_url)
     if not name:
         return ""
-    return f"（该 Key 未被{name}接受：确认它由{name}签发，不同平台的 Key 不能混用）"
+    hint = f"（该 Key 未被{name}接受：确认它由{name}签发，不同平台的 Key 不能混用）"
+    # 前缀能对上也不能证明是这家的：sk- 被硅基流动 / 百炼 / DeepSeek / 智谱共用，
+    # 所以 `platform_mismatch()` 对 sk- 一律放行。真报错时这里再补一句，
+    # 否则用户会以为是"复制漏了几位"。
+    if key.startswith("sk-") and name in _SK_SHARED:
+        hint += (
+            f"sk- 前缀被多家共用，请确认这把 Key 确实在{name}控制台生成"
+            f"（别家签发的 sk- 在{name}这里同样报 Token 无效）。"
+        )
+    return hint
+
+
+# 这些平台都发 sk- 开头的 Key，光看形态分不出来
+_SK_SHARED = frozenset({"硅基流动", "阿里百炼", "OpenAI"})
+
+# 「Key 没错，是账号状态不让调」的厂商特征词。这类失败常被误读成 Key 失效，
+# 用户于是反复重建 Key，而真正要做的是去控制台完成验证或充值。
+_ACCOUNT_MARKERS: tuple[tuple[str, str], ...] = (
+    ("complete your profile", "账号还没完成邮箱验证"),
+    ("email verification", "账号还没完成邮箱验证"),
+    ("verified account", "账号未通过验证"),
+    ("only available to verified", "账号未通过验证"),
+    ("arrearage", "账号欠费"),
+    ("insufficient balance", "账户余额不足"),
+    ("insufficient_quota", "额度已用尽"),
+    ("quota exceeded", "额度已用尽"),
+    ("exceeded your current quota", "额度已用尽"),
+    ("余额不足", "账户余额不足"),
+    ("欠费", "账号欠费"),
+)
+
+# 厂商没在错误里给自助链接时，按域名兜一个准确性已知的入口
+_ACCOUNT_PAGES = {
+    "modelscope.cn": "https://modelscope.cn/my/settings/account",
+    "siliconflow.cn": "https://cloud.siliconflow.cn/account/overview",
+}
+
+
+def account_blocked_hint(message: str, base_url: str) -> str:
+    """识别「鉴权已通过、但账号状态不允许调用」，返回一句能照着做的提示；否则空串。
+
+    与 `auth_failure_hint()` 的区别是根因不同：那边是 Key 不被接受，这边 Key 完全有效，
+    卡在邮箱验证 / 实名 / 欠费 / 额度。两种情况报错都长得像"调不通"，但用户该做的事
+    完全不同——一个去重新生成 Key，一个去验证账号。
+    """
+    lowered = (message or "").lower()
+    reason = next((text for mark, text in _ACCOUNT_MARKERS if mark in lowered), "")
+    if not reason:
+        return ""
+    host = (base_url or "").split("//")[-1].split("/")[0].lower()
+    # 厂商在错误里给的自助链接最准（还带上下文），优先用它。
+    # 链接通常夹在 JSON 里，尾部会粘上引号或标点，不剥掉用户点不开。
+    link = next(
+        (
+            word.strip(".,;:)]}\"'）】」")
+            for word in (message or "").split()
+            if word.startswith("http")
+        ),
+        "",
+    )
+    if not link:
+        link = next((page for domain, page in _ACCOUNT_PAGES.items() if domain in host), "")
+    tail = f"处理入口：{link}" if link else "请到该平台控制台检查邮箱验证 / 实名 / 余额状态。"
+    return f"（这不是 Key 的问题：{reason}。该 Key 已通过鉴权，只是账号状态不允许调用。{tail}）"
 
 
 class CredentialPool:

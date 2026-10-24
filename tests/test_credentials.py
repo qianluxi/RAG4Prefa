@@ -163,3 +163,18 @@ def test_sk_keys_cannot_be_told_apart() -> None:
 def test_auth_failure_hint_names_the_platform() -> None:
     assert "硅基流动" in credentials.auth_failure_hint("https://api.siliconflow.cn/v1")
     assert credentials.auth_failure_hint("http://127.0.0.1:8123/v1") == ""
+
+
+def test_shared_sk_prefix_is_called_out_on_failure() -> None:
+    """sk- 被多家共用，前缀对得上不等于就是这家的 Key。
+
+    `platform_mismatch()` 因此对 sk- 一律放行；真报错时若不补这句，用户会以为是
+    复制漏了几位，把同一个 Key 反复粘十遍。
+    """
+    hint = credentials.auth_failure_hint("https://api.siliconflow.cn/v1", "sk-abc")
+
+    assert "多家共用" in hint
+    # ms- 是魔搭专属，不该出现这句多余的提醒
+    assert "多家共用" not in credentials.auth_failure_hint(
+        "https://api-inference.modelscope.cn/v1", "ms-abc"
+    )

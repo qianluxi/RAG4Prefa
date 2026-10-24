@@ -16,11 +16,12 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
+from rag4prefa import credentials
 from rag4prefa.adapters.embed import Embedder
 from rag4prefa.adapters.llm import LLM
 from rag4prefa.adapters.rerank import NoopReranker
 from rag4prefa.adapters.vectors import NumpyStore
-from rag4prefa.api import _redact, _with_model_hint, create_app
+from rag4prefa.api import _explain_error, _redact, _with_model_hint, create_app
 from rag4prefa.config import Settings
 from rag4prefa.credentials import UserCredentials
 from rag4prefa.db import connect, init_db
@@ -285,3 +286,54 @@ def test_missing_model_points_at_the_model_list() -> None:
 def test_model_hint_stays_quiet_on_other_errors() -> None:
     """别的错误不能被加上模型提示，否则会指向错误的方向。"""
     assert _with_model_hint("RateLimitError: 429", "https://x/v1") == "RateLimitError: 429"
+
+
+# ── 三类根因的识别与优先级 ─────────────────────────────────
+
+
+def test_unverified_account_is_not_blamed_on_the_key() -> None:
+    """魔搭对未验证账号报的是 400，但 Key 完全有效。
+
+    真机上这条错误是：`For account security, please complete your profile via
+    email verification.` 若不翻译，用户只会看到一串英文，然后回去重建 Key。
+    """
+    raw = (
+        'BadRequestError: Error code: 400 - {"error":{"message":"For account security, '
+        'please complete your profile via email verification. ModelScope Magicubes is '
+        'only available to verified accounts. Please refer to '
+        'https://modelscope.cn/my/settings/account"}}'
+    )
+    explained = credentials.account_blocked_hint(
+        raw, "https://api-inference.modelscope.cn/v1"
+    )
+
+    assert "邮箱验证" in explained
+    assert "modelscope.cn/my/settings/account" in explained, "必须给出处理入口"
+    assert "已通过鉴权" in explained, "要说清 Key 本身没坏，否则用户会去重建 Key"
+    # 链接夹在 JSON 里，尾部会粘上引号；不剥掉用户点不开
+    assert "account'" not in explained and 'account"' not in explained
+
+
+def test_account_hint_outranks_auth_hint() -> None:
+    """账号问题不能被追加成「Key 未被接受」——两句话结论相反。"""
+    raw = 'Error code: 403 - complete your profile via email verification'
+    explained = _explain_error(raw, "https://api-inference.modelscope.cn/v1", "ms-abc")
+
+    assert "邮箱验证" in explained
+    assert "未被魔搭" not in explained, "Key 明明通过了鉴权，不能反过来说它被拒绝"
+
+
+def test_quota_exhaustion_maps_to_top_up_not_to_key_rotation() -> None:
+    """额度用尽与 Key 失效在日志里都像 401，但要做的事完全不同。"""
+    for raw in (
+        "Error code: 429 - insufficient_quota",
+        "Error code: 400 - {\"code\":30001,\"message\":\"余额不足\"}",
+    ):
+        explained = credentials.account_blocked_hint(raw, "https://api.siliconflow.cn/v1")
+        assert explained, raw
+
+
+def test_transient_rate_limit_is_not_an_account_problem() -> None:
+    """普通限流会自己恢复，说成账号问题会让人白跑一趟控制台。"""
+    raw = "RateLimitError: Error code: 429 - rate limit reached for requests"
+    assert credentials.account_blocked_hint(raw, "https://api.siliconflow.cn/v1") == ""

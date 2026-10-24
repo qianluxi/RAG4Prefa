@@ -17,7 +17,12 @@ from . import admin, ask, consistency, ingest, repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
 from .consistency import IndexMismatch
-from .credentials import auth_failure_hint, from_headers, platform_mismatch
+from .credentials import (
+    account_blocked_hint,
+    auth_failure_hint,
+    from_headers,
+    platform_mismatch,
+)
 from .domain import Filter, JobState
 from .services import Services, build_services
 
@@ -167,7 +172,9 @@ def create_app(services: Services | None = None) -> FastAPI:
                 result["embedding"] = {
                     "ok": False,
                     "source": emb_source,
-                    "error": _with_auth_hint(message, local.embedding_base_url),
+                    "error": _explain_error(
+                        message, local.embedding_base_url, payload.embedding_key.strip()
+                    ),
                 }
             finally:
                 if embedder is not None:
@@ -199,8 +206,8 @@ def create_app(services: Services | None = None) -> FastAPI:
                     "source": llm_source,
                     # 模型名不在该平台的当前目录里时，鉴权是通的、报的是 400，
                     # 用户的直觉却是"我的 token 有问题"，所以把排查方向写清楚
-                    "error": _with_model_hint(
-                        _with_auth_hint(message, local.llm_base_url), local.llm_base_url
+                    "error": _explain_error(
+                        message, local.llm_base_url, payload.llm_key.strip()
                     ),
                 }
             finally:
@@ -386,7 +393,27 @@ def _redact(message: str, *secrets: str) -> str:
     return message[:600]
 
 
-def _with_auth_hint(message: str, base_url: str) -> str:
+def _explain_error(message: str, base_url: str, key: str = "") -> str:
+    """把厂商的英文报错补成「下一步该做什么」。
+
+    三类根因互斥，只补最先命中的那条——它们的结论互相矛盾：
+    账号阻断说明「Key 已通过鉴权」，此时再说「Key 未被接受」会把人带去重建 Key；
+    模型不在目录同理，那是配置问题，不是凭据问题。越具体的根因越先判。
+    """
+    for step in (_with_account_hint, _with_model_hint):
+        explained = step(message, base_url, key)
+        if explained != message:
+            return explained
+    return _with_auth_hint(message, base_url, key)
+
+
+def _with_account_hint(message: str, base_url: str, key: str = "") -> str:
+    """账号未验证 / 欠费 / 额度用尽时，指出这是账号状态而不是凭据问题。"""
+    hint = account_blocked_hint(message, base_url)
+    return f"{message}\n{hint}" if hint else message
+
+
+def _with_auth_hint(message: str, base_url: str, key: str = "") -> str:
     """401 类错误补一句"Key 可能不属于这个平台"。
 
     同一个 401 有两种成因：Key 复制错了，或者 Key 是别家的。后者更常见于
@@ -394,11 +421,11 @@ def _with_auth_hint(message: str, base_url: str) -> str:
     """
     lowered = message.lower()
     if "401" in message or "authentication" in lowered or "token is invalid" in lowered:
-        return message + auth_failure_hint(base_url)
+        return message + auth_failure_hint(base_url, key)
     return message
 
 
-def _with_model_hint(message: str, base_url: str) -> str:
+def _with_model_hint(message: str, base_url: str, key: str = "") -> str:
     """模型名不在该平台目录里时，指出正确的排查方向与查法。
 
     这种失败很像鉴权问题（都是调不通），但 token 其实是好的。不写清楚的话，

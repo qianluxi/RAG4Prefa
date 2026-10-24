@@ -66,7 +66,7 @@ rag4prefa/
 ├── prompts.py     38    系统提示词与引用格式
 ├── admin.py       64    项目/文档的查询与级联删除
 ├── services.py   240    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
-├── credentials.py 152   **按用户解析 Key**：请求头 → 凭据池（只换 Key，不换模型）
+├── credentials.py 273   **按用户解析 Key**：请求头 → 凭据池（只换 Key，不换模型）；报错根因分级
 ├── api.py        378    FastAPI 路由（只做协议转换，不含业务逻辑）
 ├── cli.py        230+   init / serve / doctor / ingest / reindex / ask / projects / verify
 └── adapters/     990+   embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
@@ -353,6 +353,29 @@ ruff check rag4prefa tests scripts → All checks passed
                                     missing=[]，说明请求头确实覆盖了公共配置
   GET /                           → 200，页面内含 X-R4P-* 注入逻辑
 ```
+
+第六轮（2026-10-24 20:45）修的是「报错读不懂」——不是功能缺失，是排查方向被误导：
+
+```
+pytest -q                          → 149 passed（新增 5 项根因识别用例）
+ruff check rag4prefa tests scripts → All checks passed
+用用户提供的真实 Key 走 POST /api/credentials/verify：
+  embedding = sk-…（用户填的）
+    → AuthenticationError 401 {"code":30014,"message":"Token is invalid."}
+    → 同一把 Key 另测 DeepSeek / 百炼 / 月之暗面 / 智谱，四家全部拒绝
+    → 判定：Key 本身无效（不是复制问题、不是填错平台），须重新签发
+  llm = ms-…（用户填的）
+    → 403 Forbidden: For account security, please complete your profile via email verification
+    → 追加提示后：明确指出「这不是 Key 的问题：账号还没完成邮箱验证」并给处理入口
+实测结论（写进配置建议）：
+  魔搭 37 个可调用模型全是对话/图像，**没有 embedding 模型**，
+  /v1/embeddings 对 Qwen3-Embedding-*、BAAI/bge-m3 一律 "Invalid model id"。
+  → embedding 与 LLM 分属两家时，embedding 只能选硅基流动 / 百炼 / 智谱这类提供向量接口的。
+```
+
+三类根因的判定顺序（`api._explain_error`）：账号阻断 → 模型不在目录 → 鉴权失败。
+它们互斥且结论相反：账号阻断意味着「Key 已通过鉴权」，此时再补一句「Key 未被接受」
+会把人带去重建 Key，所以只补最先命中的那条。
 
 第四轮（2026-10-23 22:10）的冒烟记录仍然有效：
 
