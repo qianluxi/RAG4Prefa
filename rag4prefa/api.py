@@ -18,10 +18,12 @@ from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
 from .consistency import IndexMismatch
 from .credentials import (
+    LLM_CHOICES,
     account_blocked_hint,
     auth_failure_hint,
     from_headers,
     platform_mismatch,
+    resolve_llm_model,
 )
 from .domain import Filter, JobState
 from .services import Services, build_services
@@ -51,6 +53,8 @@ class CredentialCheck(BaseModel):
     username: str = Field(default="", max_length=64)
     embedding_key: str = Field(default="", max_length=4096)
     llm_key: str = Field(default="", max_length=4096)
+    # 只影响这一项的探测目标；embedding 模型不接受外部指定（见 credentials 模块头）
+    llm_model: str = Field(default="", max_length=128)
 
 
 # ── SSE ────────────────────────────────────────────────────
@@ -109,6 +113,43 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     # ── 凭据 ────────────────────────────────────────────
 
+    @app.get("/api/llm-models")
+    def llm_models(request: Request) -> dict:
+        """可选的对话模型清单。前端用它渲染下拉。
+
+        只返回白名单里、且逐个真调通过的模型。别拿 `/v1/models` 直接渲染：
+        那个目录里 DeepSeek V4 全系、MiniMax-M3 等一大半调不通，列出来就是
+        一排点不动的按钮，用户点一次失败一次。
+        """
+        current = svc(request).settings.llm_model
+        options = [
+            {
+                "id": option.id,
+                "label": option.label,
+                "note": option.note,
+                "selected": option.id == current,
+            }
+            for option in LLM_CHOICES
+        ]
+        if current and resolve_llm_model(current) != current:
+            # .env 里配了清单外的模型（自建网关、测试假服务）：它必须出现在下拉里，
+            # 否则前端一项都选不中，用户会以为配置坏了，而实际是「服务端默认」。
+            options.insert(
+                0,
+                {
+                    "id": current,
+                    "label": f"{current}（服务端配置）",
+                    "note": "来自 .env 的 R4P_LLM_MODEL，不在内置清单内；选它等于用服务端默认。",
+                    "selected": True,
+                },
+            )
+        return {
+            "current": current,
+            "options": options,
+            # 把"为什么只有它不能选"一并给前端，免得用户找不到切换入口以为漏了
+            "embedding_fixed": True,
+        }
+
     @app.post("/api/credentials/verify")
     def verify_credentials(request: Request, payload: CredentialCheck) -> dict:
         """用给定的 Key 各试调一次，把"哪一项不通、为什么"说清楚。
@@ -123,8 +164,14 @@ def create_app(services: Services | None = None) -> FastAPI:
         base = services.settings
         embedding_key = payload.embedding_key.strip() or base.embedding_api_key
         llm_key = payload.llm_key.strip() or base.llm_api_key
+        # 下拉里选了什么就验什么；不在白名单里就回落服务端默认，并如实回显用了哪个
+        llm_model = resolve_llm_model(payload.llm_model, base.llm_model)
         local = base.model_copy(
-            update={"embedding_api_key": embedding_key, "llm_api_key": llm_key}
+            update={
+                "embedding_api_key": embedding_key,
+                "llm_api_key": llm_key,
+                "llm_model": llm_model,
+            }
         )
         secrets = (
             payload.embedding_key,
@@ -134,7 +181,7 @@ def create_app(services: Services | None = None) -> FastAPI:
         )
 
         result: dict = {
-            # 前端要拿它提示"你的 Key 必须属于同一家服务商"——模型由服务端统一决定
+            # 前端要拿它提示"你的 Key 必须属于同一家服务商"——embedding 模型由服务端统一决定
             "server": {
                 "embedding_base_url": local.embedding_base_url,
                 "embedding_model": local.embedding_model,

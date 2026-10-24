@@ -23,7 +23,7 @@ from rag4prefa.adapters.rerank import NoopReranker
 from rag4prefa.adapters.vectors import NumpyStore
 from rag4prefa.api import _explain_error, _redact, _with_model_hint, create_app
 from rag4prefa.config import Settings
-from rag4prefa.credentials import UserCredentials
+from rag4prefa.credentials import LLM_CHOICES, UserCredentials
 from rag4prefa.db import connect, init_db
 from rag4prefa.ingest import ingest_file
 from rag4prefa.services import Services
@@ -337,3 +337,76 @@ def test_transient_rate_limit_is_not_an_account_problem() -> None:
     """普通限流会自己恢复，说成账号问题会让人白跑一趟控制台。"""
     raw = "RateLimitError: Error code: 429 - rate limit reached for requests"
     assert credentials.account_blocked_hint(raw, "https://api.siliconflow.cn/v1") == ""
+
+
+# ── 对话模型可选 ───────────────────────────────────────────
+
+
+def test_llm_model_list_is_served_for_the_dropdown(
+    api_env: tuple[Services, Settings],
+) -> None:
+    """下拉内容由服务端给，前端不硬编码——加模型只改一处。"""
+    services, _ = api_env
+    with TestClient(create_app(services)) as client:
+        data = client.get("/api/llm-models").json()
+
+    ids = [option["id"] for option in data["options"]]
+    assert all(option.id in ids for option in LLM_CHOICES)
+    # 测试 fixture 的模型名不在内置清单里，仍必须出现——否则前端一项都选不中
+    assert data["current"] in ids
+    selected = [option for option in data["options"] if option["selected"]]
+    assert len(selected) == 1 and selected[0]["id"] == data["current"]
+    # 每一项都要有可读说明，否则用户只能凭名字猜
+    assert all(option["note"] for option in data["options"])
+    assert data["embedding_fixed"] is True, "要能告诉前端 embedding 为何不可选"
+
+
+def test_verify_calls_the_chosen_llm_model(
+    api_env: tuple[Services, Settings],
+) -> None:
+    """选了模型就必须真的用它去调，而不是界面显示切换、背后还在跑默认模型。"""
+    services, _ = api_env
+    chosen = LLM_CHOICES[1].id
+    with TestClient(create_app(services)) as client:
+        data = client.post(
+            "/api/credentials/verify",
+            json={"username": "alice", "llm_key": "sk-alice-llm", "llm_model": chosen},
+        ).json()
+
+    assert data["llm"]["ok"] is True
+    assert data["llm"]["model"] == chosen
+    assert mock_openai.LAST_MODEL["/v1/chat/completions"] == chosen
+
+
+def test_unknown_llm_model_falls_back_instead_of_failing(
+    api_env: tuple[Services, Settings],
+) -> None:
+    """旧浏览器里可能还存着已下线的模型名，不能因此让校验整体失败。"""
+    services, settings = api_env
+    with TestClient(create_app(services)) as client:
+        data = client.post(
+            "/api/credentials/verify",
+            json={"username": "a", "llm_key": "sk-a", "llm_model": "some/retired-model"},
+        ).json()
+
+    assert data["llm"]["ok"] is True
+    assert data["llm"]["model"] == settings.llm_model
+
+
+def test_choosing_an_llm_model_does_not_touch_embedding(
+    api_env: tuple[Services, Settings],
+) -> None:
+    """embedding 决定向量空间，绝不能跟着用户的选择变。"""
+    services, settings = api_env
+    with TestClient(create_app(services)) as client:
+        data = client.post(
+            "/api/credentials/verify",
+            json={
+                "username": "a",
+                "embedding_key": "sk-a",
+                "llm_model": LLM_CHOICES[-1].id,
+            },
+        ).json()
+
+    assert data["server"]["embedding_model"] == settings.embedding_model
+    assert data["server"]["embedding_base_url"] == settings.embedding_base_url

@@ -15,7 +15,13 @@ import pytest
 
 from rag4prefa import credentials
 from rag4prefa.config import Settings
-from rag4prefa.credentials import CredentialPool, UserCredentials, from_headers
+from rag4prefa.credentials import (
+    HEADER_LLM_MODEL,
+    LLM_CHOICES,
+    CredentialPool,
+    UserCredentials,
+    from_headers,
+)
 
 
 def _headers(**kwargs: str) -> dict[str, str]:
@@ -66,16 +72,66 @@ def test_fingerprint_separates_keys_without_leaking_them() -> None:
     assert "sk-1" not in a.fingerprint, "缓存键里不该出现明文 Key"
 
 
-def test_settings_for_only_swaps_keys(settings: Settings, conn: sqlite3.Connection) -> None:
+def test_fingerprint_covers_the_model_choice() -> None:
+    """同名 Key 换模型必须拿到新客户端。
+
+    指纹只看 Key 的话，池子里那份 LLM 还指着旧模型：界面显示已切换，
+    实际跑的还是原来那个，而且不会有任何报错。
+    """
+    first, second = LLM_CHOICES[0].id, LLM_CHOICES[1].id
+    a = UserCredentials("u", "sk-1", "sk-2", first)
+    b = UserCredentials("u", "sk-1", "sk-2", second)
+
+    assert a.fingerprint != b.fingerprint
+
+
+def test_settings_for_swaps_keys_and_llm_model_only(
+    settings: Settings, conn: sqlite3.Connection
+) -> None:
     pool = CredentialPool(settings, conn)
-    local = pool.settings_for(UserCredentials("alice", "sk-user", ""))
+    chosen = LLM_CHOICES[1].id
+    local = pool.settings_for(UserCredentials("alice", "sk-user", "", chosen))
 
     assert local.embedding_api_key == "sk-user"
     assert local.llm_api_key == settings.llm_api_key, "没提供的 Key 应沿用服务端"
-    # 这条最关键：用户能换额度，不能换模型/维度，否则跨用户的向量空间会混
+    assert local.llm_model == chosen, "对话模型是可选项，应当生效"
+    # 这组最关键：embedding 模型/维度/地址不能按用户变，
+    # 否则不同用户会把各自的向量写进同一个集合，语义空间就混了
     assert local.embedding_model == settings.embedding_model
     assert local.embedding_dim == settings.embedding_dim
     assert local.embedding_base_url == settings.embedding_base_url
+
+
+def test_unknown_llm_model_falls_back_to_server_default(
+    settings: Settings, conn: sqlite3.Connection
+) -> None:
+    """浏览器里可能还存着已下线的模型名，为此让请求失败不值得。"""
+    pool = CredentialPool(settings, conn)
+    local = pool.settings_for(
+        UserCredentials("alice", "sk-user", "", "some/retired-model")
+    )
+
+    assert local.llm_model == settings.llm_model
+
+
+def test_model_header_alone_is_a_valid_credential_set() -> None:
+    """只切模型、额度仍用公共 Key，是合法组合。
+
+    判空时漏看 `llm_model` 就会把它当成未登录请求，用户选了模型却不生效。
+    """
+    creds = from_headers({HEADER_LLM_MODEL: LLM_CHOICES[0].id})
+
+    assert creds is not None
+    assert creds.llm_model == LLM_CHOICES[0].id
+    assert not creds.has_keys, "没带任何 Key，额度仍走服务端"
+
+
+def test_llm_choices_are_unique() -> None:
+    """清单会直接渲染成下拉，重名会让选中项跳来跳去。"""
+    ids = [option.id for option in LLM_CHOICES]
+
+    assert len(ids) == len(set(ids))
+    assert all(option.label and option.note for option in LLM_CHOICES), "每项都要有可读的说明"
 
 
 class _FakeClient:

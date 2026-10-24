@@ -17,12 +17,17 @@ PIECES = ("据【1】所述，", "缓粘结预应力", "需控制张拉时机与
 # 多进程/多线程下不严谨，但被 TestClient 串行调用时足够。
 LAST_AUTH: dict[str, str] = {}
 
+# 记录 chat 请求最后一次收到的 model。切模型时如果拿不到新模型名，
+# 界面上显示已切换、实际还在跑旧模型，靠这个断言。
+LAST_MODEL: dict[str, str] = {}
+
 # 以该前缀开头的 Key 一律 401，用来测"错 Key 会被明确拒绝"
 REJECT_PREFIX = "bad-"
 
 
 def reset() -> None:
     LAST_AUTH.clear()
+    LAST_MODEL.clear()
 
 
 def _embed(text: str) -> list[float]:
@@ -82,6 +87,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.endswith("/chat/completions"):
+            LAST_MODEL[self.path] = body.get("model", "")
             if body.get("stream"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")

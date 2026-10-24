@@ -152,14 +152,22 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 | `X-R4P-User` | 用户名，仅用于显示；中文需 `encodeURIComponent`（HTTP 头只能是 ASCII） |
 | `X-R4P-Embedding-Key` | 入库与检索用的 Key |
 | `X-R4P-LLM-Key` | 生成答案用的 Key |
+| `X-R4P-LLM-Model` | 选哪个对话模型，取值须在 `GET /api/llm-models` 返回的清单里 |
 
 两个 Key 可以只给一个：只带 embedding 就是"入库花我的额度，问答走公共配置"。
-三个头都不带时完全沿用 `.env` 里的公共 Key，旧脚本与 CLI 行为不变。
+四个头都不带时完全沿用 `.env` 里的公共配置，旧脚本与 CLI 行为不变。
+清单以外的模型名不会报错，而是静默回落到服务端默认——避免浏览器里存着已下线的名字
+时整个请求失败。
 
-**为什么用户只能换 Key、不能换模型**：索引的向量空间是全库唯一的。若允许每人自选模型，
+**为什么 embedding 模型不能选、对话模型可以选**：embedding 决定向量空间。若允许每人自选，
 同一批文档里就会并存两套向量——余弦相似度照样算得出来，只是语义错位，检索结果看起来正常
-却不可信。所以 `base_url` / `model` / `dim` 由服务端 `.env` 统一决定，用户只决定"用谁的额度"。
+却不可信。所以 `embedding` 的 `base_url` / `model` / `dim` 由服务端 `.env` 统一决定。
+对话模型只读"已检索到的片段"、不参与建索引，换它只影响措辞与推理深度，因此开放给用户。
 `/api/credentials/verify` 会真调一次并回报维度，与服务端建库时的维度不一致会直接拒绝。
+
+预设的对话模型都是逐个真调通过的（`Qwen3.5-35B-A3B` / `Qwen3.8-Flash-Next` /
+`Qwen3.8-27B` / `Qwen3.5-122B-A10B`）。**不要直接拿 `/v1/models` 的结果去渲染下拉**：
+那个目录里 DeepSeek V4 全系、MiniMax-M3 等一大半调用会返回 `has no provider supported`。
 
 **这不是身份认证**：知道用户名的人可以填自己的 Key 顶替，服务端不校验密码，取回 Key 也不设防。
 它解决的是"几个人分摊额度、各自记住自己的 Key"，不是"谁有权访问知识库"。

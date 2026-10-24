@@ -34,9 +34,73 @@ from .config import Settings
 HEADER_USER = "X-R4P-User"
 HEADER_EMBEDDING_KEY = "X-R4P-Embedding-Key"
 HEADER_LLM_KEY = "X-R4P-LLM-Key"
+HEADER_LLM_MODEL = "X-R4P-LLM-Model"
 
 _MAX_NAME = 64
 _MAX_KEY = 4096
+_MAX_MODEL = 128
+
+
+@dataclass(frozen=True)
+class LLMOption:
+    """一个可选的对话模型。`note` 写实测出来的差异，不写营销词。"""
+
+    id: str
+    label: str
+    note: str
+
+
+# 为什么 embedding 不能选、LLM 可以选
+# ================================
+# embedding 决定向量空间：换模型等于换一套语义坐标，同一个集合里混两套向量，
+# 余弦相似度照样算得出来，只是结果不可信。所以它必须锁死。
+# LLM 只读「已检索到的片段」并组织语言，不参与索引，换它只影响措辞与推理深度，
+# 不影响库里任何一条向量——因此可以放开。
+#
+# 这份清单是 2026-10-24 逐个真调出来的，不是照抄 /v1/models：那个目录里
+# DeepSeek V4 全系、MiniMax-M3、Step-3.5-Flash 都在，但调用一律返回
+# "has no provider supported"。列在目录里 ≠ 真的能调通，只收实测通过的。
+#
+# 被排除的候选与原因（留着，免得下次又去试）：
+#   ZhipuAI/GLM-5.2            先能调通，几次之后就 429 "exceeded your current quota"
+#                              —— 它吃付费配额，不符合"免费额度"的定位
+#   ZhipuAI/GLM-4.7-Flash      持续 429「访问量过大」，免费池排队严重
+#   deepseek-ai/DeepSeek-V4-*  目录里有，调用全部 "has no provider supported"
+#   MiniMax-M3 / Step-3.5-Flash / LongCat  同上，目录挂了但无 provider
+LLM_CHOICES: tuple[LLMOption, ...] = (
+    LLMOption(
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen3.5-35B-A3B（默认）",
+        "MoE 架构，质量与速度均衡，日常问答的稳妥选择",
+    ),
+    LLMOption(
+        "Qwen/Qwen3.8-Flash-Next",
+        "Qwen3.8-Flash-Next（最快）",
+        "实测约 1.3 秒出答案，适合连续追问",
+    ),
+    LLMOption(
+        "Qwen/Qwen3.8-27B",
+        "Qwen3.8-27B",
+        "新一代 dense 模型，长片段理解更稳",
+    ),
+    LLMOption(
+        "Qwen/Qwen3.5-122B-A10B",
+        "Qwen3.5-122B-A10B（最强）",
+        "参数量最大，复杂跨章节问题首选；高峰期可能限流",
+    ),
+)
+
+_LLM_IDS = frozenset(option.id for option in LLM_CHOICES)
+
+
+def resolve_llm_model(value: str, fallback: str = "") -> str:
+    """把任意输入收敛到白名单内。空串或未知名字一律回落 fallback。
+
+    不做「未知就报错」：模型名来自浏览器，前端旧版本可能还存着已下线的名字，
+    为此让整个请求失败不值得。静默回落 + `verify` 里能看出实际用了哪个模型即可。
+    """
+    candidate = (value or "").strip()[:_MAX_MODEL]
+    return candidate if candidate in _LLM_IDS else fallback
 
 
 @dataclass(frozen=True)
@@ -46,6 +110,7 @@ class UserCredentials:
     username: str
     embedding_key: str = ""
     llm_key: str = ""
+    llm_model: str = ""
 
     @property
     def has_keys(self) -> bool:
@@ -53,27 +118,35 @@ class UserCredentials:
 
     @property
     def fingerprint(self) -> str:
-        """缓存键用哈希：内存里的字典键也不该是明文 Key。"""
-        raw = f"{self.embedding_key}\x00{self.llm_key}".encode()
+        """缓存键用哈希：内存里的字典键也不该是明文 Key。
+
+        **必须把 llm_model 算进去**：同名 Key 换模型时要拿到新的 LLM 实例，
+        否则池子里那份还指着旧模型，界面上显示已切换、实际却在跑旧模型。
+        """
+        raw = f"{self.embedding_key}\x00{self.llm_key}\x00{self.llm_model}".encode()
         return hashlib.sha256(raw).hexdigest()[:32]
 
 
 def from_headers(headers: Mapping[str, str]) -> UserCredentials | None:
-    """从请求头解析凭据。两个 Key 头都不存在时返回 None——表示用服务端公共 Key。
+    """从请求头解析凭据。两个 Key 与模型头都不存在时返回 None——表示用服务端公共配置。
 
     只给其中一个也合法：例如只带自己的 embedding Key（入库花自己的额度），
     问答仍走服务端的 LLM Key。缺哪个就沿用哪个，不做「必须成对」的强校验。
+
+    只带模型头不带 Key 同样合法：用服务端公共额度跑自选模型。所以判空要连
+    `llm_model` 一起看，少看一个就会把「只切了模型」的请求当成未登录。
 
     用户名按 `encodeURIComponent` 的约定解码：HTTP 头只能是 ASCII，中文用户名
     不编码前端会直接抛 TypeError。纯英文名解码后不变，不影响 curl 用法。
     """
     embedding_key = (headers.get(HEADER_EMBEDDING_KEY) or "").strip()[:_MAX_KEY]
     llm_key = (headers.get(HEADER_LLM_KEY) or "").strip()[:_MAX_KEY]
-    if not embedding_key and not llm_key:
+    llm_model = (headers.get(HEADER_LLM_MODEL) or "").strip()[:_MAX_MODEL]
+    if not embedding_key and not llm_key and not llm_model:
         return None
     raw_name = (headers.get(HEADER_USER) or "").strip()
     name = unquote(raw_name)[:_MAX_NAME] or "anonymous"
-    return UserCredentials(name, embedding_key, llm_key)
+    return UserCredentials(name, embedding_key, llm_key, llm_model)
 
 
 # Key 的形态能认出平台。只收能确定的：认不出来就交给厂商判断，不要瞎猜。
@@ -231,11 +304,16 @@ class CredentialPool:
         return len(self._items)
 
     def settings_for(self, creds: UserCredentials) -> Settings:
-        """只替换 Key，模型、维度、后端地址一律沿用服务端配置。"""
+        """替换 Key 与 LLM 模型，**embedding 模型和维度一律沿用服务端配置**。
+
+        边界由用途决定：LLM 只读已检索到的片段、不参与建索引，换它不影响库里
+        任何向量；embedding 模型换一个就是换一套语义坐标，必须锁死（见模块头）。
+        """
         return self._settings.model_copy(
             update={
                 "embedding_api_key": creds.embedding_key or self._settings.embedding_api_key,
                 "llm_api_key": creds.llm_key or self._settings.llm_api_key,
+                "llm_model": resolve_llm_model(creds.llm_model, self._settings.llm_model),
             }
         )
 

@@ -66,7 +66,7 @@ rag4prefa/
 ├── prompts.py     38    系统提示词与引用格式
 ├── admin.py       64    项目/文档的查询与级联删除
 ├── services.py   240    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
-├── credentials.py 273   **按用户解析 Key**：请求头 → 凭据池（只换 Key，不换模型）；报错根因分级
+├── credentials.py 363   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
 ├── api.py        378    FastAPI 路由（只做协议转换，不含业务逻辑）
 ├── cli.py        230+   init / serve / doctor / ingest / reindex / ask / projects / verify
 └── adapters/     990+   embed / llm / vectors / rerank / parsers/docx —— 所有外部依赖都关在这里
@@ -107,10 +107,18 @@ rag4prefa/
    而不是给出一份看起来正常、实际无关的引用。判断依据含**后端实际条数**——只查 SQLite 发现不了"归档对、索引少写几条"。
 8. **chunk_id 由内容决定，不由位置决定**（`doc_id + 章节路径 + 正文哈希 + 同段内序号`）。
    同一 id 必是同一段正文；改一段只影响那一段，插入一段不会让后面全部换号。
-9. **多用户只能换 Key，不能换模型。** 前端「API 设置」里的 Key 随 `X-R4P-*` 头到达服务端，
-   `credentials.CredentialPool` 只替换 `settings` 里的两个 Key，`base_url` / `model` / `dim` 一律沿用服务端配置。
-   理由和第 1 条同源：允许每人自选模型，同一索引里就会并存两套向量。这是共享一个索引的前提，
-   不是权限设计——它不是鉴权（见第 6 节）。
+9. **多用户可换 Key、可换对话模型，但 embedding 模型锁死。** 前端「API 设置」里的
+   Key 与模型随 `X-R4P-*` 头到达服务端，`credentials.CredentialPool` 替换两个 Key 与
+   `llm_model`，`embedding_base_url` / `embedding_model` / `embedding_dim` 一律沿用服务端配置。
+   边界由用途决定：LLM 只读「已检索到的片段」、不参与建索引，换它只影响措辞与推理深度；
+   embedding 换一个就是换一套语义坐标，同一索引里会并存两套向量。这不是权限设计
+   ——它不是鉴权（见第 6 节）。
+
+   可选模型清单是 `credentials.LLM_CHOICES`（白名单 + 中文说明），`GET /api/llm-models`
+   供前端渲染下拉。**白名单不是从 `/v1/models` 抄的**：那个目录里 DeepSeek V4 全系、
+   MiniMax-M3、Step-3.5-Flash 都在，调用却一律 `has no provider supported`。
+   只有逐条真调通的才收——列在目录里 ≠ 真的能调。清单外的名字一律静默回落服务端默认，
+   避免旧浏览器存着已下线模型名时整个请求失败。
 
 ### 请求链路（`/api/chat`）
 
@@ -436,6 +444,32 @@ POST /api/credentials/verify（国际站 Key + 魔搭 Key）：
 本项目的 chunk 上限 480 token，短文本检索上 0.6B 的分离度并不输大模型，而存储与检索
 成本分别是 1 / 2.5 / 4 倍，故默认选 0.6B。样本只有 5 句，不足以断言「小模型更强」，
 但足以说明「更大 ≠ 对本任务更好」；真要换 4B/8B，必须全量 reindex。
+
+第八轮（2026-10-24 21:55）：对话模型改为用户可选，embedding 仍锁死。
+
+```
+pytest -q                    → 158 passed（新增 8 项模型选用例）
+ruff / node --check          → 干净
+GET /api/llm-models          → 4 项，服务端当前模型带 selected 标记
+POST /api/credentials/verify：
+  Qwen/Qwen3.8-Flash-Next    → OK  实际调用即所选模型，1.3s
+  Qwen/Qwen3.5-122B-A10B     → OK  embedding 仍是 1024 维（未被波及）
+  nonexistent/model          → 回落 Qwen/Qwen3.5-35B-A3B，不报错
+```
+
+候选淘汰记录（省得下次重试）：
+
+| 模型 | 现象 | 处理 |
+|---|---|---|
+| ZhipuAI/GLM-5.2 | 头几次能调通，随后 `429 exceeded your current quota` | 排除：吃付费配额 |
+| ZhipuAI/GLM-4.7-Flash | 持续 `429 访问量过大` | 排除：免费池排队 |
+| DeepSeek-V4-Flash/Pro/4.1 | `has no provider supported` | 排除：目录挂了但无 provider |
+| MiniMax-M3 / Step-3.5-Flash / LongCat | 同上 | 排除 |
+| Qwen3.5-35B / 3.8-Flash-Next / 3.8-27B / 3.5-122B | 全部可用，1.3~3.1s | 收入清单 |
+
+`fingerprint` 必须把 `llm_model` 算进去：只按 Key 取缓存的话，同名用户换模型会拿到
+池子里的旧 LLM 实例——界面显示已切换、实际还在跑旧模型，而且不会报任何错。
+
 
 第四轮（2026-10-23 22:10）的冒烟记录仍然有效：
 

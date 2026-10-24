@@ -183,6 +183,12 @@
     <input id="su-embed" type="password" placeholder="sk-..." autocomplete="off" />
     <label for="su-llm">LLM Key（生成答案用，可留空沿用公共配置）</label>
     <input id="su-llm" type="password" placeholder="sk-..." autocomplete="off" />
+    <label for="su-llm-model">对话模型</label>
+    <select id="su-llm-model"></select>
+    <p class="kbd" id="su-llm-note" style="margin-top:6px;line-height:1.7">
+      只有 embedding 模型是锁死的：它决定向量空间，换一个就得把全库重建。
+      对话模型不参与建索引，换它只影响措辞与推理深度。
+    </p>
 
     <div class="row" style="margin-top:12px">
       <button class="primary" id="save-creds">保存并验证</button>
@@ -196,7 +202,7 @@
     <p class="kbd" style="margin-top:16px;line-height:1.9">
       Key 只存在这台电脑的浏览器里，服务端不落库、不写日志。<br />
       换电脑、换浏览器或清掉站点数据后需要重填。<br />
-      <strong>模型由服务端统一决定</strong>，你只能换「用谁的额度」，不能换模型——
+      <strong>Embedding 模型由服务端统一决定</strong>，不能按用户切换——
       否则同一批文档会混进两套向量，检索结果看起来正常却不可信。
     </p>
   </div>
@@ -232,11 +238,14 @@ function authHeaders() {
   const creds = currentCreds();
   if (!creds) return {};
   // HTTP 头只允许 ASCII：中文用户名必须编码，否则 fetch 直接抛 TypeError
-  return {
+  const headers = {
     "X-R4P-User": encodeURIComponent(creds.name),
     "X-R4P-Embedding-Key": creds.embeddingKey || "",
     "X-R4P-LLM-Key": creds.llmKey || "",
   };
+  // 没选模型就不带这个头，服务端回落到默认模型——空串会被当成"指定了空模型"
+  if (creds.llmModel) headers["X-R4P-LLM-Model"] = creds.llmModel;
+  return headers;
 }
 
 async function api(path, options = {}) {
@@ -510,8 +519,8 @@ function renderServerModels(models) {
   if (!models) return;
   const dim = models.embedding_dim ? `${models.embedding_dim} 维` : "维度自动探测";
   $("server-models").textContent =
-    `本服务器统一使用：embedding ${models.embedding_model}（${dim}）· LLM ${models.llm_model}。` +
-    `你的 Key 必须属于同一家服务商。`;
+    `embedding 固定为 ${models.embedding_model}（${dim}）· 对话模型可选（当前 ${models.llm_model}）。` +
+    `Key 必须与它指向的服务商一致。`;
 }
 
 function renderUserList() {
@@ -559,6 +568,38 @@ function fillCredForm(name) {
   $("su-name").value = name;
   $("su-embed").value = user.embeddingKey || "";
   $("su-llm").value = user.llmKey || "";
+  // 旧版本存下来的用户没有 llmModel，保持下拉的当前选中项即可
+  if (user.llmModel) $("su-llm-model").value = user.llmModel;
+  showModelNote();
+}
+
+function showModelNote() {
+  const select = $("su-llm-model");
+  const option = select.selectedOptions[0];
+  $("su-llm-note").textContent = option && option.dataset.note
+    ? option.dataset.note
+    : "只有 embedding 模型是锁死的：它决定向量空间，换一个就得把全库重建。";
+}
+
+async function loadLLMModels() {
+  const res = await fetch("/api/llm-models");
+  const data = await res.json();
+  const select = $("su-llm-model");
+  select.innerHTML = "";
+  for (const option of data.options) {
+    const node = document.createElement("option");
+    node.value = option.id;
+    node.textContent = `${option.label}`;
+    node.dataset.note = option.note;
+    if (option.selected) node.selected = true;
+    select.appendChild(node);
+  }
+  select.addEventListener("change", showModelNote);
+  showModelNote();
+  // 已保存用户的模型可能已下线，回填时保留但不强改，交给 verify 报出来
+  const creds = currentCreds();
+  if (creds && creds.llmModel) select.value = creds.llmModel;
+  showModelNote();
 }
 
 function describeCheck(result) {
@@ -566,8 +607,9 @@ function describeCheck(result) {
     // 留空的项会回落到服务端 Key，必须标出来，否则用户以为验的是自己的额度
     const who = item.source === "server" ? "公共 Key" : "你的 Key";
     if (!item.ok) return `${okText} 失败（${who}）：${item.error}`;
-    const extra = okText === "embedding" ? `，${item.dim} 维` : "";
-    return `${okText} 可用（${who}${extra}）`;
+    if (okText === "embedding") return `${okText} 可用（${who}，${item.dim} 维）`;
+    // 换了模型却不显示出来，用户无从判断到底跑的是哪一个
+    return `${okText} 可用（${who}，${item.model}）`;
   };
   return [line(result.embedding, "embedding"), line(result.llm, "LLM")].join("\n");
 }
@@ -576,6 +618,7 @@ async function saveCreds() {
   const name = $("su-name").value.trim();
   const embeddingKey = $("su-embed").value.trim();
   const llmKey = $("su-llm").value.trim();
+  const llmModel = $("su-llm-model").value || "";
   if (!name) return alert("请填写用户名");
   if (!embeddingKey && !llmKey) return alert("至少填一个 Key");
 
@@ -585,7 +628,12 @@ async function saveCreds() {
     const result = await api("/api/credentials/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: name, embedding_key: embeddingKey, llm_key: llmKey }),
+      body: JSON.stringify({
+        username: name,
+        embedding_key: embeddingKey,
+        llm_key: llmKey,
+        llm_model: llmModel,
+      }),
     });
     renderServerModels(result.server);
     if (!result.embedding.ok && !result.llm.ok) {
@@ -595,7 +643,12 @@ async function saveCreds() {
     }
     const store = credStore();
     // 允许只用自己的某一项额度，所以只要有一项通就保存，但把另一项的问题写清楚
-    store.users[name] = { embeddingKey, llmKey, savedAt: new Date().toISOString() };
+    store.users[name] = {
+      embeddingKey,
+      llmKey,
+      llmModel: result.server.llm_model,
+      savedAt: new Date().toISOString(),
+    };
     store.current = name;
     saveCredStore(store);
     syncWho();
@@ -665,6 +718,10 @@ $("clear-creds").onclick = clearCreds;
 syncWho();
 loadHealth();
 loadProjects();
+// 拉不到清单不该挡住主流程：下拉空着就等于"用服务端默认模型"
+loadLLMModels().catch(() => {
+  $("su-llm-note").textContent = "模型清单加载失败，将使用服务端默认模型。";
+});
 </script>
 </body>
 </html>
