@@ -44,9 +44,9 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | **`6f69c0c`**（"补 PDF 通道：把「章节结构」从排版反推出来"，第十八轮），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
-| 上一轮基线 | `8260e13` / 文档 `5101380`（索引一致性阶段的收尾，第十七轮复审通过） |
-| CI | `.github/workflows/ci.yml`：`8260e13` 上 Actions 全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest，41 秒） |
+| 当前提交 | **`594fcc5`**（"拿真实工程文档去撞 PDF 解析：没被支持的是「乱码」，不是「格式」"，第十九轮），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
+| 上一轮基线 | `6f69c0c` / 文档 `4dedb50`（PDF 通道第一版，第十八轮） |
+| CI | `.github/workflows/ci.yml`：`594fcc5` 与 `4dedb50` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
