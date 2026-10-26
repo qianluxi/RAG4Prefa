@@ -37,6 +37,21 @@ python -m rag4prefa serve --port 8000
 
 打开 http://127.0.0.1:8000 ，左侧勾选项目/年份，直接提问。
 
+### Windows 上一键启动：`start.bat`
+
+装完依赖后双击根目录的 `start.bat` 即可（默认 8899 端口，`start.bat 8000` 可改）。
+它不解压、不安装，只做三件事，而这三件事恰好是最容易做错的：
+
+1. **`cd` 到脚本所在目录。** `R4P_DATA_DIR=data` 是相对路径，从别处启动会安静地
+   新建一个空库——页面上显示"没有语料"，数据其实还在 `data\app.db` 里。
+2. **用 `.venv\Scripts\python.exe`。** 系统 python 没装依赖。
+3. **启动前跑一次 `doctor`**，缺 Key 或索引不一致就在这里报出来，而不是等点了
+   提问才看到 503。
+
+脚本不该被改的细节：它是 **GBK 编码 + CRLF**。`cmd.exe` 按系统代码页解析 `.bat`，
+UTF-8 的中文不只是乱码——多字节字符会吞掉后面的命令字符（实测 `:fail` 被吃成 `ail`）。
+仓库里靠 `.gitattributes` 的 `working-tree-encoding=GBK` 维持"存的 UTF-8、落的 GBK"。
+
 命令行也可以直接问答：
 
 ```bash
