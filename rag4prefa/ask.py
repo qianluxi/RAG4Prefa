@@ -17,7 +17,7 @@ from typing import Any
 from . import consistency, repo
 from .adapters.embed import Embedder
 from .adapters.llm import LLM
-from .adapters.rerank import Reranker
+from .adapters.rerank import NoopReranker, Reranker
 from .adapters.vectors import VectorStore
 from .config import Settings
 from .consistency import IndexMismatch
@@ -129,6 +129,17 @@ async def retrieve(
     return hits, filt, timings
 
 
+def rerank_available(reranker: Reranker | None) -> bool:
+    """重排是不是真的会做事。
+
+    判据用「装的是不是 NoopReranker」而不是「配置里有没有 URL」：前者是实际行为，
+    后者只是来源之一（测试、自建实现都可以不经 URL 注入）。三处调用点——`stream_answer`
+    的默认值、CLI、`/api/health`——必须用同一个判断，否则会出现"界面上开关是灰的、
+    后台其实在重排"这种对不上的状态。
+    """
+    return reranker is not None and not isinstance(reranker, NoopReranker)
+
+
 async def stream_answer(
     conn: sqlite3.Connection,
     store: VectorStore,
@@ -140,16 +151,20 @@ async def stream_answer(
     question: str,
     filt: Filter,
     top_k: int | None = None,
-    use_rerank: bool = False,
+    use_rerank: bool | None = None,
 ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     top_k = top_k or settings.top_k
+    # None 表示"跟随服务端配置"：装了真实重排就重排，Noop 就当没这回事。
+    # 这样评估报告里的 rerank 一行对应的就是用户实际跑到的那条链路，
+    # 而不是一条只能靠脚本复现的旁路。
+    do_rerank = rerank_available(reranker) if use_rerank is None else use_rerank
     started = time.perf_counter()
     hits, effective, timings = await retrieve(
         conn, store, embedder, settings, question=question, filt=filt
     )
 
     rerank_error: str | None = None
-    if use_rerank and hits:
+    if do_rerank and hits:
         try:
             hits = await reranker.rerank(question, hits, top_k)
         except Exception as exc:  # 重排是增强项：失败要告诉调用方，但别中断回答
@@ -207,11 +222,25 @@ async def search(
     question: str,
     filt: Filter,
     top_k: int | None = None,
+    reranker: Reranker | None = None,
+    use_rerank: bool | None = None,
 ) -> tuple[list[Hit], Filter, dict[str, float]]:
+    """检索（可选重排），返回前 `top_k` 条。
+
+    **顺序铁律：先重排、后截断。** 先截断再重排等于让重排在一小撮候选里挑，
+    调用记录、分数、日志一样不少，召回却一点不变好——这种"看起来生效"的写法
+    比不重排更糟，因为它会让人以为知道了重排的效果。
+    """
+    limit = top_k or settings.top_k
     hits, effective, timings = await retrieve(
         conn, store, embedder, settings, question=question, filt=filt
     )
-    return hits[: top_k or settings.top_k], effective, timings
+    do_rerank = (
+        rerank_available(reranker) if use_rerank is None else use_rerank
+    ) and reranker is not None
+    if do_rerank and hits:
+        hits = await reranker.rerank(question, hits, limit)
+    return hits[:limit], effective, timings
 
 
 def build_filter(

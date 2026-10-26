@@ -279,6 +279,16 @@ async function loadHealth() {
     renderServerModels(h.models);
     const backend = `${h.backend.name} · ${h.backend.vectors} 片段`;
     const issues = (h.index && h.index.issues) || [];
+    // 重排开关跟随服务端实配：没配重排服务时勾上也不会有效果，就置灰并说明原因，
+    // 而不是留一个看起来能用、实际什么都不做的开关。
+    const rerankBox = $("rerank");
+    if (rerankBox) {
+      rerankBox.disabled = !h.rerank_configured;
+      rerankBox.checked = !!h.rerank_configured;
+      rerankBox.parentElement.title = h.rerank_configured
+        ? "已配置重排服务，默认开启"
+        : "未配置 R4P_RERANK_URL，重排不可用";
+    }
     // 索引与配置对不上时也报 !ok，这种情况下说"配置缺失"会误导人
     badge.textContent = h.ok
       ? `就绪 · ${backend}`

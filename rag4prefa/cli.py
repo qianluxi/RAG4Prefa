@@ -192,6 +192,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         # 完全正常（2026-10-24 第十七轮复审）。
         services.assert_query_ready()
         # ask.search 是 async：必须跑在事件循环里，否则拿到的是协程而不是结果
+        asked_rerank = getattr(args, "rerank", None)
         hits, applied, timings = asyncio.run(
             ask.search(
                 services.conn,
@@ -201,16 +202,24 @@ def cmd_ask(args: argparse.Namespace) -> int:
                 question=args.question,
                 filt=filt,
                 top_k=args.top_k,
+                # 重排交给 ask.search 做：那里保证"先重排、后截断"。
+                # 命令行这边自己截一次再去重排，就只剩 top_k 条候选可挑。
+                reranker=getattr(services, "reranker", None),
+                use_rerank=asked_rerank,
             )
         )
+        do_rerank = ask.rerank_available(
+            getattr(services, "reranker", None)
+        ) if asked_rerank is None else asked_rerank
         _print(
             {
                 "filter": applied.model_dump(exclude_none=True),
                 "timings": timings,
+                "rerank": do_rerank,
                 "results": [
                     {
                         "chunk_id": h.chunk_id,
-                        "score": round(h.score, 4),
+                        "score": round(h.rerank_score or h.score, 4),
                         "project": h.project_name,
                         "file": h.filename,
                         "chapter": " > ".join(h.chapter_path),
@@ -314,6 +323,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", default=None)
     p.add_argument("--top-k", type=int, default=5)
     p.add_argument("--answer", action="store_true", help="额外调用大模型给出回答")
+    p.add_argument(
+        "--rerank",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="是否重排；不写则跟随配置（配了 R4P_RERANK_URL 就开）",
+    )
     p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("projects", help="列出项目")

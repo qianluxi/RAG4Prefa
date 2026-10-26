@@ -41,7 +41,8 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     filter: Filter | None = None
     top_k: int = Field(default=8, ge=1, le=50)
-    rerank: bool = False
+    # None = 跟随服务端配置（配了 R4P_RERANK_URL 就重排）；显式 false 仍然能关掉。
+    rerank: bool | None = None
 
 
 class SearchRequest(BaseModel):

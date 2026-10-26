@@ -463,6 +463,9 @@ class Services:
                 "label": self.user_label or "服务端公共 Key",
                 "source": "user" if self.user_label else "server",
             },
+            # 没配重排服务时 reranker 是 Noop：勾了"启用重排"也什么都不做。
+            # 前端必须知道这件事，否则那个开关就是一个安静的谎。
+            "rerank_configured": not isinstance(self.reranker, NoopReranker),
             # 后端可能把恢复动作（如"已从上一版集合还原索引"）记在 notes 里；
             # 用 getattr 是为了让 health 在任何 VectorStore 实现上都不会因为缺属性而 500
             "notes": [*self.notes, *getattr(self.store, "notes", [])],
