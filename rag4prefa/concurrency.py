@@ -99,8 +99,16 @@ class _FileLock:
 
     def try_acquire(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # 句柄要一直拿着（锁跟着句柄走），不能用 with
-        handle = open(self.path, "a+b")  # noqa: SIM115
+        try:
+            # 句柄要一直拿着（锁跟着句柄走），不能用 with
+            handle = open(self.path, "a+b")  # noqa: SIM115
+        except OSError:
+            # **Windows 上别的进程持着这把锁时，连打开都会 Permission denied**
+            # （不是"锁定失败"，是 open 失败）。这同样只意味着"锁不归我"，
+            # 不能让它冒泡：`worker_alive()` 靠它判断"有没有服务在跑"，
+            # 冒泡的结果是服务一启动、`doctor` / `ingest` / `verify` 全线崩掉，
+            # 而正确行为只是"等一会儿"或"有人活着"。
+            return False
         try:
             if os.name == "nt":
                 import msvcrt

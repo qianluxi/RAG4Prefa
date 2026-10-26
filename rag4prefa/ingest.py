@@ -33,6 +33,9 @@ class FileOutcome:
     sections: int = 0
     chunks: int = 0
     error: str | None = None
+    # 附带说明。用于"这次确实做了事，但不是重新入库"——例如内容没变只改了年份，
+    # 或者重导入时发现调度被别的维护动作挡过。放进 error 会被当成失败。
+    note: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -41,6 +44,7 @@ class FileOutcome:
             "sections": self.sections,
             "chunks": self.chunks,
             "error": self.error,
+            "note": self.note,
         }
 
 
@@ -126,6 +130,7 @@ def _ingest_locked(
     # 因为后端中途失败时不会返回，事后无法知道写进去过哪些。删多算的几个是无害的
     # （id 不存在就是空操作），删少了才会留下没有正文的向量。
     planned: list[str] = []
+    overwritten: list[dict] = []
     facts_committed = False
     doc_row_exists = False
     try:
@@ -150,7 +155,13 @@ def _ingest_locked(
             and existing.content_sha == content_sha
             and not force
         ):
-            return FileOutcome(filename, "skipped", existing.section_count, existing.chunk_count)
+            if doc_year is None or doc_year == existing.doc_year:
+                return FileOutcome(
+                    filename, "skipped", existing.section_count, existing.chunk_count
+                )
+            # 内容一模一样、只有年份不同。年份是**过滤条件**：当"没变化"跳过，
+            # 用户改的那一年就永远不生效，而且界面上还显示成功（skipped）。
+            return _update_doc_year(conn, store, doc_id, filename, doc_year, existing)
 
         stage = "解析与分块"
         sections = parse_docx(path)
@@ -205,6 +216,12 @@ def _ingest_locked(
         stage = "写入向量索引"
         preexisting = set(repo.chunk_ids_of_doc(conn, doc_id))
         planned = [i.chunk_id for i in items if i.chunk_id not in preexisting]
+        # 新旧版本**共用**的 chunk_id 也会被这次 upsert 整行覆盖（doc_year、project_code）。
+        # 事实事务万一失败，只删新增会让这些行停在"新版的过滤元数据 + 旧版的正文"：
+        # 条数完全对得上，按年份过滤却错了一年。所以先留一份旧行，失败时原样写回去
+        # （2026-10-24 第十四轮复审）。
+        kept_ids = [i.chunk_id for i in items if i.chunk_id in preexisting]
+        overwritten = repo.archived_vectors_by_ids(conn, kept_ids)
         store.upsert(items)
 
         # 事实与归档在同一个事务里切换：读方要么看到旧版、要么看到新版
@@ -236,18 +253,8 @@ def _ingest_locked(
         return FileOutcome(filename, "indexed", len(sections), len(chunks))
     except Exception as exc:  # 单文件失败不该拖垮整批
         detail = f"{type(exc).__name__}: {exc}"
-        if planned and not facts_committed:
-            # 索引已（可能部分）写、事实没切换：索引里多出的是"没有正文的向量"，
-            # 检索会跳过它们，但会把召回名额占掉。撤回失败也不算灾难——一致性检查
-            # 会因此报错并拒绝检索。
-            try:
-                store.delete(planned)
-                detail += f"（{stage}失败，已撤回本次新增的 {len(planned)} 条向量，库仍是上一版）"
-            except Exception as rollback_exc:
-                detail += (
-                    f"（{stage}失败，且撤回写入的向量也失败：{rollback_exc}；"
-                    "索引条数会多于归档，检索将被拒绝，重试同一文件或用 reindex 修复）"
-                )
+        if not facts_committed and (planned or overwritten):
+            detail += _restore_vectors(store, planned, overwritten, stage)
         elif facts_committed:
             detail += (
                 f"（{stage}失败，但新版本已生效且可检索；"
@@ -258,6 +265,102 @@ def _ingest_locked(
                 # 状态都写不进去时只能靠返回值说明，别让收尾动作盖掉原始错误
                 repo.set_document_status(conn, doc_id, "failed", detail)
         return FileOutcome(filename, "failed", 0, 0, detail)
+
+
+def _restore_vectors(
+    store: VectorStore, planned: list[str], overwritten: list[dict], stage: str
+) -> str:
+    """把索引恢复到"这次入库之前"的样子：删掉新增的 id，并把被覆盖的旧行写回去。
+
+    两步都不能省。
+
+    - 只删新增：新旧版本共用的 chunk_id 上，`doc_year` / `project_code` 已经被写成
+      这一版的值。条数一条不差、模型维度也对，只有"按年份过滤"会错——计数校验看不见。
+    - 只写回旧行：本次新增的向量留在索引里却没有正文，检索会跳过它们，但它们占掉
+      召回名额，稠密召回因此少一条。
+
+    还原本身失败时要说清"哪一步没成、现在是什么状态"，因为这两种残留的修复方式不同：
+    条数多出来（新增没删掉）由一致性检查拦住，内容不一致只能靠 rebuild。
+    """
+    parts: list[str] = []
+    failed: list[str] = []
+    if overwritten:
+        try:
+            store.upsert([from_archive_row(r) for r in overwritten])
+            parts.append(f"已把被覆盖的 {len(overwritten)} 条向量还原成上一版")
+        except Exception as exc:  # noqa: BLE001 - 收尾动作失败只影响说明文字
+            failed.append(f"还原 {len(overwritten)} 条旧向量失败（{type(exc).__name__}: {exc}）")
+    if planned:
+        try:
+            store.delete(planned)
+            parts.append(f"已撤回本次新增的 {len(planned)} 条向量")
+        except Exception as exc:  # noqa: BLE001 - 同上
+            failed.append(f"撤回新增的 {len(planned)} 条向量失败（{type(exc).__name__}: {exc}）")
+
+    if not failed:
+        return f"（{stage}失败，{'，'.join(parts)}，库仍是上一版）"
+    return (
+        f"（{stage}失败，{'，'.join([*parts, *failed])}；"
+        "索引可能与归档不一致——条数相同也可能内容不同，"
+        "执行 `python -m rag4prefa rebuild` 从归档恢复后再重试同一文件）"
+    )
+
+
+def _update_doc_year(
+    conn: sqlite3.Connection,
+    store: VectorStore,
+    doc_id: str,
+    filename: str,
+    doc_year: int,
+    existing,
+) -> FileOutcome:
+    """内容没变、只改了年份：不重算向量，只把三处过滤列对齐。
+
+    为什么不走"重新入库一遍"：那要重新解析 docx、重算 embedding（有缓存也只是少花钱）、
+    把一份本来正确的索引整表重写一遍——为一个只影响过滤的整数付这些代价，而且重写
+    过程还有失败窗口。这条路径一个向量都不用算，只覆盖该文档那几十条。
+
+    **先验证能不能改，再动数据**：归档不全时（有片段没向量）改年份会把关系弄得更乱，
+    那种情况应当先 `reindex` 补齐，而不是在这里"尽力而为"。
+    """
+    ids = repo.chunk_ids_of_doc(conn, doc_id)
+    if not ids:
+        return FileOutcome(
+            filename,
+            "failed",
+            existing.section_count,
+            0,
+            "文档状态是已入库，但库里查不到它的片段；用 --force 重新导入，或执行 reindex",
+        )
+    if len(repo.archived_vectors_by_ids(conn, ids)) != len(ids):
+        return FileOutcome(
+            filename,
+            "failed",
+            existing.section_count,
+            len(ids),
+            "该文档有片段缺少归档向量，改年份前需要先把归档补全"
+            "（执行 `python -m rag4prefa reindex`）；本次未做任何改动",
+        )
+
+    repo.set_document_year(conn, doc_id, doc_year)
+    try:
+        store.upsert([from_archive_row(r) for r in repo.archived_vectors_by_ids(conn, ids)])
+    except Exception as exc:  # noqa: BLE001 - 文档与归档已是新值，索引没跟上要说清
+        return FileOutcome(
+            filename,
+            "failed",
+            existing.section_count,
+            len(ids),
+            f"年份已写入文档与归档，但更新向量索引失败（{type(exc).__name__}: {exc}）；"
+            "执行 `python -m rag4prefa rebuild` 从归档恢复索引即可（归档里已是新年份）",
+        )
+    return FileOutcome(
+        filename,
+        "indexed",
+        existing.section_count,
+        len(ids),
+        note=f"内容未变，只把年份更新为 {doc_year}",
+    )
 
 
 def ingest_batch(
@@ -317,6 +420,9 @@ def _ingest_batch_locked(
     started_on: str | None = None,
     doc_year: int | None = None,
 ) -> list[FileOutcome]:
+    # 装配发生在锁外，手里这个后端可能已经不是库里记着的那个了（见函数说明）。
+    # 必须排在项目/任务写入**之前**：被拦住时要做到一个字节都没改。
+    consistency.ensure_backend_current(conn, store)
     # 项目与任务状态都在锁内写：锁外的"预创建"一旦被拒绝就是一条假记录
     repo.upsert_project(conn, project_name, project_code, started_on)
     repo.update_job(conn, job_id, state=JobState.running, progress=0.0, message="开始解析")
@@ -393,6 +499,10 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
 
 
 def _rebuild_store_locked(conn: sqlite3.Connection, store: VectorStore) -> int:
+    try:
+        consistency.ensure_backend_current(conn, store)
+    except IndexMismatch as exc:
+        raise ReindexError(str(exc)) from exc
     # 只有仍有正文的行才算恢复源；孤儿行留着会让重建后的索引比事实表更大
     rows = repo.iter_archived_vectors(conn)
     models = {r["model"] for r in rows}
@@ -587,6 +697,12 @@ def _reindex_locked(
       维度相同不代表向量空间相同，局部换模型会得到"能查、但结果悄悄变差"的索引；
     - 范围内没有片段时见 `_reindex_nothing`：局部一律不动标记，全量要先确认"真的空"。
     """
+    # 空范围也要先校验：`_reindex_nothing` 同样会清后端（rebuild([])），
+    # 写到"不是当前活动后端"的那一份上，等于把别人的索引清空。
+    try:
+        consistency.ensure_backend_current(conn, store)
+    except IndexMismatch as exc:
+        raise ReindexError(str(exc)) from exc
     rows = repo.chunks_for_reindex(conn, project_name)
     if not rows:
         return _reindex_nothing(conn, store, project_name)

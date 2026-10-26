@@ -351,7 +351,71 @@ def test_explicit_milvus_backend_does_not_silently_fall_back(tmp_path) -> None:
     init_db(settings.db_path)
     conn = connect(settings.db_path)
     try:
-        with pytest.raises(BackendUnavailable, match="不会自动回退"):
+        with pytest.raises(BackendUnavailable, match="不回退到 numpy"):
             open_store(settings, conn)
+    finally:
+        conn.close()
+
+
+def test_open_does_not_touch_staging_while_another_maintenance_holds_lock(tmp_path) -> None:
+    """另一个进程正在重建时，本进程打开索引不许删它的 `__staging`。
+
+    构造函数是每个进程启动都会走的路，而且发生在维护锁之外。以前 `_recover()` 就在
+    构造里：它看到"正式集合 + 暂存集合"并存，判定暂存是上次留下的半成品直接删掉——
+    而那个暂存恰恰是另一个进程重建到一半的新索引。被删之后，那笔重建继续写、继续
+    rename，最终失败，两边条数、模型、维度却都能对得上，事后查不出是谁动的手。
+    """
+    import threading
+
+    from rag4prefa import concurrency
+    from rag4prefa.config import Settings
+    from rag4prefa.db import connect, init_db
+
+    uri, name = str(tmp_path / "vectors.db"), "chunks_vec"
+    settings = Settings(data_dir=tmp_path, vector_backend="milvus", milvus_uri=uri)
+    settings.ensure_dirs()
+    init_db(settings.db_path)
+    conn = connect(settings.db_path)
+
+    try:
+        try:
+            base = MilvusStore(uri, name, dim=4)
+        except BackendUnavailable as exc:  # pragma: no cover - 平台相关
+            pytest.skip(f"Milvus 不可用：{exc}")
+        base.upsert([VectorItem("a", [1, 0, 0, 0], "甲项目", "", 2024)])
+        # 模拟"另一个进程已经开始重建"：暂存集合已经建好、正在往里写
+        base._create_collection(base._staging, 4)
+
+        held, release = threading.Event(), threading.Event()
+
+        def hold() -> None:
+            with concurrency.maintenance_lock(conn, purpose="另一个进程的重建", timeout=None):
+                held.set()
+                release.wait(10)
+
+        worker = threading.Thread(target=hold, daemon=True)
+        worker.start()
+        assert held.wait(10), "没能在超时内拿到维护锁，测试环境本身有问题"
+
+        try:
+            deferred = MilvusStore(uri, name, dim=4, conn=conn)
+            assert deferred._ready is False, "拿不到锁就不许打开索引——那等于替别人做决定"
+            assert deferred._client.has_collection(f"{name}__staging"), (
+                "暂存集合是另一个进程重建到一半的成果，一个集合都不许碰"
+            )
+            with pytest.raises(BackendUnavailable):
+                deferred.count()
+            assert any("另一个维护动作" in n for n in deferred.notes), (
+                "要把'为什么这次没打开'写清楚，否则运维只看到索引不可用"
+            )
+        finally:
+            release.set()
+            worker.join(10)
+
+        # 锁放开之后，残留才被认定为"上次崩溃留下的"，这时才允许清理
+        recovered = MilvusStore(uri, name, dim=4, conn=conn)
+        assert recovered._ready is True
+        assert not recovered._client.has_collection(f"{name}__staging")
+        assert recovered.count() == 1
     finally:
         conn.close()

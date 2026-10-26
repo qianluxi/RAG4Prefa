@@ -277,6 +277,29 @@ def health_issues(
     return collect_issues(inspect(conn, store_count=store_count), model, store_dim)
 
 
+def ensure_backend_current(conn: sqlite3.Connection, store) -> None:
+    """本进程手里的后端，是不是这个库**当前**记着的那个。
+
+    为什么需要单独一道：装配（`open_store`）发生在拿到维护锁**之前**。CLI 装配时
+    库还记着 numpy，排队等锁的那几分钟里另一个进程可能把活动后端切到 Milvus；
+    这时用手里的 numpy 继续写，归档更新了、Milvus 索引却没更新——而两边条数一致时
+    连"索引 vs 归档"的计数校验都发现不了（2026-10-24 第十四轮复审）。
+
+    判断放在维护锁里做：那时不会有第二个进程同时改后端，一次比较就是确定的。
+    """
+    recorded = repo.get_vector_backend(conn)
+    if not recorded:
+        return
+    actual = getattr(store, "name", recorded)
+    if actual == recorded:
+        return
+    raise IndexMismatch(
+        f"库里记录的向量后端是「{recorded}」，本进程手里的是「{actual}」——"
+        "装配之后活动后端被别的进程换过了。本次没有改动任何数据；"
+        "重新执行这条命令即可（新进程会装配到当前后端）。"
+    )
+
+
 def verify_ids(conn: sqlite3.Connection, store) -> dict:
     """逐 id 比对"片段 / 归档 / 实际索引"三方，返回可打印的差异报告。
 

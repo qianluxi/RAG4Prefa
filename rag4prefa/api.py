@@ -317,6 +317,11 @@ def create_app(services: Services | None = None) -> FastAPI:
         target = services.settings.upload_dir / _safe_name(project_name)
         target.mkdir(parents=True, exist_ok=True)
 
+        # 文件先落盘、再抢锁。落盘即**持久**：`upload_dir` 是原始文档归档区，
+        # 不是临时暂存区——重试、重导入、事后审计都要用到这份原文。所以被维护动作
+        # 挡下时文件留在原地是设计意图，不做"失败即删"；同名文件下次上传直接覆盖，
+        # 不会越积越多。代价是这里比锁早了一步：`is_busy()` 只是预检查（上面），
+        # 真正的准入仍是 `ingest_batch` 里的维护锁，被拒时任务消息会说明文件已保存。
         saved: list[Path] = []
         for upload in files:
             if not upload.filename or not upload.filename.lower().endswith(".docx"):
@@ -364,8 +369,14 @@ def create_app(services: Services | None = None) -> FastAPI:
             except MaintenanceBusy as exc:
                 # 批次级准入被拒时，项目、文档、任务状态都还没被动过（见 ingest_batch）。
                 # 这里只把"没执行"如实写进任务，不让它显示成"入库失败"。
+                # 原文已经落盘（upload_dir 是归档区），所以要告诉用户"不用重新选文件"，
+                # 否则他会在维护结束后再选一次，把同一份文件重新上传一遍。
                 repo.update_job(
-                    root.conn, job_id, state=JobState.failed, message=f"没有执行：{exc}"
+                    root.conn,
+                    job_id,
+                    state=JobState.failed,
+                    message=f"没有执行：{exc}（原始文件已保存在服务端，稍后重新提交即可，"
+                    "无需重新选择文件）",
                 )
                 return
             except Exception as exc:

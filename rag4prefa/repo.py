@@ -123,6 +123,7 @@ def _document(row: sqlite3.Row) -> DocumentInfo:
         project_name=row["project_name"],
         filename=row["filename"],
         content_sha=row["content_sha"],
+        doc_year=row["doc_year"],
         section_count=row["section_count"],
         chunk_count=row["chunk_count"],
         status=row["status"],
@@ -213,6 +214,34 @@ def mark_document_indexing(
 
 def chunk_ids_of_doc(conn: sqlite3.Connection, doc_id: str) -> list[str]:
     return [r["id"] for r in conn.execute("SELECT id FROM chunks WHERE doc_id = ?", (doc_id,))]
+
+
+def set_document_year(
+    conn: sqlite3.Connection, doc_id: str, doc_year: int | None
+) -> list[str]:
+    """只改年份，不碰正文与向量：文档行、归档行、代次在同一个事务里。
+
+    为什么单独一条路径：`doc_year` 是**过滤条件**，它同时存在于 documents、vectors
+    归档和后端的标量列三处。只改一处，就会出现"文档说 2025、按 2025 过滤却查不到
+    这批片段"——而且条数、模型、维度全都对得上，计数校验发现不了。
+
+    返回受影响的 chunk_id：归档是事实，后端索引要由调用方按这份事实去覆盖
+    （numpy 靠代次自加载，Milvus 只能整行 upsert）。
+    """
+    ids = chunk_ids_of_doc(conn, doc_id)
+    with transaction(conn):
+        conn.execute("UPDATE documents SET doc_year = ? WHERE id = ?", (doc_year, doc_id))
+        if ids:
+            marks = ",".join("?" * len(ids))
+            conn.execute(
+                f"UPDATE vectors SET doc_year = ? WHERE chunk_id IN ({marks})",
+                [doc_year, *ids],
+            )
+        # 过滤列变了 ⇒ 别的进程的缓存必须刷新。只推"内容代次"不推"索引代次"：
+        # 向量空间没变，在途查询的向量仍然有效，不该因此把一次检索判死。
+        _bump(conn, DATA_REVISION_KEY)
+    return ids
+
 
 
 def replace_document_chunks(
@@ -400,6 +429,37 @@ def iter_archived_vectors(conn: sqlite3.Connection) -> list[dict]:
         FROM vectors v JOIN chunks c ON c.id = v.chunk_id
         ORDER BY v.chunk_id
         """
+    ).fetchall()
+    return [
+        {
+            "chunk_id": r["chunk_id"],
+            "project_name": r["project_name"],
+            "project_code": r["project_code"],
+            "doc_year": r["doc_year"],
+            "dim": r["dim"],
+            "model": r["model"],
+            "vec": r["vec"],
+        }
+        for r in rows
+    ]
+
+
+def archived_vectors_by_ids(
+    conn: sqlite3.Connection, chunk_ids: Sequence[str]
+) -> list[dict]:
+    """按 id 取归档行（含 vec 字节），用于"写坏了要还原成上一版"这类恢复动作。
+
+    与 `iter_archived_vectors` 的区别：这个不做 JOIN、也不排序——它要的是
+    "这批 id 当时是什么样"，id 可能已经在事实表里不存在了（正是要还原的那种情况）。
+    """
+    ids = list(chunk_ids)
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        "SELECT chunk_id, project_name, project_code, doc_year, dim, model, vec"
+        f" FROM vectors WHERE chunk_id IN ({marks})",
+        ids,
     ).fetchall()
     return [
         {
@@ -611,6 +671,26 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     with transaction(conn):
         conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+
+
+# 活动向量后端。**落库而不是只读配置**，因为同一份库会被 uvicorn 和 CLI 同时打开：
+# 两边各按自己的配置（或各自回退的结果）选后端，就会一边写 numpy 索引、一边查 Milvus，
+# 归档是共享的、派生索引却成了两份。条数恰好相同时，连"索引 vs 归档"的计数校验都
+# 发现不了差异（2026-10-24 第十四轮复审）。后端是**这个库**的属性，不是每个进程的偏好。
+#
+# 只记录被确认可用的后端（目前只有 milvus 会写）：它的作用是让 `auto` 在"库里已经
+# 启用 Milvus"之后不再静默回退 numpy——回退本身不报错，但会让本进程的写入只更新
+# 一半（归档 + numpy 索引），在线服务的 Milvus 索引停在旧版。
+VECTOR_BACKEND_KEY = "vector_backend"
+
+
+def get_vector_backend(conn: sqlite3.Connection) -> str | None:
+    """上一次确认可用的向量后端。None 表示还没有任何后端被确认过。"""
+    return get_meta(conn, VECTOR_BACKEND_KEY)
+
+
+def set_vector_backend(conn: sqlite3.Connection, name: str) -> None:
+    set_meta(conn, VECTOR_BACKEND_KEY, name)
 
 
 # 索引切换标记。SQLite 归档与向量库不在同一个事务里，跨组件的"两阶段提交"没法靠

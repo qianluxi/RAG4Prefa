@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from array import array
 from collections import Counter
 from collections.abc import Sequence
@@ -19,7 +20,8 @@ from typing import Protocol
 import numpy as np
 
 from .. import repo
-from ..concurrency import sqlite_write
+from ..concurrency import MaintenanceBusy, maintenance_lock, sqlite_write
+from ..consistency import IndexMismatch
 from ..domain import Filter
 
 
@@ -108,6 +110,68 @@ class _Snapshot:
     mat: np.ndarray = dc_field(default_factory=lambda: np.zeros((0, 1), dtype=np.float32))
 
 
+_ARCHIVE_SQL = (
+    "SELECT chunk_id, project_name, project_code, doc_year, dim, vec FROM vectors"
+)
+
+# 加载期间归档被反复改动时的重试次数。取 5 次是因为正常情况第一次就成功：
+# 本进程自己写完就已经是唯一写者，能撞上的只有"另一个进程恰好在提交"这种短窗口。
+_SNAPSHOT_ATTEMPTS = 5
+
+
+class SnapshotUnstable(IndexMismatch):
+    """归档在加载过程中被反复改动，拿不到一份能自称"最新"的快照。
+
+    继承 `IndexMismatch` 而不是自己造一个异常族：对调用方来说这和"索引不能自证一致"
+    是同一类事——既不能拿它回答问题，也不能在它之上继续写入，只能等人重试。
+    """
+
+
+def _snapshot_of(
+    rows: Sequence[sqlite3.Row], fallback_dim: int
+) -> tuple[_Snapshot, int, list[str]]:
+    """把归档行组成一份快照。纯函数（不碰 self），因为重试时要能丢弃整份重来。"""
+    notes: list[str] = []
+
+    # dim 字段是声明，float32 字节数才是事实。两者对不上的行组不进矩阵，
+    # 硬拼的话 vstack 会抛一句既不说是哪行、也不说怎么办的 dimensions must match。
+    bad = {
+        r["chunk_id"]
+        for r in rows
+        if int(r["dim"] or 0) <= 0 or len(r["vec"]) != int(r["dim"]) * 4
+    }
+    usable = [r for r in rows if r["chunk_id"] not in bad]
+    if not usable:
+        if rows:
+            notes.append(
+                f"归档里 {len(rows)} 条向量的字节长度与声明维度都不符，索引为空；"
+                "执行 `python -m rag4prefa reindex` 从原文重新生成向量"
+            )
+        empty = _Snapshot(mat=np.zeros((0, fallback_dim or 1), dtype=np.float32))
+        return empty, fallback_dim, notes
+
+    # 声明维度本身不一致（历史库混过多套）时，只能取条数最多的那一套：
+    # 剩下的照样跳过并如实说明，不假装它们在同一套向量空间里。
+    counts = Counter(int(r["dim"]) for r in usable)
+    dim = counts.most_common(1)[0][0]
+    kept = [r for r in usable if int(r["dim"]) == dim]
+    skipped = len(rows) - len(kept)
+    if skipped:
+        notes.append(
+            f"归档里有 {skipped} 条向量与主流维度 {dim} 不符（或字节长度与声明维度不符），"
+            "已跳过；索引因此少于归档，检索会被拒绝，执行 `python -m rag4prefa reindex` 修复"
+        )
+
+    snap = _Snapshot(
+        ids=tuple(r["chunk_id"] for r in kept),
+        projects=tuple(r["project_name"] for r in kept),
+        codes=tuple(r["project_code"] for r in kept),
+        years=tuple(r["doc_year"] for r in kept),
+        mat=np.vstack([np.frombuffer(r["vec"], dtype=np.float32) for r in kept]),
+    )
+    return snap, dim, notes
+
+
 class NumpyStore:
     """精确余弦检索（暴力遍历）。
 
@@ -130,7 +194,12 @@ class NumpyStore:
         self.notes: list[str] = []
         self._revision: tuple[int, int] = (-1, -1)
         self._snap = _Snapshot()
-        self._load()
+        try:
+            self._load()
+        except SnapshotUnstable as exc:
+            # 构造阶段不因为"别人正好在写"就把服务挡在门外：留空快照、**不记代次**。
+            # 代次停在 (-1, -1) 与真实值必然不同，下一次 count/search 会再试一轮。
+            self.notes.append(f"暂时没有可用的内存索引：{exc}")
 
     # ── 内部 ────────────────────────────────────────
 
@@ -144,59 +213,42 @@ class NumpyStore:
         return self._snap.mat
 
     def _load(self) -> None:
-        """按归档重建内存矩阵。
+        """按归档重建内存矩阵，**并保证这份快照与它记下的代次是同一版**。
 
         **不在构造阶段拒绝坏数据**：这个后端在 `build_services()` 里就被创建，
         构造即抛错意味着归档一旦损坏，服务起不来、`reindex` 也进不去——而那条命令
         正是唯一的修复入口（它按正文重算向量、整表重写，根本不需要读旧索引）。
         所以这里只跳过组不成的行、把原因记进 notes，让"能不能检索"由
         `consistency` 统一判定：跳过的行会让后端条数少于归档，那就是阻断项。
+
+        **但"读到旧行、记下新代次"必须杜绝**（2026-10-24 第十四轮复审）。原来的顺序是
+        "读行 → 组矩阵 → 读代次"，中间那段别的进程可以提交一整次重建：本进程拿着旧行、
+        记上新代次，此后 `_refresh_if_stale` 认为缓存已是最新，再也不刷新。表现是
+        "条数、模型、维度全对得上，检索结果却是上一版内容"——一致性检查一条也挑不出来，
+        因为差异在内容里，不在计数里。
+
+        所以改成 seqlock 式的双读：**读行之前取一次代次、读完再取一次，两次相同才发布**。
+        不同就整份丢掉重来（`_snapshot_of` 是纯函数，丢弃无副作用）。
         """
-        rows = self._conn.execute(
-            "SELECT chunk_id, project_name, project_code, doc_year, dim, vec FROM vectors"
-        ).fetchall()
-
-        # dim 字段是声明，float32 字节数才是事实。两者对不上的行组不进矩阵，
-        # 硬拼的话 vstack 会抛一句既不说是哪行、也不说怎么办的 dimensions must match。
-        bad = {
-            r["chunk_id"]
-            for r in rows
-            if int(r["dim"] or 0) <= 0 or len(r["vec"]) != int(r["dim"]) * 4
-        }
-        usable = [r for r in rows if r["chunk_id"] not in bad]
-        if not usable:
-            if rows:
-                self.notes.append(
-                    f"归档里 {len(rows)} 条向量的字节长度与声明维度都不符，索引为空；"
-                    "执行 `python -m rag4prefa reindex` 从原文重新生成向量"
-                )
-            self._snap = _Snapshot(mat=np.zeros((0, self.dim or 1), dtype=np.float32))
-            self._revision = repo.get_store_revision(self._conn)
-            return
-
-        # 声明维度本身不一致（历史库混过多套）时，只能取条数最多的那一套：
-        # 剩下的照样跳过并如实说明，不假装它们在同一套向量空间里。
-        counts = Counter(int(r["dim"]) for r in usable)
-        dim = counts.most_common(1)[0][0]
-        kept = [r for r in usable if int(r["dim"]) == dim]
-        skipped = len(rows) - len(kept)
-        if skipped:
-            self.notes.append(
-                f"归档里有 {skipped} 条向量与主流维度 {dim} 不符（或字节长度与声明维度不符），"
-                "已跳过；索引因此少于归档，检索会被拒绝，执行 `python -m rag4prefa reindex` 修复"
-            )
-
-        self.dim = dim
-        self._snap = _Snapshot(
-            ids=tuple(r["chunk_id"] for r in kept),
-            projects=tuple(r["project_name"] for r in kept),
-            codes=tuple(r["project_code"] for r in kept),
-            years=tuple(r["doc_year"] for r in kept),
-            mat=np.vstack([np.frombuffer(r["vec"], dtype=np.float32) for r in kept]),
+        for attempt in range(_SNAPSHOT_ATTEMPTS):
+            before = repo.get_store_revision(self._conn)
+            rows = self._conn.execute(_ARCHIVE_SQL).fetchall()
+            # 组快照本身也在"读代次"之前完成：这段计算同样属于"我需要它一致"的窗口，
+            # 把它放到比较之后，等于承认"比较完之后再变就不算变"。
+            snap, dim, notes = _snapshot_of(rows, self.dim)
+            after = repo.get_store_revision(self._conn)
+            if before == after:
+                self._snap, self.dim = snap, dim
+                # 反复重载时不要把同一条说明叠成一长串
+                self.notes = list(dict.fromkeys([*self.notes, *notes]))
+                self._revision = after
+                return
+            time.sleep(0.005 * (attempt + 1))
+        raise SnapshotUnstable(
+            f"读取归档期间索引被改动 {_SNAPSHOT_ATTEMPTS} 次，拿不到一份能自称最新的快照；"
+            "本次不使用内存索引。等写入结束后重试即可——"
+            "若持续出现，说明有进程在反复重建，先停掉它。"
         )
-        # 记下"这份内存矩阵对应哪一代归档"。别的进程改了归档会把这个数推上去，
-        # 那时本进程的矩阵就是过期的——它既不会报错，也不会自己变。
-        self._revision = repo.get_store_revision(self._conn)
 
     def _refresh_if_stale(self) -> None:
         """归档被别的进程改过（或本进程换过一代）时，重新加载内存矩阵。
@@ -382,11 +434,22 @@ class MilvusStore:
     - `<collection>`            正式索引，检索只读它；
     - `<collection>__staging`   重建时的暂存集合，写完并校验后才切换；
     - `<collection>__retired`   被换下来的上一版，切换成功后立即删除。
+
+    **构造与"打开"是两件事**（2026-10-24 第十四轮复审）。构造只连客户端；收拾残留、
+    建集合、load 归 `_open()`。原因是 `_recover()` 会**删掉** `__staging`，而正在重建
+    的进程恰恰把半成品放在那里：构造函数是每个进程启动都走的路，又发生在任何维护锁
+    之外，它在别人重建到一半时删一次，那笔重建就白跑了，而且两边条数、模型、维度
+    全都能对得上，事后查不出来。
     """
 
     name = "milvus"
 
-    def __init__(self, uri: str, collection: str, dim: int) -> None:
+    def __init__(
+        self, uri: str, collection: str, dim: int, *, conn: sqlite3.Connection | None = None
+    ) -> None:
+        """`conn` 用来定位维护锁。传了它，"打开"就被纳入跨进程互斥；
+        不传（测试、独立脚本）说明没有共享库，也就不存在"别人正在重建"。
+        """
         try:
             from pymilvus import MilvusClient
         except ImportError as exc:  # pragma: no cover - 环境相关
@@ -396,14 +459,79 @@ class MilvusStore:
         self._collection = collection
         self.dim = dim
         self.notes: list[str] = []
+        self._ready = False
+        self._deferred: str | None = None
         try:
             self._client = MilvusClient(uri=uri)
         except Exception as exc:  # pragma: no cover - 平台相关
             raise BackendUnavailable(f"无法打开 Milvus 存储 {uri}: {exc}") from exc
 
+        self._open(conn)
+
+    # ── 打开（有副作用，必须由锁来划边界）────────────────
+
+    def _layout(self) -> tuple[bool, bool, bool]:
+        """只读地看一眼三个集合在不在，不做任何改动。"""
+        return (
+            self._client.has_collection(self._collection),
+            self._client.has_collection(self._retired),
+            self._client.has_collection(self._staging),
+        )
+
+    def _open(self, conn: sqlite3.Connection | None) -> None:
+        if conn is None:
+            self._open_all()
+            return
+
+        has_final, has_retired, has_staging = self._layout()
+        if has_final and not has_retired and not has_staging:
+            # 干净状态：建集合（已存在就跳过）与 load 都不删东西，因此不需要独占。
+            # 这条路径必须是无锁的——启动不能因为"另一个进程正在入库"而卡几分钟。
+            self._open_clean()
+            return
+        if not (has_final or has_retired or has_staging):
+            # 全新库：建集合是写操作，两个进程同时启动会撞在一起。这里没有"别人的
+            # 半成品"可破坏，排队等待是安全的（秒级）。
+            with maintenance_lock(
+                conn, purpose=f"创建向量集合 {self._collection}", timeout=None
+            ):
+                self._open_all()
+            return
+        try:
+            with maintenance_lock(
+                conn, purpose=f"打开向量索引 {self._collection}", timeout=0.0
+            ):
+                self._open_all()
+        except MaintenanceBusy as exc:
+            # 有残留却拿不到锁 ⇒ 那些残留很可能正是别人**正在用**的（重建中的暂存
+            # 集合）。这时一个集合都不许碰，把索引标成未打开：宁可这次查不了，
+            # 也不能删掉别人重建到一半的成果。
+            self._defer(str(exc))
+
+    def _open_all(self) -> None:
+        """收拾残留 + 建集合 + load。调用方必须已持有维护锁（或明确没有共享库）。"""
         self._recover()
-        self._ensure_collection(dim)
+        self._ensure_collection(self.dim)
         self._load_collection()
+        self._ready = True
+
+    def _open_clean(self) -> None:
+        """干净状态下的打开：**不调用 `_recover`**，因此不删任何集合。"""
+        self._ensure_collection(self.dim)
+        self._load_collection()
+        self._ready = True
+
+    def _defer(self, reason: str) -> None:
+        self._deferred = (
+            f"另一个维护动作正在进行（{reason}），本进程没有打开向量索引——"
+            "宁可暂时查不了，也不能动到它正在重建的集合。等它结束后重启服务即可；"
+            "若确认那个进程已不存在，直接重启。"
+        )
+        self.notes.append(self._deferred)
+
+    def _require_ready(self) -> None:
+        if not self._ready:
+            raise BackendUnavailable(self._deferred or "Milvus 索引尚未打开")
 
     # ── 集合名 ──────────────────────────────────────────
 
@@ -522,17 +650,20 @@ class MilvusStore:
         self._client.upsert(collection_name=collection, data=rows)
 
     def upsert(self, items: Sequence[VectorItem]) -> None:
+        self._require_ready()
         if not items:
             return
         self._upsert_into(self._collection, items)
 
     def delete(self, chunk_ids: Sequence[str]) -> None:
+        self._require_ready()
         if chunk_ids:
             self._client.delete(collection_name=self._collection, ids=list(chunk_ids))
 
     def search(
         self, vector: list[float], *, limit: int, filt: Filter | None = None
     ) -> list[tuple[str, float]]:
+        self._require_ready()
         expr = _milvus_expr(filt)
         res = self._client.search(
             collection_name=self._collection,
@@ -545,9 +676,11 @@ class MilvusStore:
         return [(str(h["id"]), float(h["distance"])) for h in hits]
 
     def count(self) -> int:
+        self._require_ready()
         return self._count_of(self._collection)
 
     def ids(self) -> set[str]:
+        self._require_ready()
         return self._all_ids(self._collection)
 
     def _count_of(self, collection: str) -> int:
@@ -569,6 +702,7 @@ class MilvusStore:
         return int(stats.get("row_count", 0))
 
     def clear(self) -> None:
+        self._require_ready()
         self._client.delete(collection_name=self._collection, filter="id != ''")
 
     def _all_ids(self, collection: str) -> set[str]:
@@ -609,6 +743,7 @@ class MilvusStore:
         3. 成功后才删掉 `__retired`；
         4. 中途失败：暂存直接丢弃，正式集合原样可用；`_recover()` 负责收拾进程被杀留下的残留。
         """
+        self._require_ready()
         if not items:
             self.clear()
             return

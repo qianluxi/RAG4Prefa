@@ -23,7 +23,13 @@ from .config import Settings, get_settings
 from .consistency import collect_issues, inspect
 from .credentials import CredentialPool, UserCredentials
 from .db import connect, init_db
-from .repo import get_meta, mark_interrupted_documents, mark_interrupted_jobs
+from .repo import (
+    get_meta,
+    get_vector_backend,
+    mark_interrupted_documents,
+    mark_interrupted_jobs,
+    set_vector_backend,
+)
 
 
 def _describe(exc: BaseException) -> str:
@@ -136,7 +142,14 @@ class Services:
         from .ingest import rebuild_store  # 局部导入，避免循环依赖
 
         try:
-            milvus = MilvusStore(self.settings.milvus_uri, self.settings.milvus_collection, dim)
+            # 已经在维护锁里（`_promote` 只从 `maybe_promote` 的锁内进入），所以这里
+            # 的"打开索引"（含清理上次崩溃留下的暂存集合）是安全的。
+            milvus = MilvusStore(
+                self.settings.milvus_uri,
+                self.settings.milvus_collection,
+                dim,
+                conn=self.conn,
+            )
         except Exception as exc:  # noqa: BLE001 - 见方法说明：可选升级不能外溢
             # 以前只认 BackendUnavailable，但 pymilvus 在 Lite 文件被占用、版本不匹配时
             # 抛的是它自己的异常，那类失败同样只该降级、不该中断调用方。
@@ -155,6 +168,9 @@ class Services:
             return False
         self.store = milvus
         self.fell_back = False
+        # 把"活动后端"落库：别的进程（CLI、另一个服务实例）再打开时以这条为准，
+        # 不会出现一个进程写 numpy、另一个查 Milvus 的分裂。
+        set_vector_backend(self.conn, "milvus")
         self.notes = [n for n in self.notes if "Milvus 不可用" not in n]
         self.notes.append(f"已把 {moved} 条归档向量迁移到 Milvus")
         return True
@@ -224,17 +240,45 @@ class Services:
         self.conn.close()
 
 
-def open_store(settings: Settings, conn: sqlite3.Connection) -> tuple[VectorStore, list[str], bool]:
+def open_store(
+    settings: Settings, conn: sqlite3.Connection
+) -> tuple[VectorStore, list[str], bool]:
+    """按配置打开向量后端。
+
+    **`auto` 也不是"每个进程自己试"**：库里若已经确认在用 Milvus（`meta.vector_backend`），
+    这次就必须打开 Milvus，打不开就报错。理由是回退不报错、后果却很难看——本进程
+    退回 numpy 后，写入只更新"归档 + numpy 索引"，而在线服务的 Milvus 索引停在旧版，
+    归档与 Milvus 条数一致时连计数校验都发现不了。显式失败至少让人知道该修哪里。
+
+    还没有确认过后端时（首次部署）才允许"试 Milvus，不行回退 numpy"——那时两边都还
+    没有索引，回退不会分裂任何东西。
+    """
     notes: list[str] = []
     dim = settings.embedding_dim or int(get_meta(conn, "embedding_dim") or 0)
+    recorded = get_vector_backend(conn)
     if settings.vector_backend in ("auto", "milvus"):
         try:
-            return MilvusStore(settings.milvus_uri, settings.milvus_collection, dim), notes, False
+            # 传 conn：让"打开索引"（含崩溃恢复）走维护锁。构造函数本身只连客户端，
+            # 有副作用的恢复动作由它自己按锁定边界执行——见 MilvusStore._open。
+            store = MilvusStore(
+                settings.milvus_uri, settings.milvus_collection, dim, conn=conn
+            )
+            if recorded != "milvus":
+                set_vector_backend(conn, "milvus")
+            return store, notes, False
         except BackendUnavailable as exc:
-            if settings.vector_backend == "milvus":
+            if settings.vector_backend == "milvus" or recorded == "milvus":
+                why = (
+                    "R4P_VECTOR_BACKEND=milvus"
+                    if settings.vector_backend == "milvus"
+                    else "库里记录的活动后端"
+                )
                 hint = (
-                    f"{exc}。当前显式指定了 R4P_VECTOR_BACKEND=milvus，不会自动回退："
-                    "按上面的报错处理，或改成 auto / numpy 先把服务跑起来。"
+                    f"{exc}。索引的活动后端是 Milvus（{why}），"
+                    "不回退到 numpy：回退后本进程的写入只更新 numpy 索引，"
+                    "在线服务查的 Milvus 会停在旧版，而两边条数一致时查不出来。"
+                    "按上面的报错修好 Milvus；确认要换后端，就把它显式改成 numpy 并在启动后"
+                    "执行 `python -m rag4prefa rebuild` 重建一份 numpy 索引。"
                 )
                 # "维度未知"只是 Milvus 打不开的众多原因之一。路径不合法、缺 pymilvus、
                 # 中文路径，报的也是这一条——一律往"改维度"上引，会让人在不相关的

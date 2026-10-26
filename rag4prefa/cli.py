@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from . import admin, ask, concurrency, consistency, ingest, repo
-from .adapters.vectors import RebuildError
+from .adapters.vectors import RebuildError, StoreRef
 from .concurrency import MaintenanceBusy
 from .config import get_settings
 from .consistency import IndexMismatch
@@ -79,9 +79,14 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             {"project": args.project, "files": [f.name for f in files]},
         )
         try:
+            # 传 StoreRef 而不是 `services.store`：装配发生在拿维护锁**之前**，
+            # 等锁的这段时间里后端指针可能被别的进程换掉（例如它刚把 numpy 迁到
+            # Milvus）。传对象就是"用取参数那一刻的后端写完整批"，而那一份可能
+            # 再也没人查。真正的最后一道防线是锁内的 `ensure_backend_current`：
+            # 本进程的指针跟上没跟上，以库里记着的活动后端为准。
             outcomes = ingest.ingest_batch(
                 services.conn,
-                services.store,
+                StoreRef(lambda: services.store),
                 services.require_embedder(),
                 services.settings,
                 job_id=job_id,
@@ -114,7 +119,7 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     try:
         result = ingest.reindex(
             services.conn,
-            services.store,
+            StoreRef(lambda: services.store),
             services.require_embedder(),
             services.settings,
             project_name=args.project,
@@ -142,7 +147,7 @@ def cmd_rebuild(_: argparse.Namespace) -> int:
     """
     services = build_services()
     try:
-        total = ingest.rebuild_store(services.conn, services.store)
+        total = ingest.rebuild_store(services.conn, StoreRef(lambda: services.store))
         _print(
             {
                 "rebuilt": total,
@@ -302,7 +307,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return int(args.func(args) or 0)
+    try:
+        return int(args.func(args) or 0)
+    except IndexMismatch as exc:
+        # 从命令体里漏出来的"索引/后端对不上"：这不是崩溃，是"该修或该重来"。
+        # 让 traceback 出现在终端里，操作员只会以为程序有 bug。
+        print(f"{args.command} 未执行：{exc}", file=sys.stderr)
+        return 1
+    except MaintenanceBusy as exc:
+        print(f"{args.command} 未执行（另一个维护动作正在跑）：{exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

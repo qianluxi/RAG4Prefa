@@ -411,3 +411,33 @@ def test_a_refused_batch_creates_no_project_and_no_running_job(
     assert job is not None
     assert job.state is JobState.queued, "一个文件都没处理，任务不该被写成运行中或失败"
     assert repo.chunk_count(conn) == 0
+
+
+def test_unopenable_lock_file_does_not_crash_the_caller(
+    conn: sqlite3.Connection,
+) -> None:
+    """锁文件打不开时，只能报"有人占着"，不能抛 PermissionError。
+
+    Windows 上另一个进程持着这把锁时，`open(..., "a+b")` 直接 Permission denied
+    （不是"锁定失败"，是**打开**失败）。这条路径以前没有被捕获，结果是服务一启动，
+    任何 CLI 命令（verify / doctor / ingest）都崩在 `worker_alive()` 里——
+    而它本来只是想说一句"有人在跑，别动别人的任务"。
+
+    用"同名目录"稳定复现 open 失败：跟平台、权限设置都无关。
+    """
+    lock = concurrency.lock_path_for(conn)
+    assert lock is not None
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    if lock.exists():
+        lock.unlink()
+    lock.mkdir()  # 目录不能以 "a+b" 打开
+
+    assert concurrency.is_busy(conn), "打不开的锁要当成'有人在维护'，而不是抛错"
+
+    worker = lock.parent / concurrency.WORKER_LOCK_NAME
+    if worker.exists():
+        worker.unlink()
+    worker.mkdir()
+    assert concurrency.worker_alive(conn) is True, (
+        "判不出谁活着时只能保守地说'有人在跑'，否则会把在线任务误标成中断"
+    )

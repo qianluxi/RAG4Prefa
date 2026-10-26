@@ -97,6 +97,9 @@ class DocumentInfo(BaseModel):
     project_name: str
     filename: str
     content_sha: str
+    # 年份是**过滤条件**（documents / vectors 归档 / 后端标量列三处都要一致），
+    # 入库时要拿它和已有记录比对，所以它必须出现在这个视图里。
+    doc_year: int | None = None
     section_count: int
     chunk_count: int
     status: str
