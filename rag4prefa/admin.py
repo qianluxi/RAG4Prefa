@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from . import repo
+from . import consistency, repo
 from .adapters.llm import LLM
 from .adapters.vectors import VectorStore
 from .concurrency import maintenance_lock
@@ -62,8 +62,15 @@ def delete_project(conn: sqlite3.Connection, store: VectorStore, name: str) -> d
 
     不互斥的话，一次重建能在"片段已删、向量还在"的中间态读快照，算完再写回去；
     条数可能仍然对得上，id 却对不上。
+
+    **锁内还要确认后端身份**（2026-10-24 第十五轮复审）：维护锁只保证"没有别人同时在
+    改"，锁不住"手里这个后端是不是库里记着的那个"——那是装配那一刻定死的，而装配发生在
+    拿锁之前。少了这一步，就会先删掉 SQLite 的事实与归档，再往一个已经不是活动后端的
+    索引发一批 chunk_id：删除既不完整，事后也说不清该以哪边为准。
     """
     with maintenance_lock(conn, purpose=f"删除项目 {name}", timeout=0.0):
+        # 排在 `repo.delete_project` 之前：被拦住时要做到一个字节都没改。
+        consistency.ensure_backend_current(conn, store)
         if not repo.get_project(conn, name):
             return {"deleted": False, "reason": "项目不存在"}
         chunk_ids = repo.delete_project(conn, name)

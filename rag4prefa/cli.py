@@ -154,6 +154,9 @@ def cmd_rebuild(_: argparse.Namespace) -> int:
                 "model": repo.get_meta(services.conn, "embedding_model"),
                 "dim": repo.get_meta(services.conn, "embedding_dim"),
                 "index_state": repo.get_index_state(services.conn),
+                # 换后端也靠这条命令，所以要把"现在登记的是谁"打出来：
+                # 只报 rebuilt 条数的话，运维看不出这次把活动后端改掉了
+                "vector_backend": repo.get_vector_backend(services.conn),
                 # 恢复用的是归档里的模型，它可能和当前配置不同——指出来，否则用户
                 # 会在下一次检索被拒时一头雾水
                 "configured_model": (

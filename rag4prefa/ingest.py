@@ -322,6 +322,11 @@ def _update_doc_year(
 
     **先验证能不能改，再动数据**：归档不全时（有片段没向量）改年份会把关系弄得更乱，
     那种情况应当先 `reindex` 补齐，而不是在这里"尽力而为"。
+
+    **改的过程中检索必须是停的**：年份是过滤条件，同时存在于 documents、`vectors` 归档
+    和后端的标量列三处。归档先改、后端后改，中间那一刻按年份过滤就会漏或错，而条数一条
+    不差。所以改之前先置 `unsynced:<doc_id>` 标记，三处都对齐才撤掉；后端更新失败时
+    标记留着，检索继续拒绝，直到 `rebuild` 从归档恢复。
     """
     ids = repo.chunk_ids_of_doc(conn, doc_id)
     if not ids:
@@ -342,18 +347,40 @@ def _update_doc_year(
             "（执行 `python -m rag4prefa reindex`）；本次未做任何改动",
         )
 
-    repo.set_document_year(conn, doc_id, doc_year)
+    marker = f"{consistency.UNSYNCED_PREFIX}{doc_id}"
+    previous = repo.get_index_state(conn)
+    # **先留痕，再改数据**。归档（事实）与向量索引不在同一个事务里，"文档表说 2025、
+    # 按 2025 过滤却召回不到这批片段"这个窗口没法靠事后比对发现——条数、模型、维度
+    # 全都对得上。只报一条 failed 是不够的：任务失败了，检索还在拿旧过滤列回答
+    # （2026-10-24 第十五轮复审）。
+    repo.set_index_state(conn, marker)
+    try:
+        repo.set_document_year(conn, doc_id, doc_year)
+    except Exception as exc:  # noqa: BLE001 - 归档没改，索引也没动，可以原样退回
+        repo.set_index_state(conn, previous)
+        return FileOutcome(
+            filename,
+            "failed",
+            existing.section_count,
+            len(ids),
+            f"改年份失败（{type(exc).__name__}: {exc}）；文档、归档、索引都还是原来的年份",
+        )
+
     try:
         store.upsert([from_archive_row(r) for r in repo.archived_vectors_by_ids(conn, ids)])
-    except Exception as exc:  # noqa: BLE001 - 文档与归档已是新值，索引没跟上要说清
+    except Exception as exc:  # noqa: BLE001 - 归档已是新值，索引没跟上必须阻断检索
         return FileOutcome(
             filename,
             "failed",
             existing.section_count,
             len(ids),
             f"年份已写入文档与归档，但更新向量索引失败（{type(exc).__name__}: {exc}）；"
+            f"检索已停用（标记 {marker}），按年份过滤不会再给出错的答案。"
             "执行 `python -m rag4prefa rebuild` 从归档恢复索引即可（归档里已是新年份）",
         )
+    # 三处对齐了才把标记撤掉，撤成"上一次的状态"而不是无条件 ready：
+    # 万一这次之前还欠着一笔没走完的重建，不能被这次顺手清掉。
+    repo.set_index_state(conn, previous)
     return FileOutcome(
         filename,
         "indexed",
@@ -499,10 +526,12 @@ def rebuild_store(conn: sqlite3.Connection, store: VectorStore) -> int:
 
 
 def _rebuild_store_locked(conn: sqlite3.Connection, store: VectorStore) -> int:
-    try:
-        consistency.ensure_backend_current(conn, store)
-    except IndexMismatch as exc:
-        raise ReindexError(str(exc)) from exc
+    # `rebuild` 是**唯一**允许换后端的动作：从归档整体重建到目标后端，逐 id 校验通过
+    # 之后才把活动后端改成它。所以这里不调 `ensure_backend_current`——那条检查的用途
+    # 是拦住"顺手拿错对象写数据"的入库/重建，而"显式改用另一个后端"正是本条命令的
+    # 职责（`R4P_VECTOR_BACKEND=numpy` + rebuild 以前会被自己挡住，根本没法切）。
+    # 记下"换之前是谁"，只用于事后留痕；真正的登记在最后与 `ready` 同一个事务里做。
+    previous_backend = repo.get_vector_backend(conn)
     # 只有仍有正文的行才算恢复源；孤儿行留着会让重建后的索引比事实表更大
     rows = repo.iter_archived_vectors(conn)
     models = {r["model"] for r in rows}
@@ -547,7 +576,16 @@ def _rebuild_store_locked(conn: sqlite3.Connection, store: VectorStore) -> int:
     repo.delete_orphan_vectors(conn)
     model = next(iter(models), "") or (repo.get_meta(conn, "embedding_model") or "")
     dim = str(next(iter(dims), 0) or store.dim)
-    repo.set_index_meta(conn, model=model, dim=dim, state=repo.INDEX_READY)
+    target = getattr(store, "name", None)
+    # 后端登记与"标记回 ready"同一个事务：换后端和"新索引已就绪"必须同时成立。
+    # 分两次写会留下"库里还记着旧后端、索引其实已经是新的"这种中间态。
+    repo.set_index_meta(
+        conn, model=model, dim=dim, state=repo.INDEX_READY, backend=target
+    )
+    if previous_backend and target and previous_backend != target:
+        # 换后端是运维动作，要留下痕迹：`/api/health` 的 notes 会带上它，
+        # 否则"昨天查的还是 Milvus、今天变成 numpy"只能靠翻日志猜。
+        store.notes.append(f"活动后端由「{previous_backend}」切换为「{target}」")
     return len(items)
 
 

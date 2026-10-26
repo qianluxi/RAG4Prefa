@@ -118,6 +118,10 @@ _ARCHIVE_SQL = (
 # 本进程自己写完就已经是唯一写者，能撞上的只有"另一个进程恰好在提交"这种短窗口。
 _SNAPSHOT_ATTEMPTS = 5
 
+# "布局判断完了、真正打开之前布局又变了"的重试次数。一次重建里有两次 rename，
+# 撞上的窗口很短；给它三次机会，之后就走持锁路径或推迟打开，不再猜。
+_OPEN_ATTEMPTS = 3
+
 
 class SnapshotUnstable(IndexMismatch):
     """归档在加载过程中被反复改动，拿不到一份能自称"最新"的快照。
@@ -483,30 +487,38 @@ class MilvusStore:
             self._open_all()
             return
 
-        has_final, has_retired, has_staging = self._layout()
-        if has_final and not has_retired and not has_staging:
-            # 干净状态：建集合（已存在就跳过）与 load 都不删东西，因此不需要独占。
-            # 这条路径必须是无锁的——启动不能因为"另一个进程正在入库"而卡几分钟。
-            self._open_clean()
+        for attempt in range(_OPEN_ATTEMPTS):
+            has_final, has_retired, has_staging = self._layout()
+            if has_final and not has_retired and not has_staging:
+                # 干净状态：建集合（已存在就跳过）与 load 都不删东西，因此不需要独占。
+                # 这条路径必须是无锁的——启动不能因为"另一个进程正在入库"而卡几分钟。
+                if self._open_clean():
+                    return
+                # 判断之后布局变了：有进程正在两次 rename 之间切换索引。重看一次布局，
+                # 这时通常已经能看到 __staging / __retired，落到下面的持锁路径。
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            if not (has_final or has_retired or has_staging):
+                # 全新库：建集合是写操作，两个进程同时启动会撞在一起。这里没有"别人的
+                # 半成品"可破坏，排队等待是安全的（秒级）。
+                with maintenance_lock(
+                    conn, purpose=f"创建向量集合 {self._collection}", timeout=None
+                ):
+                    self._open_all()
+                return
+            try:
+                with maintenance_lock(
+                    conn, purpose=f"打开向量索引 {self._collection}", timeout=0.0
+                ):
+                    self._open_all()
+            except MaintenanceBusy as exc:
+                # 有残留却拿不到锁 ⇒ 那些残留很可能正是别人**正在用**的（重建中的暂存
+                # 集合）。这时一个集合都不许碰，把索引标成未打开：宁可这次查不了，
+                # 也不能删掉别人重建到一半的成果。
+                self._defer(str(exc))
             return
-        if not (has_final or has_retired or has_staging):
-            # 全新库：建集合是写操作，两个进程同时启动会撞在一起。这里没有"别人的
-            # 半成品"可破坏，排队等待是安全的（秒级）。
-            with maintenance_lock(
-                conn, purpose=f"创建向量集合 {self._collection}", timeout=None
-            ):
-                self._open_all()
-            return
-        try:
-            with maintenance_lock(
-                conn, purpose=f"打开向量索引 {self._collection}", timeout=0.0
-            ):
-                self._open_all()
-        except MaintenanceBusy as exc:
-            # 有残留却拿不到锁 ⇒ 那些残留很可能正是别人**正在用**的（重建中的暂存
-            # 集合）。这时一个集合都不许碰，把索引标成未打开：宁可这次查不了，
-            # 也不能删掉别人重建到一半的成果。
-            self._defer(str(exc))
+
+        self._defer("集合布局在打开过程中反复变化（另一个进程正在切换索引）")
 
     def _open_all(self) -> None:
         """收拾残留 + 建集合 + load。调用方必须已持有维护锁（或明确没有共享库）。"""
@@ -515,11 +527,34 @@ class MilvusStore:
         self._load_collection()
         self._ready = True
 
-    def _open_clean(self) -> None:
-        """干净状态下的打开：**不调用 `_recover`**，因此不删任何集合。"""
-        self._ensure_collection(self.dim)
-        self._load_collection()
+    def _open_clean(self) -> bool:
+        """干净布局下的无锁打开：**只加载此刻仍然存在的正式集合，绝不创建**。
+
+        为什么要把"看过布局"和"能建集合"拆开（2026-10-24 第十五轮复审）：
+        `_open()` 看到"正式集合在、没有残留"之后，到真正 load 之间隔着一段时间。另一个
+        进程可能正好在这段时间里重建——它把正式集合 rename 成 `__retired`、再把
+        `__staging` 换成正式名。旧实现这时调 `_ensure_collection`，发现"正式集合不
+        存在"，于是**建了一个空集合**：那个进程的第二次 rename 撞名失败，而它的回滚
+        条件（`__retired` 在、正式集合不在）已经不成立，旧索引被留在 `__retired` 里。
+        一次重建白跑，还得人工恢复——而两边条数、模型、维度全都能对得上。
+
+        无锁路径能做的事只有一件：加载一个此刻仍然存在的正式集合。它没有锁，
+        就没有资格创建、删除、重命名任何集合。返回 False 表示"布局在打开过程中变了"，
+        由调用方重看布局或改走持锁路径。
+        """
+        if not self._client.has_collection(self._collection):
+            return False
+        try:
+            self._adopt_existing(self.dim)
+            self._load_collection()
+        except BackendUnavailable:
+            # rename 是原子元数据操作，失败通常就是"它已经不在这个名字下了"。
+            # 别的错误（faiss 路径、权限）不能咽掉，那类问题重试也还是错。
+            if not self._client.has_collection(self._collection):
+                return False
+            raise
         self._ready = True
+        return True
 
     def _defer(self, reason: str) -> None:
         self._deferred = (
@@ -617,17 +652,25 @@ class MilvusStore:
         if self._client.has_collection(collection):
             self._client.drop_collection(collection)
 
+    def _adopt_existing(self, dim: int) -> None:
+        """已存在的集合：只核对维度，不创建、不改名。
+
+        单独拆出来是为了让无锁的快速打开路径能复用维度校验，却拿不到"建集合"的能力
+        ——那两件事以前写在同一个函数里，于是"只读地看一眼"和"可以创建"被混成了一句。
+        """
+        actual = self._vector_dim(self._collection)
+        if dim and actual and dim != actual:
+            # 配置说是 N 维、集合里其实是 M 维：写入会直接报错，检索会给出无意义结果
+            raise BackendUnavailable(
+                f"Milvus 集合 {self._collection} 的向量维度是 {actual}，"
+                f"当前配置是 {dim}。改配置或换集合名都改不了已写入的向量，"
+                "请用 `python -m rag4prefa reindex` 按当前模型整体重建。"
+            )
+        self.dim = actual or dim
+
     def _ensure_collection(self, dim: int) -> None:
         if self._client.has_collection(self._collection):
-            actual = self._vector_dim(self._collection)
-            if dim and actual and dim != actual:
-                # 配置说是 N 维、集合里其实是 M 维：写入会直接报错，检索会给出无意义结果
-                raise BackendUnavailable(
-                    f"Milvus 集合 {self._collection} 的向量维度是 {actual}，"
-                    f"当前配置是 {dim}。改配置或换集合名都改不了已写入的向量，"
-                    "请用 `python -m rag4prefa reindex` 按当前模型整体重建。"
-                )
-            self.dim = actual or dim
+            self._adopt_existing(dim)
             return
         if not dim:
             raise BackendUnavailable("首次创建 Milvus 集合需要已知向量维度")

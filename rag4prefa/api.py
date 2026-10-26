@@ -121,6 +121,16 @@ def create_app(services: Services | None = None) -> FastAPI:
         """
         return JSONResponse({"detail": str(exc)}, status_code=409)
 
+    @app.exception_handler(IndexMismatch)
+    def _index_mismatch(_: Request, exc: IndexMismatch) -> JSONResponse:
+        """索引不能自证一致时也一样：这是"现在不能动"，不是服务器故障。
+
+        用 409 而不是 500 的理由和上一条相同——前端据此提示"先处理索引"，
+        而不是让用户去翻日志找一个不存在的 bug。删除项目这类没有单独 try 的端点，
+        靠这条兜住（例如"活动后端已被别的进程换过"）。
+        """
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
 
     def svc(request: Request) -> Services:
         """每个请求都按请求头换一次凭据。

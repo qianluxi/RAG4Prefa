@@ -549,6 +549,22 @@ def archived_chunk_ids(conn: sqlite3.Connection) -> set[str]:
     return {r["chunk_id"] for r in conn.execute("SELECT chunk_id FROM vectors")}
 
 
+def recoverable_chunk_ids(conn: sqlite3.Connection) -> set[str]:
+    """能作为"恢复源"的归档 id：仍然有正文的那些。
+
+    与 `iter_archived_vectors` 同一套 JOIN，但**不取 vec 列**——确认活动后端时要比的是
+    id 集合，把几千条 1024 维向量捞进内存只为丢进集合，纯属浪费。
+
+    不直接用 `archived_chunk_ids`：孤儿行（正文已删、向量还在）不该参与"这个后端是不是
+    当前版本"的判断——它们本来就要由 rebuild 清掉，拿它们去要求索引必须一致，会让每次
+    启动都判定"不一致"然后重建一遍。
+    """
+    return {
+        r["chunk_id"]
+        for r in conn.execute("SELECT v.chunk_id FROM vectors v JOIN chunks c ON c.id = v.chunk_id")
+    }
+
+
 def select_chunk_ids(
     conn: sqlite3.Connection, ids: Iterable[str], *, filt: Filter | None = None
 ) -> set[str]:
@@ -782,22 +798,33 @@ def _write_index_state(conn: sqlite3.Connection, state: str) -> None:
 
 
 def set_index_meta(
-    conn: sqlite3.Connection, *, model: str, dim: str, state: str = INDEX_READY
+    conn: sqlite3.Connection,
+    *,
+    model: str,
+    dim: str,
+    state: str = INDEX_READY,
+    backend: str | None = None,
 ) -> None:
-    """模型、维度、切换状态一次提交。
+    """模型、维度、切换状态（可含活动后端）一次提交。
 
     分开写会留下"模型已更新、状态还是 rebuilding"的中间态，而读方看到模型对得上
     就会放行检索——那正是这个标记要消除的窗口，所以三者必须在同一个事务里落地。
     代次一起 +1：这是在换索引，任何读过旧索引的人都必须知道。
+
+    `backend` 也走这个事务：换后端与"新索引已经就绪"必须同时成立。分两次写的话，
+    中间那一刻库里记着新后端、`index_state` 还是旧的未完成标记（或反过来），
+    两边都读到一半就各自得出相反结论（2026-10-24 第十五轮复审）。
     """
     with transaction(conn):
+        rows = [
+            ("embedding_model", model),
+            ("embedding_dim", dim),
+            (INDEX_STATE_KEY, state),
+        ]
+        if backend:
+            rows.append((VECTOR_BACKEND_KEY, backend))
         conn.executemany(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-            [
-                ("embedding_model", model),
-                ("embedding_dim", dim),
-                (INDEX_STATE_KEY, state),
-            ],
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", rows
         )
         _bump_generation(conn)
 

@@ -419,3 +419,65 @@ def test_open_does_not_touch_staging_while_another_maintenance_holds_lock(tmp_pa
         assert recovered.count() == 1
     finally:
         conn.close()
+
+
+def test_clean_open_never_creates_a_collection_that_disappeared(tmp_path) -> None:
+    """判断之后布局变了：无锁路径不许补建一个空集合，否则会把正在切换的重建撞死。
+
+    真实的重建就是这段时序：
+
+      1. 本进程 `_layout()` 看到"正式集合在、没有残留"，决定走无锁快速打开；
+      2. 另一个进程把正式集合 rename 成 `__retired`（下一步要把 `__staging` 换上来）；
+      3. 本进程此刻才去 load。
+
+    旧实现在第 3 步调 `_ensure_collection`，发现正式集合不存在，**建了一个空的**。
+    另一个进程的第二次 rename 于是撞名失败，而它的回滚条件（`__retired` 在、正式集合
+    不在）已经不成立——旧索引被留在 `__retired` 里，一次重建白跑，还得人工恢复。
+
+    无锁路径有且只有一件事可做：加载一个此刻仍然存在的正式集合。它没有锁，就没有资格
+    创建、删除、重命名任何集合。
+    """
+    uri, name = str(tmp_path / "vectors.db"), "chunks_vec"
+    try:
+        base = MilvusStore(uri, name, dim=4)
+    except BackendUnavailable as exc:  # pragma: no cover - 平台相关
+        pytest.skip(f"Milvus 不可用：{exc}")
+    base.upsert([VectorItem("a", [1, 0, 0, 0], "甲项目", "", 2024)])
+
+    # 走生产路径（带 conn）：无锁快速打开只在不传 conn 之外的那条分支上存在
+    from rag4prefa.config import Settings
+    from rag4prefa.db import connect, init_db
+
+    settings = Settings(data_dir=tmp_path, vector_backend="milvus", milvus_uri=uri)
+    settings.ensure_dirs()
+    init_db(settings.db_path)
+    conn = connect(settings.db_path)
+
+    class RacingStore(MilvusStore):
+        """在"看完布局"和"真正打开"之间插入另一个进程的动作。"""
+
+        raced = False
+
+        def _layout(self):
+            out = super()._layout()
+            if not self.raced and out[0] and not out[1] and not out[2]:
+                self.raced = True
+                # 另一个进程：暂存集合已写好，正式集合刚被改名让位
+                self._create_collection(self._staging, 4)
+                self._client.rename_collection(
+                    old_name=self._collection, new_name=self._retired
+                )
+            return out
+
+    try:
+        racing = RacingStore(uri, name, dim=4, conn=conn)
+    finally:
+        conn.close()
+
+    assert racing.raced, "构造前提：这条测试必须在'判断之后'才发生布局变化"
+    assert racing._ready is True, "布局变化要重看一次再决定，不能直接放弃打开"
+    assert racing.count() == 1, "补建一个空集合会返回 0——旧索引的那一条就丢了"
+    assert not racing._client.has_collection(f"{name}__retired"), (
+        "旧索引应当被 _recover 还原成正式集合，而不是留在 __retired 里"
+    )
+    assert not racing._client.has_collection(f"{name}__staging")

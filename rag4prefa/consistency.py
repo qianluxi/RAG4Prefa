@@ -36,6 +36,16 @@ class IndexMismatch(RuntimeError):
     """索引与当前配置或自身事实对不上，必须人工处理后再继续。"""
 
 
+# "归档改了、索引没跟上"的标记前缀，后接受影响的文档 id。
+#
+# 为什么不能只报一句错：改年份这条路径不重算向量，只覆盖过滤列。归档（事实）先改、
+# 向量索引后改，中间或之后就有一个窗口——文档表说 2025、检索按 2025 过滤却召回不到
+# 这批片段。条数、模型、维度全都对得上，日常计数校验一条也发现不了，只有"写之前留痕"
+# 能让检索在这段时间里停住。与 `rebuilding:*` 分开是因为修复动作不同：那个要重建索引，
+# 这个从归档覆盖一遍就行（`rebuild` 一条命令两类标记都能清）。
+UNSYNCED_PREFIX = "unsynced:"
+
+
 def pending_message(marker: str) -> str:
     """「上次索引切换没走完」的说明。
 
@@ -44,6 +54,13 @@ def pending_message(marker: str) -> str:
     逐项校验一条都挑不出毛病，检索却可能返回旧向量配上新正文。所以这里不能靠比对
     发现，只能靠写之前留下的标记。
     """
+    if marker.startswith(UNSYNCED_PREFIX):
+        return (
+            f"上一次文档元数据修改没有同步到向量索引（标记 {marker}）："
+            "归档里已经是新值，后端索引可能还是旧的——条数、模型、维度完全一致，"
+            "按年份过滤却会查不到或查到错的那一批。同步完成前检索一律拒绝。"
+            "执行 `python -m rag4prefa rebuild` 从归档恢复索引即可清除该标记。"
+        )
     scope = "全量" if marker.endswith(":*") else f"项目「{marker.split(':', 1)[-1]}」"
     return (
         f"上次{scope}重建索引没有完成（标记 {marker}）：向量索引可能还停在上一版，"
@@ -286,6 +303,11 @@ def ensure_backend_current(conn: sqlite3.Connection, store) -> None:
     连"索引 vs 归档"的计数校验都发现不了（2026-10-24 第十四轮复审）。
 
     判断放在维护锁里做：那时不会有第二个进程同时改后端，一次比较就是确定的。
+
+    **只有两个地方允许换后端**（它们不调这个函数，改走自己的路径）：
+    `rebuild`（从归档整体重建到目标后端，校验通过后连同 `ready` 一起登记）和
+    `Services.settle_backend`（启动时确认）。其余动作一律拒绝——拒绝比"用错后端
+    默默写一份没人查的索引"便宜得多。
     """
     recorded = repo.get_vector_backend(conn)
     if not recorded:
@@ -296,7 +318,9 @@ def ensure_backend_current(conn: sqlite3.Connection, store) -> None:
     raise IndexMismatch(
         f"库里记录的向量后端是「{recorded}」，本进程手里的是「{actual}」——"
         "装配之后活动后端被别的进程换过了。本次没有改动任何数据；"
-        "重新执行这条命令即可（新进程会装配到当前后端）。"
+        f"重新执行这条命令即可（新进程会装配到当前后端）。"
+        f"确实要改用「{actual}」，用 `python -m rag4prefa rebuild`：它从归档重建，"
+        "校验通过后才把活动后端改成新的那个。"
     )
 
 

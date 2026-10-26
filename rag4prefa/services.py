@@ -9,6 +9,7 @@ import sqlite3
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from . import repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
 from .adapters.rerank import NoopReranker, RemoteReranker, Reranker
@@ -107,6 +108,95 @@ class Services:
             raise LLMError("未配置大模型服务（R4P_LLM_API_KEY）")
         return self.llm
 
+    def settle_backend(self) -> None:
+        """确认"这个库的活动后端"——**能把集合打开，不等于它就是当前版本**。
+
+        为什么必须单独一步（2026-10-24 第十五轮复审）：`open_store()` 只要集合能打开
+        就返回，而"能打开"证明不了"里面装的是归档这一套"。遗留的 Milvus 集合可以与
+        归档条数相同、chunk_id 却完全不同（重建中断、换过一批文档）。此时把它登记为
+        活动后端，后续写入就落进一个内容不对的索引——而条数一致时，连"索引 vs 归档"
+        的计数校验都发现不了。
+
+        协议只有一条：**先证明，再登记**。
+
+        - 归档非空 → 后端 id 集合必须与归档完全一致；不一致就从归档重建（不重算
+          embedding），重建并逐 id 校验通过之后才登记；
+        - 归档为空 → 后端也必须是空的。否则那是上一版留下的孤儿向量，"登记"等于
+          承认一份没有任何正文的索引；
+        - 证明不了（读不到主键、重建失败）→ **不登记**，并说清怎么修。之后的写入
+          会被 `ensure_backend_current` 挡住：宁可停住，也不要往一份没证明过的索引里写。
+
+        整段在维护锁里：登记活动后端与"谁在写"必须互斥，否则刚证明完就被另一个进程
+        改掉了。锁拿不到就跳过（不登记），下次启动再核对——启动不该被别人的入库卡住。
+        """
+        owner = self.owner
+        if owner is not self:
+            owner.settle_backend()
+            return
+        recorded = get_vector_backend(self.conn)
+        if recorded == self.store.name:
+            return
+        try:
+            with maintenance_lock(
+                self.conn, purpose=f"确认活动后端 {self.store.name}", timeout=0.0
+            ):
+                self._settle_locked(recorded)
+        except MaintenanceBusy as exc:
+            self.notes.append(
+                f"未确认活动后端（{exc}）——另一个维护动作正在改索引。"
+                "本次先按配置打开的后端继续用，下次启动会重新核对"
+            )
+
+    def _settle_locked(self, recorded: str | None) -> None:
+        target = self.store.name
+        archive = repo.recoverable_chunk_ids(self.conn)
+        if archive:
+            try:
+                actual = self.store.ids()
+            except Exception as exc:  # 后端读不出主键时不能假设它写对了
+                self.notes.append(
+                    f"读不到向量索引的主键，无法确认活动后端（{_describe(exc)}）；"
+                    "本次不登记。执行 `python -m rag4prefa doctor` 看后端实际状态"
+                )
+                return
+            if actual != archive:
+                from .ingest import rebuild_store  # 局部导入，避免循环依赖
+
+                try:
+                    moved = rebuild_store(self.conn, self.store)
+                except Exception as exc:  # noqa: BLE001 - 启动不能因为对齐失败就起不来
+                    self.notes.append(
+                        f"{target} 索引里的内容与归档不一致，按归档重建也没成功"
+                        f"（{_describe(exc)}）；本次不登记活动后端。"
+                        "执行 `python -m rag4prefa rebuild` 修好后再启动"
+                    )
+                    return
+                self.notes.append(
+                    f"{target} 索引里的内容与归档不一致（条数可能相同，id 不同），"
+                    f"已按归档重建 {moved} 条"
+                )
+            set_vector_backend(self.conn, target)
+            if recorded and recorded != target:
+                self.notes.append(f"活动后端由「{recorded}」切换为「{target}」")
+            return
+
+        # 归档为空：没有内容可以互相比对，但"空归档 + 非空索引"必须当成异常——
+        # 那说明这条索引属于另一份数据，把它登记下来只会让每次检索都命中没有正文的向量。
+        try:
+            leftover = self.store.count()
+        except Exception:  # pragma: no cover - 后端不可用时按"读不到"处理
+            leftover = 0
+        if leftover:
+            self.notes.append(
+                f"归档里没有任何片段，而 {target} 索引里还有 {leftover} 条向量"
+                "（上一版留下的）；未登记为活动后端。"
+                "执行 `python -m rag4prefa rebuild` 清掉这些残留后再启动"
+            )
+            return
+        set_vector_backend(self.conn, target)
+        if recorded and recorded != target:
+            self.notes.append(f"活动后端由「{recorded}」切换为「{target}」（库为空，无需迁移）")
+
     def maybe_promote(self) -> bool:
         """启动时若因维度未知回退到 numpy，首次入库拿到维度后迁回 Milvus。
 
@@ -168,9 +258,9 @@ class Services:
             return False
         self.store = milvus
         self.fell_back = False
-        # 把"活动后端"落库：别的进程（CLI、另一个服务实例）再打开时以这条为准，
-        # 不会出现一个进程写 numpy、另一个查 Milvus 的分裂。
-        set_vector_backend(self.conn, "milvus")
+        # 活动后端已经由 `rebuild_store` 在"逐 id 校验通过 + 标记回 ready"的同一个
+        # 事务里登记好了（`set_index_meta(backend=...)`）。这里再写一次属于重复，
+        # 而且会在两个事务之间留下"索引已换、后端没换"的窗口。
         self.notes = [n for n in self.notes if "Milvus 不可用" not in n]
         self.notes.append(f"已把 {moved} 条归档向量迁移到 Milvus")
         return True
@@ -243,28 +333,46 @@ class Services:
 def open_store(
     settings: Settings, conn: sqlite3.Connection
 ) -> tuple[VectorStore, list[str], bool]:
-    """按配置打开向量后端。
+    """按配置**打开**一个向量后端。
 
-    **`auto` 也不是"每个进程自己试"**：库里若已经确认在用 Milvus（`meta.vector_backend`），
-    这次就必须打开 Milvus，打不开就报错。理由是回退不报错、后果却很难看——本进程
-    退回 numpy 后，写入只更新"归档 + numpy 索引"，而在线服务的 Milvus 索引停在旧版，
-    归档与 Milvus 条数一致时连计数校验都发现不了。显式失败至少让人知道该修哪里。
+    三件事分开，是这一层最重要的一条（2026-10-24 第十五轮复审）：
 
-    还没有确认过后端时（首次部署）才允许"试 Milvus，不行回退 numpy"——那时两边都还
-    没有索引，回退不会分裂任何东西。
+    1. **打开**（这里）——只证明"这个后端能用"；
+    2. **确认**（`Services.settle_backend`）——证明"它装的就是归档这一套"之后才登记；
+    3. **换后端**（`rebuild_store`）——从归档整体重建到目标后端，校验通过才改登记。
+
+    以前把 1 和 2 合成一步：只要 Milvus 能打开就写 `meta.vector_backend`。于是"遗留的
+    旧集合"被当成当前版本——它与归档可以条数相同、chunk_id 全不同，日常计数校验一条也
+    发现不了。
+
+    **`auto` 尊重库里已经定下的选择**：库记着 numpy，说明有人显式切过去过（或上次是在
+    没有 Milvus 的环境里确认的）。这时再"看到 Milvus 能开就切回去"，等于每次重启都
+    推翻上一次的决定。只有显式 `R4P_VECTOR_BACKEND=milvus` 才是换回去。
+
+    **`auto` 也不是"每个进程自己试"**：库里若已经确认在用 Milvus，这次就必须打开
+    Milvus，打不开就报错。理由是回退不报错、后果却很难看——本进程退回 numpy 后，
+    写入只更新"归档 + numpy 索引"，而在线服务的 Milvus 索引停在旧版。显式失败至少让人
+    知道该修哪里。还没有确认过后端时（首次部署）才允许"试 Milvus，不行回退 numpy"。
     """
     notes: list[str] = []
     dim = settings.embedding_dim or int(get_meta(conn, "embedding_dim") or 0)
     recorded = get_vector_backend(conn)
-    if settings.vector_backend in ("auto", "milvus"):
+    want_milvus = settings.vector_backend == "milvus" or (
+        settings.vector_backend == "auto" and recorded != "numpy"
+    )
+    if want_milvus:
         try:
             # 传 conn：让"打开索引"（含崩溃恢复）走维护锁。构造函数本身只连客户端，
             # 有副作用的恢复动作由它自己按锁定边界执行——见 MilvusStore._open。
             store = MilvusStore(
                 settings.milvus_uri, settings.milvus_collection, dim, conn=conn
             )
-            if recorded != "milvus":
-                set_vector_backend(conn, "milvus")
+            # 这里**不登记**活动后端：`settle_backend()` 逐 id 核对过才会写。
+            if recorded and recorded != "milvus":
+                notes.append(
+                    f"库里记录的活动后端是「{recorded}」，本次按配置打开了 Milvus；"
+                    "在核对过它装的确实是归档这一套之前，不会把它登记为活动后端"
+                )
             return store, notes, False
         except BackendUnavailable as exc:
             if settings.vector_backend == "milvus" or recorded == "milvus":
@@ -277,8 +385,9 @@ def open_store(
                     f"{exc}。索引的活动后端是 Milvus（{why}），"
                     "不回退到 numpy：回退后本进程的写入只更新 numpy 索引，"
                     "在线服务查的 Milvus 会停在旧版，而两边条数一致时查不出来。"
-                    "按上面的报错修好 Milvus；确认要换后端，就把它显式改成 numpy 并在启动后"
-                    "执行 `python -m rag4prefa rebuild` 重建一份 numpy 索引。"
+                    "按上面的报错修好 Milvus；确认要换后端，就把它显式改成 numpy，"
+                    "然后在启动后执行 `python -m rag4prefa rebuild` 重建一份 numpy 索引"
+                    "（这条命令会把活动后端一并改成 numpy）。"
                 )
                 # "维度未知"只是 Milvus 打不开的众多原因之一。路径不合法、缺 pymilvus、
                 # 中文路径，报的也是这一条——一律往"改维度"上引，会让人在不相关的
@@ -347,7 +456,7 @@ def build_services(
 
     reranker: Reranker = RemoteReranker(settings) if settings.rerank_url else NoopReranker()
 
-    return Services(
+    services = Services(
         settings=settings,
         conn=conn,
         store=store,
@@ -357,6 +466,10 @@ def build_services(
         notes=notes,
         fell_back=fell_back,
     )
+    # 打开 ≠ 确认：能在集合打开只说明它存在，说明不了它装的是归档这一套。
+    # 这一步在需要时会在维护锁里从归档重建，然后才把后端登记进 meta。
+    services.settle_backend()
+    return services
 
 
 def default_upload_dir(settings: Settings) -> Path:
