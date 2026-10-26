@@ -34,7 +34,7 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | 截至 2026-10-26 交接为 **`c828feb`**（"把四个边界补上"，第十四轮修复），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
+| 当前提交 | 截至 2026-10-26 交接为 **`daeb605`**（"打开不等于确认"，第十五轮修复），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
 | 上一轮基线 | `c828feb`（第十五轮复审基于它提出问题） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
