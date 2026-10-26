@@ -44,8 +44,8 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | **`8260e13`**（"未确认就是不能查：把准入从一条路由扩到所有入口"，第十七轮修复），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
-| 上一轮基线 | `9d27eb1` / 代码基线 `75e49ce`（第十七轮复审基于它提出问题） |
+| 当前提交 | **`6f69c0c`**（"补 PDF 通道：把「章节结构」从排版反推出来"，第十八轮），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
+| 上一轮基线 | `8260e13` / 文档 `5101380`（索引一致性阶段的收尾，第十七轮复审通过） |
 | CI | `.github/workflows/ci.yml`：`8260e13` 上 Actions 全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest，41 秒） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
