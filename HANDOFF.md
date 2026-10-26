@@ -44,9 +44,9 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | **`594fcc5`**（"拿真实工程文档去撞 PDF 解析：没被支持的是「乱码」，不是「格式」"，第十九轮），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
-| 上一轮基线 | `6f69c0c` / 文档 `4dedb50`（PDF 通道第一版，第十八轮） |
-| CI | `.github/workflows/ci.yml`：`594fcc5` 与 `4dedb50` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest） |
+| 当前提交 | **`50547ac`**（"README 补上评估集说明：两份数据集不能混成一个平均数"，第二十一轮收尾），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
+| 上一轮基线 | `594fcc5`（PDF 解析撞真实文档）→ `f859f90`（评估集建成）→ `50547ac`（评估说明） |
+| CI | `.github/workflows/ci.yml`：`50547ac`、`28fd78f`、`594fcc5` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest 267 项） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -563,19 +563,29 @@ LLM 返回带 `[1]` 引用的答案。embedding 与 LLM 分属硅基流动国际
 
 ### P1 · 功能缺口
 
-**P1-1　评估集扩充到 30~50 条**
-现在 `eval/dataset.example.jsonl` 只有 3 条数据。没有足量标注，Recall/MRR 数字没有说服力，
-而这是课题验收要用的。
+**P1-1　评估集扩充到 30~50 条　→ 2026-10-26 已完成（提交 `f859f90`）**
+交付物：`eval/dataset.jsonl`（30 题，贴近原文术语）、`eval/dataset.paraphrase.jsonl`
+（10 题，只描述意图、不用原文术语）、`eval/corpus.json`（语料指纹）、
+`scripts/relabel_eval.py`（按锚点重算标注）、`tests/test_eval_dataset.py`（3 项守护）。
 - 标注方式：**优先 `gold_chunk_ids`**（评价单位就是 chunk，最不容易歧义）；
   图省事可以写 `gold_snippets`，脚本会解析成包含该片段的全部 chunk——但要注意，
   一个片段在语料里出现得越分散，gold 集合越大，Recall 越难满分，这是刻意的保守处理。
-- 验收：`python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5` 输出
-  dense / sparse / hybrid / rerank 四行对照表；报告末尾应无"数据问题"段落。
-- 注意 `rerank` 一栏在没有配 `R4P_RERANK_URL` 时等于 hybrid（NoopReranker）。
+- 实测（纯 BM25 / `--top-k 5`）：基础 30 题 **Recall@5 = 0.95**，改写 10 题 **0.50**。
+  基础集在稀疏检索上就接近满分，说明它测的是关键词覆盖，不是语义检索——所以
+  **两份必须分开报**，合成一个平均数会把"语义检索没提升"这个真实结论抹掉。
+- 语料指纹 + 正文锚点解决的是「解析器一改 `chunk_id` 全变、旧标注静默失效」：
+  `chunk_id` 是内容寻址的，章节路径改一个字 id 就全换，评估照样跑完、只是 Recall 莫名变低。
+  现在 `relabel_eval.py` 先校验 `eval/corpus.json` 的 `ids_sha`，不一致就要求重标。
+- **未完成的部分**：dense / hybrid / rerank 三行还没有真实向量跑过（本机 `.env` 里
+  `R4P_EMBEDDING_API_KEY` 为空）。Key 到位后要重跑两份数据集，四行对照表才算齐。
+- 注意 `rerank` 一栏在没有配 `R4P_RERANK_URL` 时等于 hybrid（NoopReranker），
+  报告里要写明"未启用重排"，否则读者会以为重排没有收益。
 
 **P1-1b　正式评测集与模型版本要一起锁定**
 报告里必须记下：embedding 模型名、维度、chunk 参数（`chunk_max_tokens` / `chunk_min_tokens`）、
 `recall_k`、`rrf_k`。换了其中任何一个，前后两次数值不可直接比较。
+`eval/corpus.json` 已经落盘了 chunk 参数与每份文档的 `chunks` / `ids_sha`，`rrf_k` 与
+`recall_k` 仍要从配置里抄进报告——它们不在指纹覆盖范围内，改了不会让标注失效，只会让数字悄悄变。
 
 **P1-2　Dockerfile + GitHub Actions CI**（CI 部分 2026-10-26 已完成，Docker 仍未做）
 用户上次已表示可以补。CI 只跑 `pytest` + `ruff`（全离线，无需密钥）。
