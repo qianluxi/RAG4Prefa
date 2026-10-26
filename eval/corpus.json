@@ -1,0 +1,21 @@
+{
+ "chunk_max_tokens": 480,
+ "chunk_min_tokens": 80,
+ "documents": {
+  "上海市装配式建筑单体预制率和装配率计算细则.pdf": {
+   "project": "装配式规范",
+   "chunks": 13,
+   "ids_sha": "53bc8583af492a92"
+  },
+  "新建闵行区MHPO-1005单元14-07、14-09地块商品住宅项目审查意见单（暖通绿建装配式）.docx": {
+   "project": "装配式规范",
+   "chunks": 1,
+   "ids_sha": "b3b12798249c9a9b"
+  },
+  "YJK装配式结构设计软件用户手册.pdf": {
+   "project": "软件手册",
+   "chunks": 301,
+   "ids_sha": "426a7997b262941c"
+  }
+ }
+}
