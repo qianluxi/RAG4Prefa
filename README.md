@@ -1,6 +1,6 @@
 # RAG4Prefa
 
-面向工程课题文档的检索问答系统：把 `.docx` 设计文档 / 申报材料 / 规范按章节建成知识库，
+面向工程课题文档的检索问答系统：把 `.docx` / `.pdf` 设计文档 / 申报材料 / 规范按章节建成知识库，
 用**稠密向量 + BM25 混合召回**找依据，再让大模型**流式**给带引用的回答。
 
 > 这是对 `qianluxi/milvus`（v2.8.6）的功能等价重写：同样能"上传文档 → 按项目/年份筛选 → 提问 → 得到答案"，
@@ -16,7 +16,8 @@
 | 统计数字恒为 0（读的键没人写） | **SQLite 是唯一事实**，计数一律 `COUNT(*)` |
 | 多人使用时筛选条件互相串 | 筛选条件随请求传入，无全局状态 |
 | "流式"其实是先跑完再逐词播放 | 大模型 token 流直通 SSE |
-| 绑死 Windows + Word，进不了容器 | 纯 python-docx 解析，Linux/Docker 可跑 |
+| 绑死 Windows + Word，进不了容器 | 纯 python-docx / pymupdf 解析，Linux/Docker 可跑 |
+| pdf 没有样式表，章节结构全丢 | 按字号 / 加粗 / 行距反推层级；编号只定级，页眉页脚与页码剔除 |
 | 换模型后新旧向量混在一个索引里，检索静默变差 | 模型 / 维度 / 归档 / 后端条数四方校验，不一致就拒绝写入与检索 |
 | 更新文档时 embedding 失败，旧版本被顺手删掉 | 先算完新向量、**先写索引再切事实**；失败时撤回新增向量，旧版本照常可检索 |
 | 索引残缺时系统照常返回"看起来正常"的答案 | `/api/chat` 在开流之前就 503；`/api/search` 明确报错；`verify` 能逐 id 定位差异 |
@@ -64,7 +65,7 @@ api.py        FastAPI 路由（只做协议转换）
   ├── filters.py      问题 → Filter（规则优先，可单测）
   ├── chunking.py     标题树分块
   ├── repo.py         全部 SQL
-  └── adapters/       embed / llm / vectors / rerank / parsers/docx
+  └── adapters/       embed / llm / vectors / rerank / parsers（docx / pdf / 共用标题规则）
 ```
 
 **数据分层**：SQLite 存事实（项目、文档、片段、任务、向量归档），Milvus 只是可重建的索引。
@@ -88,7 +89,7 @@ api.py        FastAPI 路由（只做协议转换）
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 后端、索引维度、模型一致性、缺失的凭据（不再静默降级） |
-| POST | `/api/projects/{name}/documents` | 上传 docx（multipart）→ `job_id` |
+| POST | `/api/projects/{name}/documents` | 上传 docx / pdf（multipart）→ `job_id` |
 | GET | `/api/jobs/{id}` | 入库进度与逐文件结果 |
 | GET | `/api/projects` | 项目列表（文档数/片段数为真实值） |
 | GET | `/api/projects/{name}` | 详情 + 章节分布 + LLM 摘要（带缓存） |
@@ -101,7 +102,7 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 244 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
+pytest -q                                  # 255 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
 python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 ```
 
@@ -189,6 +190,11 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`r
 ## 已知局限
 
 - 解析是基于排版结构的启发式：报表类文档正文在表格里，已支持；但图片、文本框内的文字不提取。
+- **PDF 只认文字层，不做 OCR**：扫描件（整页是图片）会在解析阶段明确报错并说明原因，
+  不会静默入库一份空文档。要支持扫描件得接 OCR 服务，与"不引入本地模型"的约束冲突，暂不做。
+- **PDF 的章节层级是反推出来的**：依据字号、加粗、行距与编号，不是文档自带的样式表。
+  标题与正文同字号、又不加粗、还不用编号的排版，会退化成一节（内容不丢，只是没有层级）。
+  表格识别依赖框线，无边框的"空格对齐表"会被当成正文。
 - token 用字/词估算而非真实 tokenizer，分块边界与模型实际计数有误差（阈值留了余量）。
 - 未做多轮对话改写：追问需要带上上下文关键词，否则召回会偏。
 - 单进程设计（SQLite + 进程内任务）。要多副本时把 SQLite 换成 Postgres、任务换队列，接口层无需改动。

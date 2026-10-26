@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from . import admin, ask, concurrency, consistency, ingest, repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
+from .adapters.parsers import SUPPORTED_SUFFIXES
 from .adapters.vectors import BackendUnavailable, StoreRef
 from .concurrency import MaintenanceBusy
 from .consistency import IndexMismatch
@@ -351,13 +352,17 @@ def create_app(services: Services | None = None) -> FastAPI:
         # 真正的准入仍是 `ingest_batch` 里的维护锁，被拒时任务消息会说明文件已保存。
         saved: list[Path] = []
         for upload in files:
-            if not upload.filename or not upload.filename.lower().endswith(".docx"):
+            if not upload.filename:
+                continue
+            if Path(upload.filename).suffix.lower() not in SUPPORTED_SUFFIXES:
                 continue
             path = target / _safe_name(upload.filename)
             path.write_bytes(await upload.read())
             saved.append(path)
         if not saved:
-            raise HTTPException(400, "没有可处理的 .docx 文件")
+            raise HTTPException(
+                400, f"没有可处理的文件（只接受 {' / '.join(SUPPORTED_SUFFIXES)}）"
+            )
 
         job_id = uuid.uuid4().hex[:12]
         # 项目刻意不在这里建：它一旦落库，用户在列表里就会看到"已经导入过"。

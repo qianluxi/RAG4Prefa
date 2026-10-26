@@ -134,7 +134,7 @@
     <div class="messages" id="messages">
       <div class="msg assistant">
         <div class="who">RAG4Prefa</div>
-        <div class="bubble">先在「项目管理」上传 docx 建立索引，然后在这里提问。<br />
+        <div class="bubble">先在「项目管理」上传 docx / pdf 建立索引，然后在这里提问。<br />
         例如：「悬挑构件的缓粘结预应力施工要点是什么？」「2024 年以后的超限报告里关于陶土砖饰面有哪些做法？」</div>
       </div>
     </div>
@@ -157,13 +157,13 @@
       <tbody id="project-rows"></tbody>
     </table>
 
-    <h2 style="margin-top:18px;font-size:12px;color:var(--muted)">上传 docx</h2>
+    <h2 style="margin-top:18px;font-size:12px;color:var(--muted)">上传文档</h2>
     <label>项目名称</label><input id="up-name" placeholder="如：立体聚落大悬挑" />
     <div class="row">
       <div style="flex:1"><label>项目编号</label><input id="up-code" placeholder="如：kc2026" /></div>
       <div style="flex:1"><label>起始年份</label><input id="up-year" type="number" placeholder="2024" /></div>
     </div>
-    <label>选择文件（可多选）</label><input id="up-files" type="file" accept=".docx" multiple />
+    <label>选择文件（可多选）</label><input id="up-files" type="file" accept=".docx,.pdf" multiple />
     <button class="primary" id="upload" style="margin-top:12px">开始入库</button>
     <div class="job" id="job"></div>
   </div>
@@ -473,7 +473,7 @@ async function upload() {
   const name = $("up-name").value.trim();
   const files = $("up-files").files;
   if (!name) return alert("请填写项目名称");
-  if (!files.length) return alert("请选择 docx 文件");
+  if (!files.length) return alert("请选择 docx 或 pdf 文件");
 
   const form = new FormData();
   for (const file of files) form.append("files", file);

@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from . import admin, ask, concurrency, consistency, ingest, repo
+from .adapters.parsers import SUPPORTED_SUFFIXES
 from .adapters.vectors import BackendUnavailable, RebuildError, StoreRef
 from .concurrency import MaintenanceBusy
 from .config import get_settings
@@ -54,11 +55,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     for target in args.paths:
         path = Path(target)
         if path.is_dir():
-            files.extend(sorted(p for p in path.glob("*.docx")))
-        elif path.suffix.lower() == ".docx":
+            # 目录导入按扩展名收集：pdf 与 docx 混放在一个目录里是常态
+            for suffix in SUPPORTED_SUFFIXES:
+                files.extend(sorted(path.glob(f"*{suffix}")))
+        elif path.suffix.lower() in SUPPORTED_SUFFIXES:
             files.append(path)
     if not files:
-        print("没有找到 .docx 文件", file=sys.stderr)
+        print(f"没有找到可处理的文件（{' / '.join(SUPPORTED_SUFFIXES)}）", file=sys.stderr)
         return 2
 
     services = build_services()
@@ -291,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="检查依赖与配置")
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("ingest", help="导入 docx（文件或目录）")
+    p = sub.add_parser("ingest", help="导入文档（docx / pdf，文件或目录）")
     p.add_argument("paths", nargs="+")
     p.add_argument("--project", required=True)
     p.add_argument("--code", default="")

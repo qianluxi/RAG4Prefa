@@ -9,6 +9,9 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "python-docx>=1.1",
+    # pdf 解析。**必须锁 <2**：pymupdf 2.x 会把 onnxruntime 与版面分析模型
+    # （pymupdf-layout）一并装进来，与本项目"不引入本地模型"的约束冲突。
+    "pymupdf>=1.24,<2",
     "python-multipart>=0.0.12",
     "openai>=1.54",
     "httpx>=0.27",

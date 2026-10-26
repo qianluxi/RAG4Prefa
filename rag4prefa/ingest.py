@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import consistency, repo
 from .adapters.embed import Embedder
-from .adapters.parsers.docx import parse_docx
+from .adapters.parsers import parse_document
 from .adapters.vectors import (
     VectorItem,
     VectorStore,
@@ -107,7 +107,7 @@ def _ingest_locked(
     doc_year: int | None = None,
     force: bool = False,
 ) -> FileOutcome:
-    """把一个 docx 变成可检索的片段。
+    """把一份文档（docx / pdf）变成可检索的片段。
 
     步骤顺序是按"失败后用户还剩什么"排的，不是按"最短代码路径"排的：
 
@@ -173,7 +173,7 @@ def _ingest_locked(
             return _update_doc_year(conn, store, doc_id, filename, doc_year, existing)
 
         stage = "解析与分块"
-        sections = parse_docx(path)
+        sections = parse_document(path)
         chunks = build_chunks(
             sections,
             doc_id,
@@ -349,7 +349,7 @@ def _update_doc_year(
 ) -> FileOutcome:
     """内容没变、只改了年份：不重算向量，只把三处过滤列对齐。
 
-    为什么不走"重新入库一遍"：那要重新解析 docx、重算 embedding（有缓存也只是少花钱）、
+    为什么不走"重新入库一遍"：那要重新解析原文、重算 embedding（有缓存也只是少花钱）、
     把一份本来正确的索引整表重写一遍——为一个只影响过滤的整数付这些代价，而且重写
     过程还有失败窗口。这条路径一个向量都不用算，只覆盖该文档那几十条。
 
