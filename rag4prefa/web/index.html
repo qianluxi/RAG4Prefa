@@ -60,6 +60,39 @@
   .msg.user .bubble { background: #e8f0fe; }
   .msg.assistant .bubble { background: #fff; border: 1px solid var(--line); }
   .cite { color: var(--brand); cursor: pointer; font-size: 11px; vertical-align: super; }
+  /* 助手气泡里装的是渲染后的 Markdown（块级元素）。这里必须把 pre-wrap 关掉，
+     否则源码里的换行会和 <p>/<li> 的间距叠成双倍空行；用户气泡仍按原文换行。 */
+  .msg.assistant .bubble { display: block; }
+  .bubble.md { white-space: normal; }
+  .bubble.md > :first-child { margin-top: 0; }
+  .bubble.md > :last-child { margin-bottom: 0; }
+  .bubble.md p { margin: 0 0 8px; }
+  .bubble.md h3, .bubble.md h4, .bubble.md h5, .bubble.md h6 { margin: 13px 0 6px; line-height: 1.35; color: var(--ink); }
+  .bubble.md h3 { font-size: 15px; }
+  .bubble.md h4 { font-size: 14px; }
+  .bubble.md h5, .bubble.md h6 { font-size: 13px; color: var(--muted); }
+  .bubble.md ul, .bubble.md ol { margin: 4px 0 8px; padding-left: 22px; }
+  .bubble.md li { margin: 2px 0; }
+  .bubble.md li > ul, .bubble.md li > ol { margin: 2px 0 2px; }
+  .bubble.md strong { font-weight: 600; }
+  .bubble.md em { font-style: italic; color: #414b5f; }
+  .bubble.md code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px;
+    background: #f1f3f7; border-radius: 4px; padding: 1px 4px;
+  }
+  .bubble.md pre {
+    margin: 6px 0 8px; padding: 8px 10px; background: #f1f3f7;
+    border-radius: 6px; overflow-x: auto; line-height: 1.5;
+  }
+  .bubble.md pre code { background: none; padding: 0; font-size: 12px; }
+  .bubble.md blockquote {
+    margin: 6px 0 8px; padding: 2px 10px; border-left: 3px solid var(--line); color: var(--muted);
+  }
+  .bubble.md hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+  .bubble.md a { color: var(--brand); }
+  .bubble.md table { margin: 6px 0 10px; font-size: 12.5px; }
+  .bubble.md th, .bubble.md td { border: 1px solid var(--line); padding: 5px 8px; vertical-align: top; }
+  .bubble.md th { background: #f7f8fa; font-weight: 600; color: var(--ink); }
   .cards { display: grid; gap: 6px; margin-top: 8px; }
   .card {
     border: 1px solid var(--line); border-left: 3px solid var(--brand); border-radius: 6px;
@@ -401,7 +434,7 @@ async function ask() {
 
   const botMsg = el("div", "msg assistant");
   botMsg.appendChild(el("div", "who", "RAG4Prefa"));
-  const bubble = el("div", "bubble", "");
+  const bubble = el("div", "bubble md", "");
   botMsg.appendChild(bubble);
   const cards = el("div", "cards");
   botMsg.appendChild(cards);
@@ -432,7 +465,7 @@ async function ask() {
           (data.rerank_error ? ` · 重排失败：${data.rerank_error}` : "");
       } else if (event === "token") {
         answer += data.text || "";
-        bubble.innerHTML = formatAnswer(answer);
+        bubble.innerHTML = renderAnswer(answer);
         $("messages").scrollTop = $("messages").scrollHeight;
       } else if (event === "citations") {
         renderCitations(cards, data.items || []);
@@ -458,9 +491,166 @@ function escapeHtml(text) {
   return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function formatAnswer(text) {
-  return escapeHtml(text).replace(/\[(\d+)\]/g, '<span class="cite" data-n="$1">[$1]</span>');
+/* MD-RENDER-START ── 答案渲染：一个够用的 Markdown 子集 ──────────────
+   模型是按 Markdown 组织答案的，但这里早期只把 [n] 换成角标、其余原样输出，
+   于是 **粗体**、* 列表、1. 编号全以源码形态糊成一段，看不出层次。
+
+   为什么不引 marked.js：页面是单文件、离线可用、不走 CDN。答案里真正会出现的
+   语法就这几种，自己实现反而可控：
+     块级  围栏代码块 / # 标题 / - * + 无序 / 1. 有序（支持两级嵌套）/ > 引用 /
+           --- 分隔线 / 段落
+     行内  `代码` / **粗体** / *斜体* / [文字](链接) / [n] 引用角标
+
+   安全边界：**先转义再解析**。模型输出是不可信文本，& < > " ' 一律先变实体，
+   之后插入的标签只可能来自本函数自己——模型吐出 <script> 也只会显示成文本。
+
+   流式：每个 token 拿全文重渲一次（答案只有几 KB，代价可忽略）。未闭合的 **
+   会暂时显示成源码，闭合的那个 token 到达后自然恢复。
+   ─────────────────────────────────────────────────────────────── */
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+const MD_HEADING = /^(#{1,6})\s+(\S.*)$/;
+const MD_FENCE = /^```/;
+const MD_HR = /^(?:-{3,}|\*{3,}|_{3,})$/;
+const MD_ORDERED = /^\d{1,2}[.)]\s+(.+)$/;
+const MD_BULLET = /^[-*+]\s+(.+)$/;
+
+function mdInline(text) {
+  // 行内代码先摘出来，免得里面的 * 和 [n] 被当成强调/角标
+  const codes = [];
+  let out = text.replace(/`([^`\n]+)`/g, (_m, code) => {
+    codes.push(code);
+    return `\u0000${codes.length - 1}\u0000`;
+  });
+
+  // 链接必须排在 [n] 之前，否则 [2](https://…) 会被拆成角标 + 裸地址
+  out = out.replace(/\[([^\]\n]+?)\]\((https?:\/\/[^\s)]+)\)/g,
+    (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+
+  out = out.replace(/\*\*([^\n]+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/__([^\n_]+?)__/g, "<strong>$1</strong>");
+  // 斜体两侧不贴单词字符，避免把 3*4*5 这种算式吃掉
+  out = out.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?[^\s*])\*(?![\w*])/g, "$1<em>$2</em>");
+  out = out.replace(/\[(\d+)\]/g, '<span class="cite" data-n="$1">[$1]</span>');
+
+  return out.replace(/\u0000(\d+)\u0000/g, (_m, i) => `<code>${codes[Number(i)]}</code>`);
+}
+
+function renderList(items) {
+  // items 按行序排列成 {depth, tag, text}：depth 变大就开一层嵌套，变小就回上层。
+  // 递归比维护标签栈短，也不会漏闭合。
+  let pos = 0;
+  const build = (depth, tag) => {
+    let html = `<${tag}>`;
+    let open = false;
+    while (pos < items.length && items[pos].depth >= depth) {
+      const it = items[pos];
+      if (it.depth > depth) {
+        if (!open) break; // 没有父项可挂，交给外层当同级处理
+        html += build(it.depth, it.tag);
+        continue;
+      }
+      if (open) html += "</li>";
+      pos += 1;
+      html += `<li>${mdInline(it.text)}`;
+      open = true;
+    }
+    if (open) html += "</li>";
+    return html + `</${tag}>`;
+  };
+  return build(items[0].depth, items[0].tag);
+}
+
+function renderAnswer(text) {
+  const lines = escapeHtml(text || "").replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  let para = [];
+  let quote = [];
+  let list = null;
+
+  // 单个换行在 Markdown 里是软换行（渲染成空格），但中文答案里通常就是"换行"，
+  // 所以保留成 <br>：既不额外加段落间距，也不会把两行粘成一行。
+  const inlineBlock = (tag, rows) =>
+    `<${tag}>${mdInline(rows.join("\n")).replace(/\n/g, "<br>")}</${tag}>`;
+
+  const flushPara = () => { if (para.length) { out.push(inlineBlock("p", para)); para = []; } };
+  const flushQuote = () => { if (quote.length) { out.push(inlineBlock("blockquote", quote)); quote = []; } };
+  const flushList = () => { if (list) { out.push(renderList(list)); list = null; } };
+  const flush = () => { flushPara(); flushQuote(); flushList(); };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i];
+    const line = raw.trim();
+
+    if (!line) { flush(); continue; }
+
+    if (MD_FENCE.test(line)) {
+      flush();
+      const lang = line.slice(3).trim();
+      const buf = [];
+      for (i += 1; i < lines.length && !MD_FENCE.test(lines[i].trim()); i += 1) buf.push(lines[i]);
+      out.push(`<pre><code${lang ? ` data-lang="${lang}"` : ""}>${buf.join("\n")}</code></pre>`);
+      continue; // i 已停在结束围栏上，循环末尾的 ++ 正好跳过它
+    }
+
+    const h = MD_HEADING.exec(line);
+    if (h) {
+      flush();
+      const level = Math.min(h[1].length + 2, 6); // # 从 h3 起，不跟页面自己的 h1/h2 抢
+      out.push(`<h${level}>${mdInline(h[2])}</h${level}>`);
+      continue;
+    }
+
+    if (MD_HR.test(line)) { flush(); out.push("<hr>"); continue; }
+
+    // 表格：至少两行，第二行是 |---|:--:| 这种分隔行。只认竖线表，不认 HTML 表。
+    if (/^\|.*\|$/.test(line) && i + 1 < lines.length && /^\|[\s:|-]+\|$/.test(lines[i + 1].trim())) {
+      flush();
+      const cell = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const head = cell(line);
+      const body = [];
+      for (i += 1; i + 1 < lines.length && /^\|.*\|$/.test(lines[i + 1].trim()); i += 1) {
+        body.push(cell(lines[i + 1]));
+      }
+      const th = head.map((c) => `<th>${mdInline(c)}</th>`).join("");
+      const tr = body.map((r) => `<tr>${r.map((c) => `<td>${mdInline(c)}</td>`).join("")}</tr>`).join("");
+      out.push(`<table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`);
+      continue;
+    }
+
+    if (line.startsWith("&gt;")) { // 转义之后 > 变成了 &gt;
+      flushPara();
+      flushList();
+      quote.push(line.replace(/^&gt;\s?/, ""));
+      continue;
+    }
+
+    const ordered = MD_ORDERED.exec(line);
+    const bullet = ordered ? null : MD_BULLET.exec(line);
+    if (ordered || bullet) {
+      flushPara();
+      flushQuote();
+      const indent = raw.length - raw.replace(/^\s+/, "").length;
+      if (!list) list = [];
+      list.push({
+        depth: Math.min(Math.floor(indent / 2), 2),
+        tag: ordered ? "ol" : "ul",
+        text: ordered ? ordered[1] : bullet[1],
+      });
+      continue;
+    }
+
+    flushQuote();
+    flushList();
+    para.push(line);
+  }
+  flush();
+  return out.join("");
+}
+/* MD-RENDER-END */
 
 function renderCitations(container, items) {
   container.innerHTML = "";
