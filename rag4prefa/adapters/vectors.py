@@ -43,6 +43,19 @@ NON_ASCII_PATH_HINT = (
 )
 
 
+def _normalize_uri(uri: str) -> str:
+    """把 Milvus 地址归一成可以"比字面量"的形式。
+
+    两种形态要分开处理：Lite 是本地文件路径（`./data/vectors.db` 与 `data/vectors.db`
+    指的是同一个文件，只有绝对路径能比），standalone 是 URL（对 URL 做 `abspath` 会把
+    它改成一个本地路径，两个真 URL 反而可能"看起来相同"）。
+    """
+    text = str(uri).strip()
+    if "://" in text:
+        return text.rstrip("/").lower()
+    return os.path.abspath(text)
+
+
 def _reject_non_ascii_uri(uri: str) -> None:
     """在开集合之前就拒绝，别让人在建索引那一刻才收到一条看不懂的 faiss 报错。
 
@@ -75,7 +88,11 @@ class VectorStore(Protocol):
     name: str
     dim: int
     notes: list[str]
+    # 身份 = 类型 + **实际存储位置**。`name` 只说类型：两个进程共用一份 SQLite、却各自
+    # 配了不同的 Milvus 地址或集合名时，两边都叫 "milvus"。
+    identity: str
 
+    def probe(self) -> None: ...
     def upsert(self, items: Sequence[VectorItem]) -> None: ...
     def delete(self, chunk_ids: Sequence[str]) -> None: ...
     def search(
@@ -191,6 +208,25 @@ class NumpyStore:
     """
 
     name = "numpy"
+
+    @property
+    def identity(self) -> str:
+        """numpy 后端的"存储位置"就是这份 SQLite 本身。
+
+        共用同一个库文件的进程必然指向同一份向量，所以这里没有第二个位置可填——
+        写成常量是**结论**，不是省事：它让"两个进程打开的是不是同一份索引"这个问题
+        在 numpy 上永远只有一个答案。
+        """
+        return "numpy"
+
+    def probe(self) -> None:
+        """numpy 后端没有"打开"这一步：索引就是 `vectors` 表的缓存，构造完就可用。
+
+        归档暂时读不稳（`SnapshotUnstable`）时也**不在这里拒绝**：那是"别人正在写"，
+        下一次 `count()`/`search()` 会自己重载。把它当成"后端不可用"会让一次正常的
+        并发写入变成需要重启的故障。
+        """
+        return None
 
     def __init__(self, conn: sqlite3.Connection, dim: int) -> None:
         self._conn = conn
@@ -461,6 +497,7 @@ class MilvusStore:
 
         _reject_non_ascii_uri(os.path.join(str(uri), collection))
         self._collection = collection
+        self._uri = str(uri)
         self.dim = dim
         self.notes: list[str] = []
         self._ready = False
@@ -471,6 +508,23 @@ class MilvusStore:
             raise BackendUnavailable(f"无法打开 Milvus 存储 {uri}: {exc}") from exc
 
         self._open(conn)
+
+    @property
+    def identity(self) -> str:
+        """类型 + 实际存储位置。同名不同集合时，只有它能分出两个进程在不在同一份索引上。"""
+        return f"milvus|{_normalize_uri(self._uri)}|{self._collection}"
+
+    def probe(self) -> None:
+        """证明"这个后端现在真的能回答问题"，而不只是"对象构造出来了"。
+
+        为什么需要（2026-10-24 第十七轮复审）：`_open()` 在发现重建残留却抢不到维护锁
+        时会 `_defer()`，留下一个 `_ready=False` 的对象。它的 `name` 照样是 "milvus"，
+        于是"库里登记的也是 milvus"这条快速路径就把它认成已确认——`/api/health` 报正常，
+        直到某次查询在 `search()` 里才炸出来，而那里通常只处理 `IndexMismatch`。
+        """
+        self._require_ready()
+        # 只 load 过不等于查得动：集合可能已被别的进程换掉。真读一次条数才算数。
+        self._count_of(self._collection)
 
     # ── 打开（有副作用，必须由锁来划边界）────────────────
 

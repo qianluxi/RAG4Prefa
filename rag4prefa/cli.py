@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from . import admin, ask, concurrency, consistency, ingest, repo
-from .adapters.vectors import RebuildError, StoreRef
+from .adapters.vectors import BackendUnavailable, RebuildError, StoreRef
 from .concurrency import MaintenanceBusy
 from .config import get_settings
 from .consistency import IndexMismatch
@@ -62,6 +62,14 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 2
 
     services = build_services()
+    # 与 API 上传同一条准入：后端没确认时不许动事实与索引。放在建任务之前，
+    # 被拒绝时库里连一条"看起来导过了"的记录都不会留下。
+    try:
+        services.assert_write_ready()
+    except IndexMismatch as exc:
+        services.close()
+        print(f"入库未执行：{exc}", file=sys.stderr)
+        return 1
     # 自己也是"正在工作的进程"：占住租约，另一个终端里的 doctor 就不会把这次入库的
     # 任务标成"进程中断"。抢不到说明有服务进程在跑——那时租约在它手上，清理本来也
     # 不会发生，继续入库即可（并发写由维护锁挡住）。
@@ -176,6 +184,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
     services = build_services()
     try:
         filt = Filter(projects=[args.project] if args.project else None)
+        # 与 API 走同一个准入函数，不靠"路由那边已经拦过"。CLI 是这个库的另一个
+        # 使用入口：后端没确认时它同样可能拿一份内容过期的索引回答，而那份答案看起来
+        # 完全正常（2026-10-24 第十七轮复审）。
+        services.assert_query_ready()
         # ask.search 是 async：必须跑在事件循环里，否则拿到的是协程而不是结果
         hits, applied, timings = asyncio.run(
             ask.search(
@@ -213,8 +225,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
             )
             print("\n--- 回答 ---\n" + reply)
         return 0
-    except IndexMismatch as exc:
-        print(f"检索已拒绝：{exc}", file=sys.stderr)
+    except (IndexMismatch, BackendUnavailable) as exc:
+        # 异常消息本身已经写清了"检索已拒绝/已停用"与修法，不再套一层前缀，
+        # 否则终端里会出现「检索未执行：检索已拒绝：……」。
+        print(str(exc), file=sys.stderr)
         return 1
     finally:
         services.close()

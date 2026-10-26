@@ -323,7 +323,75 @@ def health_issues(
     return collect_issues(inspect(conn, store_count=store_count), model, store_dim)
 
 
-def ensure_backend_current(conn: sqlite3.Connection, store) -> None:
+def _identity_of(store) -> str | None:
+    """后端身份。测试里的假后端没有这个属性，那就只比类型（`None` = 不比）。"""
+    value = getattr(store, "identity", None)
+    return str(value) if value else None
+
+
+def library_is_empty(conn: sqlite3.Connection) -> bool:
+    """库里有没有可比对的内容：事实表与归档表都空才算空。
+
+    为什么不用 `chunk_count()` 一个数：片段全在、归档向量全丢时它也是"有内容"，
+    而那种库恰恰最不能当成新库来登记后端（登记就等于承认那份残缺的索引）。
+    """
+    return not repo.chunk_count(conn) and not repo.vector_stats(conn)["count"]
+
+
+def ensure_registered(conn: sqlite3.Connection, store, *, action: str = "本次操作") -> None:
+    """库里已经有内容，就必须有一个被确认过的活动后端。
+
+    为什么"没有登记"本身要算阻断（2026-10-24 第十七轮复审）：登记是**唯一**能证明
+    "这个库的索引检验过"的那条记录（`settle_backend` 逐 id 校验后写、`rebuild_store`
+    重建后写）。历史上这里写的是"没登记就直接放行"，理由是"首次部署还没有值"——
+    可首次部署时库里是空的。一旦库里已经有片段却仍没有登记值，含义就不是"还没配"，
+    而是"那个负责确认的动作跑过、并且失败了"：`settle_backend` 只在证明不了时才
+    什么都不写。此时后端可能与归档条数、模型、维度全都一致，只有向量与过滤列停在
+    上一版——任何计数校验都发现不了，只有这条"谁也没证明过它"的记录能拦住。
+
+    空库照旧放行：没有内容就没有可被误导的检索结果，也就没有要保护的东西。
+    """
+    if repo.get_vector_backend(conn):
+        return
+    if library_is_empty(conn):
+        return
+    mine = _identity_of(store)
+    opened = f"本进程打开的是「{mine}」。" if mine else ""
+    raise IndexMismatch(
+        f"{action}已拒绝：这个库里已经有内容，但从来没有登记过活动后端——"
+        "没有任何一步证明过索引里装的就是归档这一版（条数、模型、维度可以完全一致，"
+        f"向量值和 doc_year 却停在上一版）。{opened}"
+        "执行 `python -m rag4prefa rebuild` 从归档重建一份并登记，然后重启服务"
+    )
+
+
+def _ensure_same_identity(conn: sqlite3.Connection, store, *, action: str) -> None:
+    """类型相同不等于同一个索引：Milvus 的地址与集合名也是身份的一部分。
+
+    两个进程共用一份 SQLite、却各自配了不同的 `R4P_MILVUS_URI` 或
+    `R4P_MILVUS_COLLECTION` 时，两边的 `store.name` 都是 "milvus"，光比名字会一路
+    放行，而它们写的根本不是同一个集合。历史库没有记过身份（`None`）时跳过——
+    下一次登记会补上，不能因为"老库没这个字段"就把正常服务挡在门外。
+    """
+    recorded = repo.get_vector_backend_id(conn)
+    mine = _identity_of(store)
+    if not recorded or not mine or recorded == mine:
+        return
+    raise IndexMismatch(
+        f"{action}已拒绝：库里登记的后端位置是「{recorded}」，本进程打开的是「{mine}」——"
+        "后端类型相同，但不是同一份索引。共用同一个数据库的进程必须使用完全相同的 "
+        "R4P_MILVUS_URI / R4P_MILVUS_COLLECTION；确认要换成这一份，"
+        "用 `python -m rag4prefa rebuild` 从归档重建并登记"
+    )
+
+
+def ensure_backend_current(
+    conn: sqlite3.Connection,
+    store,
+    *,
+    require_registered: bool = True,
+    action: str = "写入",
+) -> None:
     """本进程手里的后端，是不是这个库**当前**记着的那个。
 
     为什么需要单独一道：装配（`open_store`）发生在拿到维护锁**之前**。CLI 装配时
@@ -333,6 +401,11 @@ def ensure_backend_current(conn: sqlite3.Connection, store) -> None:
 
     判断放在维护锁里做：那时不会有第二个进程同时改后端，一次比较就是确定的。
 
+    `require_registered` 只有**全量** reindex 会传 False：它的职责是按事实重算整库向量，
+    连"归档本身坏了、库里从没登记过活动后端"那种局面都要能进去（它成功之后会自己登记）。
+    局部重建覆盖不了全库，没有这个资格；普通入库/删除更没有——它们没有修复能力，
+    在没有证据的库上继续写只会让不一致更深（2026-10-24 第十七轮复审）。
+
     **只有两个地方允许换后端**（它们不调这个函数，改走自己的路径）：
     `rebuild`（从归档整体重建到目标后端，校验通过后连同 `ready` 一起登记）和
     `Services.settle_backend`（启动时确认）。其余动作一律拒绝——拒绝比"用错后端
@@ -340,17 +413,19 @@ def ensure_backend_current(conn: sqlite3.Connection, store) -> None:
     """
     recorded = repo.get_vector_backend(conn)
     if not recorded:
+        if require_registered:
+            ensure_registered(conn, store, action=action)
         return
     actual = getattr(store, "name", recorded)
-    if actual == recorded:
-        return
-    raise IndexMismatch(
-        f"库里记录的向量后端是「{recorded}」，本进程手里的是「{actual}」——"
-        "装配之后活动后端被别的进程换过了。本次没有改动任何数据；"
-        f"重新执行这条命令即可（新进程会装配到当前后端）。"
-        f"确实要改用「{actual}」，用 `python -m rag4prefa rebuild`：它从归档重建，"
-        "校验通过后才把活动后端改成新的那个。"
-    )
+    if actual != recorded:
+        raise IndexMismatch(
+            f"库里记录的向量后端是「{recorded}」，本进程手里的是「{actual}」——"
+            "装配之后活动后端被别的进程换过了。本次没有改动任何数据；"
+            f"重新执行这条命令即可（新进程会装配到当前后端）。"
+            f"确实要改用「{actual}」，用 `python -m rag4prefa rebuild`：它从归档重建，"
+            "校验通过后才把活动后端改成新的那个。"
+        )
+    _ensure_same_identity(conn, store, action=action)
 
 
 def ensure_active_backend(conn: sqlite3.Connection, store) -> None:
@@ -361,23 +436,24 @@ def ensure_active_backend(conn: sqlite3.Connection, store) -> None:
     的起点已经在切换之后，代次从头到尾没变，两次确认都通过，可这个进程手里的索引早就
     是另一份了。它不会报错，只会安静地返回切换之前的内容（2026-10-24 第十六轮复审）。
 
-    库里没有登记值（从没确认过）时不在这里拒绝：那属于"本进程没跑确认流程"，由服务层
-    用 `Services.backend_confirmed` 判断。把两种情况混成一条，会让人分不清"该重启"
-    还是"该重建"。
+    "库里根本没有登记值"同样要在这里拒绝（第十七轮）：有内容却没有登记，说明确认动作
+    试过并失败了，而不是"这个进程没跑确认流程"。后者由 `Services.backend_confirmed`
+    判断，两者都在同一条准入链上——API 与 CLI 走的是同一个函数，不能只保护一边。
     """
     recorded = repo.get_vector_backend(conn)
     if not recorded:
+        ensure_registered(conn, store, action="检索")
         return
     actual = getattr(store, "name", recorded)
-    if actual == recorded:
-        return
-    raise IndexMismatch(
-        f"检索已拒绝：本进程持有的向量后端是「{actual}」，而库里登记的活动后端已经是"
-        f"「{recorded}」——别的进程换过后端，这个进程手里的索引停在切换之前。"
-        "继续用它检索不会报错，只会返回切换之前的内容。"
-        "重启服务（重新装配后端）后再问；确实就该用这个后端，"
-        "用 `python -m rag4prefa rebuild` 显式切回去。"
-    )
+    if actual != recorded:
+        raise IndexMismatch(
+            f"检索已拒绝：本进程持有的向量后端是「{actual}」，而库里登记的活动后端已经是"
+            f"「{recorded}」——别的进程换过后端，这个进程手里的索引停在切换之前。"
+            "继续用它检索不会报错，只会返回切换之前的内容。"
+            "重启服务（重新装配后端）后再问；确实就该用这个后端，"
+            "用 `python -m rag4prefa rebuild` 显式切回去。"
+        )
+    _ensure_same_identity(conn, store, action="检索")
 
 
 def verify_ids(conn: sqlite3.Connection, store) -> dict:

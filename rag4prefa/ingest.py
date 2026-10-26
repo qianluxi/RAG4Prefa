@@ -143,6 +143,15 @@ def _ingest_locked(
         except IndexMismatch as exc:
             return FileOutcome(filename, "failed", 0, 0, str(exc))
 
+        # 这个库是不是"全空"要在写之前判断：空库上的首次写入没有可比对的内容，
+        # 写完就登记活动后端（与 `_settle_locked` 的空归档分支同一条规则、同一份证据）。
+        # 不登记的话，第一个文件导完之后库就变成"有内容却没有活动后端"，下一次
+        # 普通入库会被准入挡住——那个状态下没有任何人证明过索引，确实不该继续写。
+        # 反过来，**非空**却不登记的库一律不在这里补记：那说明确认动作试过并失败了。
+        register_backend = not repo.get_vector_backend(conn) and (
+            consistency.library_is_empty(conn)
+        )
+
         repo.upsert_project(conn, project_name, project_code)
         content_sha = _sha_file(path)
         existing = repo.get_document(conn, project_name, filename)
@@ -250,6 +259,10 @@ def _ingest_locked(
         # 元数据由"真正写过向量的人"记，而不是指望每个调用方都记得调一次
         repo.set_meta(conn, "embedding_model", embedder.model)
         repo.set_meta(conn, "embedding_dim", str(embedder.dim or len(items[0].vector)))
+        if register_backend:
+            repo.set_vector_backend(
+                conn, store.name, identity=getattr(store, "identity", None)
+            )
         return FileOutcome(filename, "indexed", len(sections), len(chunks))
     except Exception as exc:  # 单文件失败不该拖垮整批
         detail = f"{type(exc).__name__}: {exc}"
@@ -598,8 +611,15 @@ def _rebuild_store_locked(conn: sqlite3.Connection, store: VectorStore) -> int:
     target = getattr(store, "name", None)
     # 后端登记与"标记回 ready"同一个事务：换后端和"新索引已就绪"必须同时成立。
     # 分两次写会留下"库里还记着旧后端、索引其实已经是新的"这种中间态。
+    # 身份（类型 + 存储位置）一起写：只记类型的话，两个进程各配一个 Milvus 地址时，
+    # "名字相同"就成了全部的证据。
     repo.set_index_meta(
-        conn, model=model, dim=dim, state=repo.INDEX_READY, backend=target
+        conn,
+        model=model,
+        dim=dim,
+        state=repo.INDEX_READY,
+        backend=target,
+        backend_id=getattr(store, "identity", None),
     )
     if previous_backend and target and previous_backend != target:
         # 换后端是运维动作，要留下痕迹：`/api/health` 的 notes 会带上它，
@@ -696,6 +716,12 @@ def _reindex_nothing(
         )
     removed = repo.delete_orphan_vectors(conn)
     repo.set_index_state(conn, repo.INDEX_READY)
+    # 空库也要登记：留一个"没登记的活动后端"，第一次入库之后就会撞上"库里有内容却
+    # 没人证明过索引"——那本来该在库还是空的时候就定下来（与 `_settle_locked` 的空
+    # 归档分支同一条规则：后端刚被清空并核对过是空的）。
+    repo.set_vector_backend(
+        conn, store.name, identity=getattr(store, "identity", None)
+    )
     return {
         "scope": scope,
         "chunks": 0,
@@ -756,10 +782,27 @@ def _reindex_locked(
     """
     # 空范围也要先校验：`_reindex_nothing` 同样会清后端（rebuild([])），
     # 写到"不是当前活动后端"的那一份上，等于把别人的索引清空。
+    #
+    # 只有**全量**重建能豁免"库里必须登记过活动后端"这一条：它按事实重算整库向量、
+    # 逐 id 校验，成功之后自己登记，也就能救"归档坏了 + 从没登记过"这种库。
+    # 局部重建覆盖不了全库，留着豁免只会得到"命令报成功、检索还是被拒"
+    # （2026-10-24 第十七轮复审）。
+    scope_action = "局部重建" if project_name else "重建"
     try:
-        consistency.ensure_backend_current(conn, store)
+        consistency.ensure_backend_current(
+            conn,
+            store,
+            require_registered=project_name is not None,
+            action=scope_action,
+        )
     except IndexMismatch as exc:
-        raise ReindexError(str(exc)) from exc
+        hint = (
+            "\n局部重建只能覆盖一个项目，登记不了整库的活动后端；"
+            "请去掉 --project 执行全量 reindex，或先用 rebuild 从归档恢复"
+            if project_name
+            else ""
+        )
+        raise ReindexError(f"{exc}{hint}") from exc
     rows = repo.chunks_for_reindex(conn, project_name)
     if not rows:
         return _reindex_nothing(conn, store, project_name)
@@ -835,7 +878,18 @@ def _reindex_locked(
         if project_name is None or previous in (repo.INDEX_READY, marker)
         else previous
     )
-    repo.set_index_meta(conn, model=embedder.model, dim=str(new_dim), state=settled)
+    # 全量重建同样登记活动后端（类型 + 位置）：它把整个索引按事实重写了一遍、并逐 id
+    # 校验过，与 `rebuild_store` 是同一种证据。不登记会留下一个说不通的状态——
+    # "reindex 报成功、检索仍被拒绝（库里从没登记过活动后端）"。局部重建没有这个资格：
+    # 它证明不了别的项目也在同一份索引里。
+    repo.set_index_meta(
+        conn,
+        model=embedder.model,
+        dim=str(new_dim),
+        state=settled,
+        backend=getattr(store, "name", None) if project_name is None else None,
+        backend_id=getattr(store, "identity", None) if project_name is None else None,
+    )
     return {
         "scope": project_name or "all",
         "chunks": len(items),

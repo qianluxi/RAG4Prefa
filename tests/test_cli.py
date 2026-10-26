@@ -26,6 +26,10 @@ class _FakeServices:
     def require_llm(self):
         raise AssertionError("--answer 未开启时不该调用大模型")
 
+    def assert_query_ready(self) -> None:
+        """准入必须被调用：CLI 是独立入口，不能只靠 API 路由那边拦。"""
+        type(self).checked = True
+
     def close(self) -> None:
         type(self).closed = True
 
@@ -36,6 +40,7 @@ def test_cmd_ask_awaits_async_search(monkeypatch, capsys) -> None:
         return [hit], Filter(projects=["甲项目"]), {"total_ms": 1.0}
 
     _FakeServices.closed = False
+    _FakeServices.checked = False
     monkeypatch.setattr(cli, "build_services", lambda: _FakeServices())
     monkeypatch.setattr(cli.ask, "search", fake_search)
 
@@ -45,6 +50,7 @@ def test_cmd_ask_awaits_async_search(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "c1" in out
     assert "甲项目" in out
+    assert _FakeServices.checked, "查询前必须过一遍准入，不能只靠 API 那边的保护"
     assert _FakeServices.closed, "命令结束必须关闭连接"
 
 

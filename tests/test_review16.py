@@ -199,9 +199,13 @@ def test_query_ready_refuses_a_service_that_could_not_confirm_its_backend(
 
     以前这种情况只在 notes 里留一句"下次启动会重新核对"，检索照旧回答——
     而"没确认"的具体含义正是"我不知道这份索引是不是这一版"。
+
+    构造要让确认真的走进"要拿锁"的那条路：库里登记的后端和手里这个不同
+    （第十七轮之后，同名同位置的快速路径只看对象是否就绪、不需要锁）。
     """
     store = NumpyStore(conn, FakeEmbedder.dim)
     _seed(conn, store, settings, docx_file)
+    repo.set_vector_backend(conn, "milvus")
     services = _services(settings, conn, store)
 
     held, release = threading.Event(), threading.Event()

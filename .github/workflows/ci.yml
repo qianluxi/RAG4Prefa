@@ -1,0 +1,40 @@
+name: CI
+
+# 只做一件事：把"测试全绿、ruff 干净"从**提交说明里的结论**变成**服务端可查的证据**。
+#
+# 为什么需要（2026-10-26 第十七轮复审）：审阅者拿到的只有提交信息里的"244 passed"，
+# GitHub 上没有任何 check run 可供独立复核，于是这条结论只能被当成"作者说它通过了"。
+# 这个仓库的测试全部离线（假 embedding、假 OpenAI 服务、内存 SQLite），
+# 不需要任何 Key，因此可以原样在 CI 里跑。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: 安装依赖（不装 milvus extra：相关用例会 importorskip）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: 静态检查
+        run: ruff check rag4prefa tests scripts
+
+      - name: 离线测试
+        run: pytest -q

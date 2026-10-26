@@ -101,9 +101,12 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 115 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
+pytest -q                                  # 244 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
 python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 ```
+
+CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`ruff check rag4prefa tests scripts`
+→ `pytest -q`。全部离线，不需要任何 Key。
 
 `scripts/eval.py` 输出四组对照——`dense`（纯向量）、`sparse`（纯 BM25）、`hybrid`（向量 + BM25 + RRF）、
 `rerank`（混合 + 重排）——这是"混合检索和重排各自带来多少收益"的量化依据。
@@ -135,6 +138,16 @@ python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 出现任意一条，增量入库、局部 `reindex`、检索都会拒绝；`/api/health` 的 `index.consistent` /
 `index.issues` 如实报告，`ok=false` 时先看这里。换模型只能全量 `reindex`（不带 `--project`），
 局部重建必须沿用现有模型。
+
+另外两条准入，被拒绝时同样是"什么都不改"：
+
+- **库里有内容，就必须有一个被确认过的活动后端**（`meta.vector_backend`）。没有登记值意味着
+  确认动作试过并失败了，不是"还没配"——此时查询（HTTP / CLI / 评估）、普通入库、删项目一律拒绝，
+  `python -m rag4prefa rebuild` 从归档重建并登记即可恢复。`doctor` / `verify` / `rebuild` /
+  全量 `reindex` 保留入口，否则没法修。
+- **后端身份 = 类型 + 存储位置**：`meta.vector_backend_id` 记 `milvus|<uri>|<collection>` 或
+  `numpy`。共用一份 `app.db` 的进程必须用同一份 `R4P_MILVUS_URI` / `R4P_MILVUS_COLLECTION`，
+  否则会在第一次比对时被指出来（而不是两边各写一半、谁也查不到谁）。
 
 `chunk_id` 是**内容寻址**的（`doc_id + 章节路径 + 正文哈希`），不是位置序号：同一 id 必然是同一段正文。
 这是"先写索引、后切事实"能安全的前提——改一段不会让后面所有片段换号，也不会出现"新向量配旧正文"。

@@ -227,6 +227,9 @@ async def _evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dic
 def run(dataset_path: Path, k: int, modes: list[str]) -> dict:
     services = build_services()
     try:
+        # 评估数字只有在"索引已被证明是归档这一版"时才有意义：拿一份内容过期的索引
+        # 算出来的 Recall 会非常像真的，只是它衡量的是另一批向量。
+        services.assert_query_ready()
         rows = load_dataset(dataset_path)
         if not rows:
             raise ValueError(f"数据集为空：{dataset_path}")

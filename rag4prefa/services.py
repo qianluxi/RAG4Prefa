@@ -21,7 +21,13 @@ from .adapters.vectors import (
 )
 from .concurrency import MaintenanceBusy, maintenance_lock, worker_alive
 from .config import Settings, get_settings
-from .consistency import IndexMismatch, collect_issues, ensure_active_backend, inspect
+from .consistency import (
+    IndexMismatch,
+    collect_issues,
+    ensure_active_backend,
+    ensure_backend_current,
+    inspect,
+)
 from .credentials import CredentialPool, UserCredentials
 from .db import connect, init_db
 from .repo import (
@@ -142,8 +148,16 @@ class Services:
             return owner.settle_backend()
         recorded = get_vector_backend(self.conn)
         if recorded == self.store.name:
-            self.backend_confirmed = True
-            return True
+            # 快速路径也要有证据：库里记着的是 "milvus"，不等于**手里这个对象**已经打开。
+            # `MilvusStore._open()` 抢不到维护锁时会 `_defer()`，对象照样名叫 milvus
+            # （2026-10-24 第十七轮复审）。
+            problem = self._prove_current()
+            if problem is None:
+                self.backend_confirmed = True
+                return True
+            self.backend_confirmed = False
+            self.notes.append(problem)
+            return False
         try:
             with maintenance_lock(
                 self.conn, purpose=f"确认活动后端 {self.store.name}", timeout=0.0
@@ -162,6 +176,46 @@ class Services:
                 "检索与写入都会拒绝。修好上面的问题后重启服务即可重试"
             )
         return bool(self.backend_confirmed)
+
+    def _prove_current(self) -> str | None:
+        """库里登记的就是这个名字时，还要证明**手里这份**能用、而且位置也对。
+
+        返回 None 表示确认通过，否则返回一句可以直接给人看的原因。三件事：
+
+        1. **对象是否真的打开了**。`MilvusStore` 在抢不到维护锁时会推迟打开，对象
+           仍然是 "milvus"；把它当已确认，`/api/health` 会报正常，而查询要等到
+           `search()` 里才发现后端不可用——那里通常只处理 `IndexMismatch`，于是表现为
+           500 而不是 503；
+        2. **是不是同一个存储位置**。类型相同、集合不同时，两个进程会各自写各自的
+           集合，而所有基于类型名的检查都通过；
+        3. 历史库没记过位置（`vector_backend_id` 为空）时**就地补记**，别为此重建一遍
+           ——启动时间不该随库变大。
+        """
+        try:
+            probe = getattr(self.store, "probe", None)
+            if probe is not None:
+                probe()
+        except Exception as exc:  # noqa: BLE001 - 证明不了就是没证明
+            return (
+                f"库里登记的向量后端是「{self.store.name}」，但这个进程打开它时没能就绪"
+                f"（{_describe(exc)}）。本次不确认：宁可暂时查不了，也不能拿一个没打开的"
+                "索引去回答问题。等占着维护动作的进程结束后重启服务；"
+                "若确认那个进程已不存在，直接重启即可"
+            )
+
+        mine = getattr(self.store, "identity", None) or None
+        theirs = repo.get_vector_backend_id(self.conn)
+        if mine and theirs and mine != theirs:
+            return (
+                f"库里登记的后端位置是「{theirs}」，本进程打开的是「{mine}」——"
+                "后端类型相同，但不是同一份索引。共用同一个数据库的进程必须使用完全相同的 "
+                "R4P_MILVUS_URI / R4P_MILVUS_COLLECTION；本次不登记也不确认，检索与写入都会"
+                "拒绝。确认要用这一份，执行 `python -m rag4prefa rebuild` 从归档重建并登记"
+            )
+        if mine and not theirs:
+            # 只补身份、不改登记的类型：这条记录可能在我们读完之后已经被别的进程改掉了
+            repo.remember_backend_identity(self.conn, self.store.name, mine)
+        return None
 
     def _settle_locked(self, recorded: str | None) -> bool:
         """在维护锁里确认后端。返回"是否已登记为活动后端"。"""
@@ -188,7 +242,9 @@ class Services:
                     "执行 `python -m rag4prefa rebuild` 清掉这些残留后再启动"
                 )
                 return False
-            set_vector_backend(self.conn, target)
+            set_vector_backend(
+                self.conn, target, identity=getattr(self.store, "identity", None)
+            )
             if recorded and recorded != target:
                 self.notes.append(
                     f"活动后端由「{recorded}」切换为「{target}」（库为空，无需迁移）"
@@ -312,6 +368,28 @@ class Services:
             )
         ensure_active_backend(self.conn, self.store)
 
+    def assert_write_ready(self) -> None:
+        """普通写操作的准入：与检索同源，只是动作名不同。
+
+        为什么入库/删除也要一道（2026-10-24 第十七轮复审）：`backend_confirmed` 是
+        **本进程**的结论，`ensure_backend_current` 是**库里**的登记——两者缺一不可。
+
+        - 只有前者：CLI 与上传入口没走这条路时，"试过但没证明"就只挡得住 API 查询；
+        - 只有后者：库里登记着 milvus、本进程因为抢不到锁而没打开它时，登记名照样
+          对得上，写入会落进一个 defer 状态的后端。
+
+        诊断与修复动作（`doctor` / `verify` / `rebuild` / `reindex`）不调用它：它们
+        本来就是用来把库修回可服务状态的，挡住它们等于让修复入口也进不去。
+        """
+        if self.owner.backend_confirmed is False:
+            raise IndexMismatch(
+                "写入已拒绝：本进程启动时没能确认活动后端——它可能与归档的内容不一致"
+                "（条数、模型、维度都能对得上，只有向量和过滤列不同）。"
+                "原因见 `/api/health` 的 notes；用 `python -m rag4prefa rebuild` "
+                "从归档恢复后重启服务"
+            )
+        ensure_backend_current(self.conn, self.store)
+
     def health(self) -> dict:
         # 后端条数是"索引 vs 归档"交叉校验的一半，读不到就如实说读不到，
         # 不要拿 None 当 0 —— 那会把"查不了"伪装成"索引是空的"。
@@ -337,6 +415,13 @@ class Services:
                 f"本进程持有的向量后端是「{self.store.name}」，库里登记的活动后端是"
                 f"「{recorded}」——这个进程手里的索引停在切换之前，检索会被拒绝；重启服务"
             )
+        if self.backend_confirmed is False:
+            # 不健康，但要能启动：这时候 health 是唯一的诊断入口，它必须把"没证明"
+            # 这件事说出来，而不是只留一条藏在下拉里的 note。
+            issues.append(
+                "本进程没能确认活动后端（启动时抢不到维护锁、重建失败或读不到后端条数）："
+                "检索与普通写入都会拒绝，详见 notes"
+            )
         return {
             # 索引与配置对不上时不能报"健康"：那种状态能跑，但检索结果不可信
             "ok": bool(self.embedder and self.llm) and not issues,
@@ -345,6 +430,9 @@ class Services:
                 # 库里登记的（别的进程也能看到）与本进程确认的，分开报：
                 # 只报一个 name 会让人以为"打开的就是登记的那个"
                 "recorded": recorded,
+                # 身份 = 类型 + 存储位置：两个进程同名不同集合时，只有它能看出区别
+                "identity": getattr(self.store, "identity", None),
+                "recorded_identity": repo.get_vector_backend_id(self.conn),
                 "confirmed": self.backend_confirmed,
                 "vectors": store_count,
                 "dim": self.store.dim,

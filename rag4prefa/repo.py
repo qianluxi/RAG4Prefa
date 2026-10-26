@@ -699,14 +699,69 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
 # 一半（归档 + numpy 索引），在线服务的 Milvus 索引停在旧版。
 VECTOR_BACKEND_KEY = "vector_backend"
 
+# 后端的**实际身份**：类型 + 存储位置（Milvus 的地址与集合名、numpy 就像素级等于这份
+# SQLite）。`vector_backend` 里的 "milvus" 只说明类型——两个进程共用一份 SQLite、却各自
+# 配了不同的 `R4P_MILVUS_URI` / `R4P_MILVUS_COLLECTION` 时，两边的 `store.name` 都是
+# "milvus"，身份检查会一路放行，而它们写的根本不是同一个集合（2026-10-24 第十七轮复审）。
+VECTOR_BACKEND_ID_KEY = "vector_backend_id"
+
 
 def get_vector_backend(conn: sqlite3.Connection) -> str | None:
-    """上一次确认可用的向量后端。None 表示还没有任何后端被确认过。"""
+    """上一次确认可用的向量后端类型。None 表示还没有任何后端被确认过。"""
     return get_meta(conn, VECTOR_BACKEND_KEY)
 
 
-def set_vector_backend(conn: sqlite3.Connection, name: str) -> None:
-    set_meta(conn, VECTOR_BACKEND_KEY, name)
+def get_vector_backend_id(conn: sqlite3.Connection) -> str | None:
+    """上一次确认可用的后端身份（类型 + 位置）。None 表示历史库还没记过。"""
+    return get_meta(conn, VECTOR_BACKEND_ID_KEY)
+
+
+def set_vector_backend(
+    conn: sqlite3.Connection, name: str, *, identity: str | None = None
+) -> None:
+    """登记活动后端。类型与身份**成对写**，不要只改其中一个。
+
+    只写类型会留下"名字换了、身份还是上一个后端的位置"这种组合：下一次启动拿本进程
+    的 identity 去比，就会把一个正确打开的后端判成"位置不对"。所以换了名字却没给身份，
+    说明调用方不知道这份索引存在哪——那就把身份一起清掉，宁可下次重新记一遍。
+    """
+    with transaction(conn):
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (VECTOR_BACKEND_KEY, name),
+        )
+        if identity:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                (VECTOR_BACKEND_ID_KEY, identity),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM meta WHERE key = ?", (VECTOR_BACKEND_ID_KEY,)
+            )
+
+
+def remember_backend_identity(
+    conn: sqlite3.Connection, name: str, identity: str
+) -> bool:
+    """给"已经登记过的那个后端"补记身份，**不动登记的类型**，返回是否补上了。
+
+    为什么单独一条而不是复用 `set_vector_backend`（2026-10-24 第十七轮复审）：启动时
+    的快速路径只读到"库里记着的是 X"，到写之间另一个进程可能已经把活动后端切成 Y。
+    整行覆写会把那次切换抹掉；这里只在那条记录**仍然是 X** 时补身份，否则什么都不做，
+    让下一次启动重新比对。
+    """
+    with transaction(conn):
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (VECTOR_BACKEND_KEY,)
+        ).fetchone()
+        if not row or row["value"] != name:
+            return False
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (VECTOR_BACKEND_ID_KEY, identity),
+        )
+        return True
 
 
 # 索引切换标记。SQLite 归档与向量库不在同一个事务里，跨组件的"两阶段提交"没法靠
@@ -804,6 +859,7 @@ def set_index_meta(
     dim: str,
     state: str = INDEX_READY,
     backend: str | None = None,
+    backend_id: str | None = None,
 ) -> None:
     """模型、维度、切换状态（可含活动后端）一次提交。
 
@@ -814,6 +870,10 @@ def set_index_meta(
     `backend` 也走这个事务：换后端与"新索引已经就绪"必须同时成立。分两次写的话，
     中间那一刻库里记着新后端、`index_state` 还是旧的未完成标记（或反过来），
     两边都读到一半就各自得出相反结论（2026-10-24 第十五轮复审）。
+
+    `backend_id` 与 `backend` 成对写：只登记类型的话，两个进程各配一个 Milvus 地址
+    时"类型相同"就是全部的证据了。换后端却没给身份时把旧身份删掉，别让它留在新名字
+    底下冒充新位置。
     """
     with transaction(conn):
         rows = [
@@ -823,9 +883,13 @@ def set_index_meta(
         ]
         if backend:
             rows.append((VECTOR_BACKEND_KEY, backend))
+            if backend_id:
+                rows.append((VECTOR_BACKEND_ID_KEY, backend_id))
         conn.executemany(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", rows
         )
+        if backend and not backend_id:
+            conn.execute("DELETE FROM meta WHERE key = ?", (VECTOR_BACKEND_ID_KEY,))
         _bump_generation(conn)
 
 

@@ -114,7 +114,9 @@ def test_settle_rebuilds_before_registering_a_backend_whose_ids_differ(
     assert stale.count() == archive.count(), "构造前提：条数必须相同，否则这条测试没有鉴别力"
 
     services = _services(settings, conn, stale)
-    assert repo.get_vector_backend(conn) is None
+    assert repo.get_vector_backend(conn) == "numpy", (
+        "构造前提：库里登记的是种子里那个后端，不是这个遗留集合"
+    )
 
     services.settle_backend()
 
@@ -138,7 +140,8 @@ def test_settle_does_not_register_a_backend_it_could_not_align(
     services = _services(settings, conn, stale)
     services.settle_backend()
 
-    assert repo.get_vector_backend(conn) is None, "没对齐就不许登记"
+    assert repo.get_vector_backend(conn) != "milvus", "没对齐就不许把 milvus 登记成活动后端"
+    assert services.backend_confirmed is False
     assert any("rebuild" in note for note in services.notes), "要说清怎么修（rebuild）"
 
 

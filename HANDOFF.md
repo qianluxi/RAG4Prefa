@@ -3,8 +3,8 @@
 > 写给接手的 agent：你**没有**上一轮对话的上下文，这份文件是唯一入口。
 > 读完这一份就能开始干活；需要更深的背景再看第 11 节列的文档。
 
-**交接时间**：2026-10-26 14:40
-**交接时状态**：可运行、**230 项离线测试全绿**；真实厂商 API 已端到端验证
+**交接时间**：2026-10-26 15:20
+**交接时状态**：可运行、**244 项离线测试全绿**；真实厂商 API 已端到端验证
 （embedding 走硅基流动国际站 `Qwen/Qwen3-Embedding-0.6B`、LLM 走魔搭 `Qwen/Qwen3.5-35B-A3B`，
 `POST /api/credentials/verify` 两项均通，`dim=1024` 与服务端配置一致）。
 第十三轮补齐了三条**契约**：读写版本边界（在途查询不跨索引切换）、批次原子写入
@@ -16,7 +16,11 @@
 第十六轮把"证明"从**身份**推进到**内容**：换后端一律从归档重写（id 相同不算证据）、
 读路径也要核对"手里这个后端是不是登记的那个"、补偿失败必须落盘阻断检索、
 读不到后端条数不再当成"确认为空"。
-动手前请先读第 3 节的「索引不变量」，那二十八条是这批代码存在的理由。
+第十七轮把"**未确认**"从一句进程内结论升级成贯穿所有入口的准入：库里已有内容却没有
+登记过活动后端时，查询（API + CLI + 评估）、普通入库、删项目一律在改任何数据之前拒绝；
+同时补上"同名不等于同一个索引"（类型 + 地址 + 集合名一起登记为身份）与"名称相同不等于
+对象已就绪"（快速启动要真的 `probe()` 一次），后端未就绪统一 503 而不是 500。
+动手前请先读第 3 节的「索引不变量」，那三十一条是这批代码存在的理由。
 
 ---
 
@@ -37,8 +41,8 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | 截至 2026-10-26 交接为 **`75e49ce`**（"证明要到内容这一层"，第十六轮修复），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
-| 上一轮基线 | `daeb605`（第十六轮复审基于它提出问题，`75e49ce` 是针对它的修复；`647c240` 只是文档订正） |
+| 当前提交 | 见本轮推送的修复提交（"未确认就是不能查"），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
+| 上一轮基线 | `9d27eb1` / 代码基线 `75e49ce`（第十七轮复审基于它提出问题） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -59,7 +63,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（6 783 行 Python + 731 行单页 HTML + 6 006 行测试）
+## 3. 代码地图（7 491 行 Python + 731 行单页 HTML + 6 486 行测试）
 
 ```
 rag4prefa/
@@ -338,6 +342,44 @@ rag4prefa/
     （`unsynced:project:<名字>`）。**回滚成功则不置标记**：网络抖一下导致的失败本来
     是干净的，没必要为此让整个库停服到人工介入。
 
+29. **"未确认"是库的状态，不是某个进程的私事。**（第十七轮）
+    准入必须由**同一条判据**覆盖所有入口，不能只在 API 路由上加 `if`：
+    - 库的层面（`consistency.ensure_registered`）：**有内容**却**从没登记过活动后端**
+      → 拒绝。这条判据的含义要说准：登记是"有人逐 id 校验过"的唯一记录，
+      `settle_backend` 只在证明不了时什么都不写，所以"有内容 + 没登记"= 确认动作跑过并失败了，
+      不是"首次部署还没配"（首次部署时库是空的）。空库照旧放行。
+    - 进程的层面（`Services.backend_confirmed is False`）：本进程试过、没证明成功。
+      两条缺一不可——只有库那条挡不住"登记着 milvus、本进程 defer 了"；
+      只有进程那条挡不住"CLI/上传入口压根没跑确认流程"。
+    落到入口：查询走 `assert_query_ready`（`/api/chat`、`/api/search`、`cli ask`、`scripts/eval`），
+    普通写入走 `assert_write_ready`（`/api/projects/{}/documents`、`DELETE /api/projects/{}`、
+    `cli ingest`），用例层再各有一道（`_ingest_batch_locked`、`admin.delete_project`）。
+    **诊断与修复动作保留入口**：`doctor` / `verify` / `rebuild` / 全量 `reindex` 不调用它们，
+    否则修不了。全量 `reindex` 成功之后必须**自己登记**（类型 + 身份）——只写模型/维度/状态
+    会得到"命令报成功、检索仍被拒"的假修复；局部 `reindex` 没有这个资格，在没有登记的库上
+    直接拒绝并指向全量。
+
+30. **同名不等于同一个索引：类型 + 存储位置才是身份。**（第十七轮）
+    `meta.vector_backend` 只记类型（`numpy` / `milvus`）。两个进程共用一份 SQLite、却各自
+    配了不同的 `R4P_MILVUS_URI` / `R4P_MILVUS_COLLECTION` 时，`store.name` 都是 "milvus"，
+    所有按类型名的检查都会放行，而它们写的根本不是同一个集合。
+    现在 `meta.vector_backend_id` 与类型**成对登记**：Milvus 是
+    `milvus|<规范化 uri>|<collection>`（URI 归一：URL 去尾斜杠、本地路径取 `abspath`），
+    numpy 固定为 `numpy`（它的"位置"就是这份 SQLite，没有第二种可能）。
+    `ensure_backend_current` / `ensure_active_backend` / `settle_backend` 都要比对；
+    历史库没有这一栏时**就地补记**（`repo.remember_backend_identity`，比较后再写，
+    不覆盖别人刚换的后端），不为此重建一遍。换后端（`rebuild`）会连身份一起改写。
+
+31. **"名字对得上"不等于"对象已就绪"。**（第十七轮）
+    启动的快速路径（登记的后端名 == 手里的后端名）以前直接 `backend_confirmed = True`。
+    但 `MilvusStore._open()` 抢不到维护锁时会 `_defer()`，留下一个 `_ready=False` 的对象，
+    它的 `name` 照样是 "milvus"：`/api/health` 报正常，查询要等到 `search()` 里才发现不可用，
+    而那里只处理 `IndexMismatch`，于是变成 500。
+    现在快速路径也必须有证据（`Services._prove_current` → `store.probe()`：Milvus 真的读一次
+    条数，numpy 没有"打开"这一步），证明不了就是 `False` + note，`health` 报不健康。
+    配套：`BackendUnavailable` 在 API 层有独立处理器 → **503**（"现在不行"，不是服务器故障），
+    SSE 流里则以 `error` 事件收尾。
+
 ### 请求链路（`/api/chat`）
 
 ```
@@ -521,10 +563,14 @@ LLM 返回带 `[1]` 引用的答案。embedding 与 LLM 分属硅基流动国际
 报告里必须记下：embedding 模型名、维度、chunk 参数（`chunk_max_tokens` / `chunk_min_tokens`）、
 `recall_k`、`rrf_k`。换了其中任何一个，前后两次数值不可直接比较。
 
-**P1-2　Dockerfile + GitHub Actions CI**
+**P1-2　Dockerfile + GitHub Actions CI**（CI 部分 2026-10-26 已完成，Docker 仍未做）
 用户上次已表示可以补。CI 只跑 `pytest` + `ruff`（全离线，无需密钥）。
-Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milvus Lite 在 Linux 下可用。
-验收：镜像能 `docker run` 起来并响应 `/api/health`；Actions 在 PR 上绿。
+
+- **已完成**：`.github/workflows/ci.yml`（push/PR 触发，`pip install -e ".[dev]"` → ruff → pytest，
+  Python 3.13，不装 milvus extra 时相关用例走 `importorskip`）。动机是第十七轮复审里那句
+  "GitHub 没有 check run，测试结果仍属于提交报告"——把结论变成服务端可查的证据。
+- 仍待做：Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milvus Lite 在 Linux 下可用
+  （但要避开非 ASCII 路径）。验收：镜像能 `docker run` 起来并响应 `/api/health`。
 
 **P1-3　PDF 通道**
 现在是 `adapters/parsers/` 只有 docx。加 PDF 时在 `parsers/` 下新建 `pdf.py`，
@@ -550,6 +596,11 @@ Dockerfile 基础镜像 `python:3.13-slim`，注意：**不要装 torch**；Milv
 6. ~~一致性检查只报告不阻断~~ → 已在第四轮解决：`blockers` 覆盖缺向量/孤儿/未标注/后端条数不符，检索与写入统一拒绝。
 7. **重建期间极短不可用窗口**：两次 rename 之间集合名短暂不存在。要消掉它得引入"活跃集合指针"（切换即改
    SQLite 里的一行），但会让多进程各自缓存的名字不一致，代价更大；当前单进程假设下不值得。
+8. **多进程必须共用同一份 Milvus 配置**（2026-10-26 已强制，不再是"写在清单上的约定"）：
+   `meta.vector_backend_id` 记录 `milvus|<规范化 uri>|<collection>`，与类型成对登记；
+   两个进程若各配一个地址/集合，第一次比对（`ensure_backend_current` / `ensure_active_backend` /
+   启动确认）就会被拒，并同时打印两边的身份。历史库第一次启动时补记一次，不需要重建。
+   运维侧仍然只有一条规矩：**同一份 `app.db` 只能配同一份 `.env`**。
 
 ### 已关闭
 
@@ -1015,6 +1066,61 @@ id 集合一致、正在被打开、上次登记过——三条都是"看起来�
 什么也没说。这类缺口的共同形态是：**断言的对象比它要保护的东西低一维**。
 问"这个证据能证伪什么"比问"它证明了什么"更有用：能证伪"换了一批片段"，证伪不了
 "换了一批向量"；能证伪"这次查询跨了版本"，证伪不了"这个进程从头就拿错了索引"。
+
+第十七轮（2026-10-26 15:20）：基线 `75e49ce`。这轮盯的是
+**"这个结论有没有贯穿所有入口"**。
+
+```
+pytest -q                    → 244 passed（新增 14 项，test_review17.py）
+ruff check                   → All checks passed
+旧代码反证（git stash push -- rag4prefa scripts），14 项全红，其中核心几条：
+  未登记的库上 ask.retrieve                  → 断言"拒绝检索"失败（旧代码照常返回）
+  cli ask 不走准入                            → 断言退出码为 1 失败（旧代码返回结果）
+  未登记的库上 ingest_batch                   → 断言抛 IndexMismatch 失败（旧代码照写）
+  未登记的库上删项目                          → 断言 503 失败（旧代码删掉了）
+  全量 reindex 成功但不登记                   → 断言"登记了"失败（旧代码 get_vector_backend 仍是 None）
+  deferred 的 Milvus 被报已确认               → 断言 confirmed is False 失败
+  同名不同地址两个后端                        → 断言"拒绝"失败（旧代码只比 name）
+  count() 抛 BackendUnavailable              → 断言 503 失败（旧代码 500）
+```
+
+真机验证（`C:/tmp/r4p-unreg` 上跑真实库的副本，主库只读）：
+
+```
+doctor（未登记 + 另一个进程占着维护锁）
+  → backend={recorded:null, confirmed:false, identity:"numpy", recorded_identity:null}
+  → index.issues 出现"本进程没能确认活动后端……检索与普通写入都会拒绝"，ok=false
+cli ask "悬挑结构"    → 退出码 1，"检索已拒绝：本进程启动时没能确认活动后端……rebuild"
+cli ingest … --project 准入验证
+                     → 退出码 1，"入库未执行：写入已拒绝……"；jobs/projects/chunks 一个没变
+POST /api/search（同状态的服务，8898） → 503 + 同一句可读的话
+DELETE /api/projects/美睿金座（同状态）  → 503；项目、片段、归档都还在
+rebuild              → rebuilt=8，vector_backend=numpy，vector_backend_id=numpy
+恢复后 doctor        → confirmed:true、consistent:true；登记表两项俱全
+主服务（8899，新代码） /api/health → backend 里多了 identity / recorded_identity，confirmed:true
+```
+
+1. **未确认只保护了 API 的两个路由（P1）。** 判据挂在调用路径上，于是同一个库在
+   `curl /api/search` 和 `python -m rag4prefa ask` 下给出两种结论；上传入口还在往
+   没被证明过的索引里写。根因更靠前：`ensure_backend_current` 在"没登记"时**直接放行**，
+   而"有内容 + 没登记"的真实含义是"确认动作跑过并失败了"（首次部署时库是空的）。
+   现在这条判据下沉进 `consistency.ensure_registered`，查询/普通入库/删项目共用，
+   诊断与修复入口（`doctor`/`verify`/`rebuild`/全量 `reindex`）保留并各自说明职责。
+2. **快速启动把"名字相同"当成"已经确认"（P2）。** `_defer()` 的 MilvusStore 名叫 milvus、
+   却没打开；`/api/health` 报正常，失败被推迟到 `search()` 里，还变成 500。
+   现在快速路径也要 `store.probe()`（Milvus 真读一次条数），证明不了即 `False`；
+   `BackendUnavailable` 在 API 层有独立处理器 → 503。
+3. **`milvus` 只代表类型，不代表位置（架构边界）。** 两个进程共用一份 SQLite、各配一个
+   URI/集合时，`store.name` 相同、索引却是两份。现在 `meta.vector_backend_id` 与类型
+   **成对登记**（`milvus|<规范化 uri>|<collection>` / `numpy`），检查与登记都带上它；
+   历史库就地补记（比较后再写，不覆盖别人刚换的后端）。
+
+教训（第十七轮）：**"我这边挡住了"不等于"这件事被挡住了"。**
+准入如果只在某一条调用路径上生效，它保护的其实是那条路径，而不是那个不变量；
+判断"够不够"的方法是**把入口列一遍**（HTTP、CLI、脚本、后台任务、库函数），
+逐个问"它凭什么可以动"。另一个反复出现的形态是**同义词被当成同一个东西**：
+"名字相同"被当成"同一个索引"，"注册过"被当成"打开着"——每一条都值得再问一句
+"它们还能在哪一层不一样"。
 
 
 第四轮（2026-10-23 22:10）的冒烟记录仍然有效：

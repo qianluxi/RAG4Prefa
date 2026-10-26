@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from . import admin, ask, concurrency, consistency, ingest, repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
-from .adapters.vectors import StoreRef
+from .adapters.vectors import BackendUnavailable, StoreRef
 from .concurrency import MaintenanceBusy
 from .consistency import IndexMismatch
 from .credentials import (
@@ -83,7 +83,7 @@ async def _chat_stream(services: Services, req: ChatRequest) -> AsyncIterator[st
             use_rerank=req.rerank,
         ):
             yield _sse(event, data)
-    except (EmbeddingError, LLMError, IndexMismatch) as exc:
+    except (EmbeddingError, LLMError, IndexMismatch, BackendUnavailable) as exc:
         yield _sse("error", {"message": str(exc)})
     except Exception as exc:  # 流已开始，不能再改 HTTP 状态码，用 error 事件收尾
         yield _sse("error", {"message": f"{type(exc).__name__}: {exc}"})
@@ -131,6 +131,16 @@ def create_app(services: Services | None = None) -> FastAPI:
         """
         return JSONResponse({"detail": str(exc)}, status_code=409)
 
+    @app.exception_handler(BackendUnavailable)
+    def _backend_unavailable(_: Request, exc: BackendUnavailable) -> JSONResponse:
+        """后端还没就绪（没打开、被别的维护动作占着）：503，不是 500。
+
+        为什么单独一条（2026-10-24 第十七轮复审）：这类失败以前会从 `store.count()`
+        或 `store.search()` 直接冒出来，变成一个 500——运维看到"服务器内部错误"，
+        会去查代码而不是去查那个占着维护锁的进程。它和"现在不能动"是同一类事：
+        等一等、重启服务就好。
+        """
+        return JSONResponse({"detail": str(exc)}, status_code=503)
 
     def svc(request: Request) -> Services:
         """每个请求都按请求头换一次凭据。
@@ -317,6 +327,13 @@ def create_app(services: Services | None = None) -> FastAPI:
             services.require_embedder()
         except EmbeddingError as exc:
             raise HTTPException(503, str(exc)) from exc
+        # 后端没确认时不许收：普通入库会同时改归档与向量索引，而"库里从没登记过活动
+        # 后端"意味着没有任何一步证明过索引装的是这一版。落盘（upload_dir 是持久归档区）
+        # 与建任务都在这一道之后——被拒绝时应当一个字节都没动（2026-10-24 第十七轮复审）。
+        try:
+            services.assert_write_ready()
+        except (IndexMismatch, BackendUnavailable) as exc:
+            raise HTTPException(503, str(exc)) from exc
         # 重建/另一个入库正在跑时立刻拒绝，而不是收下文件后让任务在后台失败：
         # 用户至少知道"该等一会儿"，而不是看到一条迟到的 failed。
         busy = concurrency.is_busy(services.conn)
@@ -440,7 +457,14 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     @app.delete("/api/projects/{project_name}")
     def delete_project(request: Request, project_name: str) -> dict:
-        result = admin.delete_project(svc(request).conn, svc(request).store, project_name)
+        services = svc(request)
+        # 删除同时改事实与索引，准入与入库同源：后端没确认时不动任何数据。
+        # （用例层还有一道"库里是否登记过活动后端"，两者都要在。）
+        try:
+            services.assert_write_ready()
+        except (IndexMismatch, BackendUnavailable) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        result = admin.delete_project(services.conn, services.store, project_name)
         if not result["deleted"]:
             raise HTTPException(404, result["reason"])
         return result
