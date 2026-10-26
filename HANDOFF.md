@@ -46,7 +46,7 @@
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
 | 当前提交 | **`50547ac`**（"README 补上评估集说明：两份数据集不能混成一个平均数"，第二十一轮收尾），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
 | 上一轮基线 | `594fcc5`（PDF 解析撞真实文档）→ `f859f90`（评估集建成）→ `50547ac`（评估说明） |
-| CI | `.github/workflows/ci.yml`：`50547ac`、`28fd78f`、`594fcc5` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest 267 项） |
+| CI | `.github/workflows/ci.yml`：`50547ac`、`28fd78f`、`594fcc5` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest 277 项） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -67,29 +67,33 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（8 163 行 Python + 731 行单页 HTML + 6 984 行测试）
+## 3. 代码地图（7 199 行 Python + 691 行单页 HTML + 5 708 行测试，均按非空行计）
+
+行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
 ```
 rag4prefa/
-├── config.py      81    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读
-├── domain.py     122    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
-├── db.py         129    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
-├── repo.py       858    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
-├── consistency.py 324   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
-├── concurrency.py 349   **写入协调**：维护锁、写事务串行、工作租约（判断别的进程还活着吗）
-├── ingest.py     716    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex；入库批次整体占锁
-├── chunking.py    90+   按标题树切块；chunk_id 内容寻址（同 id 必同正文）
-├── tokens.py      51    中英混排的 token 估算（非真实 tokenizer）
-├── ask.py        217    混合召回 → RRF 融合 → 可选重排 → 流式生成；含索引代次确认
-├── filters.py    103    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
-├── prompts.py     38    系统提示词与引用格式
-├── admin.py       64    项目/文档的查询与级联删除
-├── services.py   319    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
-├── credentials.py 363   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
-├── api.py        559    FastAPI 路由（只做协议转换，不含业务逻辑）
-├── cli.py        309    init / serve / doctor / ingest / reindex / rebuild / ask / projects / verify
-└── adapters/    1100+   embed / llm / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
+├── config.py      72    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读
+├── domain.py      98    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
+├── db.py         117    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
+├── repo.py       851    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
+├── consistency.py 427   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
+├── concurrency.py 291   **写入协调**：维护锁、写事务串行、工作租约（判断别的进程还活着吗）
+├── ingest.py     845    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex；入库批次整体占锁
+├── chunking.py    93    按标题树切块；chunk_id 内容寻址（同 id 必同正文）
+├── tokens.py      40    中英混排的 token 估算（非真实 tokenizer）
+├── ask.py        216    混合召回 → RRF 融合 → 可选重排 → 流式生成；含索引代次确认
+├── filters.py     88    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
+├── prompts.py     28    系统提示词与引用格式
+├── admin.py       84    项目/文档的查询与级联删除
+├── services.py   561    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── credentials.py 304   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
+├── api.py        535    FastAPI 路由（只做协议转换，不含业务逻辑）
+├── cli.py        312    init / serve / doctor / ingest / reindex / rebuild / ask / projects / verify
+└── adapters/    1721    embed / llm / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
 ```
+
+`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 7 199 行——`rag4prefa/` 本身是 6 685 行。
 
 解析层三个文件的分工，改动前先看清：
 
@@ -101,8 +105,8 @@ rag4prefa/
   → 编号定级」，另含页眉页脚剔除、跨块段落拼接、表格按 `|` 保留。
 - `parsers/__init__.py`：`parse_document(path)` 按扩展名分派，未知格式明确报错。
 
-前端只有一个文件 `rag4prefa/web/index.html`（731 行，原生 JS，无构建步骤）。
-`tests/` 264 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+前端只有一个文件 `rag4prefa/web/index.html`（741 行，原生 JS，无构建步骤）。
+`tests/` 277 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -464,6 +468,14 @@ API 一览（实现见 `api.py`，说明见 README）：
 8. 项目已有 `.gitattributes`（`* text=auto eol=lf`），别删——否则 Windows 上 CRLF 会污染 diff。
 9. **内容寻址的 id 让"改一段"只影响那一段**：同一份申报书改末尾一段，26 个片段里 25 个 id 不变。
    测试断言这一性质时不要再用"id 数量变化"来判断，要看存量 id 的保留率。
+10. **"重排生效了"这件事必须用候选池深度来证明，不能看调用记录。** 两种写法都会留下
+    完整的调用日志、分数也确实变了，但召回一点不变好：①先截断到 top_k 再重排
+    （重排只在一小撮里挑）；②给重排的融合池与对照组的融合池深度不同（两行数字的差异
+    里混进了池深的影响）。判据只有一个——**重排拿到的候选数 == 对照组的候选数，且等于
+    截断前的全池**。第二十二轮两处都踩到了，见下节。
+11. **`Settings` 会读本机 `.env`，测试里没显式钉住的字段会跟着开发机变。** 本轮把重排打开后，
+    一条"未配置重排时应提示未启用"的断言在本机反转、在 CI 上仍然绿（CI 没有 `.env`）。
+    凡是断言"某能力缺失"的用例，必须显式传 `rerank_url=""` 之类的空值，不能靠默认。
 
 ---
 
@@ -576,10 +588,28 @@ LLM 返回带 `[1]` 引用的答案。embedding 与 LLM 分属硅基流动国际
 - 语料指纹 + 正文锚点解决的是「解析器一改 `chunk_id` 全变、旧标注静默失效」：
   `chunk_id` 是内容寻址的，章节路径改一个字 id 就全换，评估照样跑完、只是 Recall 莫名变低。
   现在 `relabel_eval.py` 先校验 `eval/corpus.json` 的 `ids_sha`，不一致就要求重标。
-- **未完成的部分**：dense / hybrid / rerank 三行还没有真实向量跑过（本机 `.env` 里
-  `R4P_EMBEDDING_API_KEY` 为空）。Key 到位后要重跑两份数据集，四行对照表才算齐。
-- 注意 `rerank` 一栏在没有配 `R4P_RERANK_URL` 时等于 hybrid（NoopReranker），
-  报告里要写明"未启用重排"，否则读者会以为重排没有收益。
+- **四行对照已补齐**（2026-10-26 傍晚，真机）：见下面 P1-1c 的表格，原始输出在
+  `eval/reports/baseline-30.md` 与 `eval/reports/paraphrase-10.md`。
+
+**P1-1c　消融对照的实测值（锁死坐标系，换任何一项都不可比）**
+坐标系：`Qwen/Qwen3-Embedding-0.6B`（1024 维）· chunk 80~480 token · `recall_k=50` ·
+`rrf_k=60` · 重排 `Qwen/Qwen3-Reranker-0.6B` · 库内 323 块。
+
+| 召回方式 | 基础 30 Recall@5 | MRR | nDCG@5 | 改写 10 Recall@5 | MRR | nDCG@5 |
+|---|---|---|---|---|---|---|
+| dense | 0.817 | 0.704 | 0.733 | 0.500 | 0.333 | 0.376 |
+| sparse | 0.950 | 0.834 | 0.857 | 0.500 | 0.275 | 0.332 |
+| hybrid | 0.900 | 0.721 | 0.770 | 0.700 | 0.520 | 0.565 |
+| rerank | 0.950 | 0.732 | 0.788 | 0.800 | 0.542 | 0.606 |
+
+两点必须写进报告，否则这张表会被读错：
+- **基础集上 sparse > hybrid（−0.050）**：语料 96% 是一份软件手册，专有名词密度极高，
+  融合在稀释 BM25 的精确命中。这是语料构成问题，不是融合算法问题。
+- **重排的 MRR/nDCG 有 ±0.005 抖动**（同一数据跑两次 0.737 / 0.732），Recall 稳定。
+  别把小数点后三位当精确值。
+- 没配 `R4P_RERANK_URL` 时 `rerank` 一栏必须等于 hybrid（NoopReranker），
+  且报告会自己写一行「未启用重排」。**两行不相等就说明管道走岔了**，
+  不要把它当成重排的收益——这一轮就是这么被骗了一次（见第 10 节第二十二轮）。
 
 **P1-1b　正式评测集与模型版本要一起锁定**
 报告里必须记下：embedding 模型名、维度、chunk 参数（`chunk_max_tokens` / `chunk_min_tokens`）、
@@ -1290,9 +1320,77 @@ YJK 手册（368 页）         → indexed  307 节 301 块  5.0s
 "能解析我造的那份"，而是**"能在真实文档上说出它为什么解析不了"**——
 两份进不来的文件，现在的输出是可操作的（换可复制版本 / 做 OCR），这比静默入库有用。
 
+### 第二十二轮（2026-10-26 傍晚）：真机入库 + 评估四行对照
+
+**Key 到位后的真机链路**（`.env` 填 `R4P_EMBEDDING_API_KEY` / `R4P_LLM_API_KEY`）：
+
+- 先各打一次冒烟：embedding 返回 1024 维（与库里登记的维度对得上）、LLM 正常回话。
+  **先冒烟再入库**：315 块的入库要跑十几批 embedding，Key 填错站点时第一批就报
+  `30014 Token is invalid`，跟"Key 被删"同码，直接拿大批量去试会浪费时间也看不出原因。
+- 入库三份可用文档：`软件手册` 301 块（307 节）、`装配式规范` 13+1 块。
+- `verify`：片段 323 / 归档 323 / 索引 323，四种缺失全 0；`doctor` 的
+  `credentials_missing` 清空、`consistent=true`、`issues=[]`。
+- 库内 323 = 本轮 315 + 早先入库的美睿金座计算书 8 块。**同一库只能一套向量空间**，
+  所以新语料必须沿用 `Qwen/Qwen3-Embedding-0.6B` / 1024——换 4B 会被 `consistency` 直接拒绝。
+
+**四行对照（真机，`eval/reports/` 里是原样输出）**
+
+| 召回方式 | 基础 30 Recall@5 | MRR | 改写 10 Recall@5 | MRR |
+|---|---|---|---|---|
+| dense | 0.817 | 0.704 | 0.500 | 0.333 |
+| sparse | 0.950 | 0.834 | 0.500 | 0.275 |
+| hybrid | 0.900 | 0.721 | 0.700 | 0.520 |
+| rerank | 0.950 | 0.732 | 0.800 | 0.542 |
+
+结论有三条，第三条最重要：
+
+1. **基础集上纯 BM25 压过混合召回 0.05。** 语料 96% 是一份软件手册，按钮名参数名这类
+   专有词密度极高，融合是在稀释而不是增强。这不是融合的实现问题，是**语料太单一**——
+   A2（扩语料）没做完，这个反常就会一直挂着。
+2. **改写集才是语义检索的战场**：dense 与 sparse 都只有 0.50，hybrid 0.70，重排 0.80。
+   同一句"两面都叠合的那种墙要打几折"，不含原文术语时两路单独召回都会漏。
+3. **只报一份会得出互相矛盾的结论**（"检索已经很好" vs "BM25 没用"）。两份必须并列报。
+
+**这一轮抓到的三个真问题，都是"看起来生效"的假象：**
+
+1. **评估里 rerank 行与 hybrid 行用了不同深度的候选池。** 旧代码 rerank 把 k 换成
+   `max(k*4, 20)` 再走同一段融合：融合池深 100、只把前 20 条交给重排；hybrid 是 50 深的池子取前 5。
+   于是在**没有配重排服务**（NoopReranker）的情况下两行数字仍然不同（0.933 vs 0.900），
+   报告读起来就像"重排带来 +0.033"，实际一个候选都没被重排过。
+   现在两行共用 `_hybrid_pool_size(k)`，Noop 下两行必须完全相等，
+   报告也会显式写「未启用重排」。
+2. **CLI 里先截断、后重排。** 第一版 `cmd_ask` 先 `ask.search(top_k=3)` 拿到 3 条，
+   再把这 3 条交给重排——重排只在一小撮里挑。真实查询上验证过：正确答案在融合结果里
+   排第 9，把 25 条全交给重排它能升到第 1；只给 3 条时它压根不在里面，
+   而日志、分数、`rerank=True` 全都正常。现在改成 `ask.search` 内部"先重排、后截断"。
+3. **`Settings` 会读本机 `.env`。** 重排一开，那条"未配置时应提示未启用"的断言在本机反转，
+   在 CI 上仍是绿的（CI 没 `.env`）——正是"本地绿 ≠ CI 绿"的典型。用例现在显式传空值。
+
+**顺带的两个决定**
+
+- **重排的开关语义统一成"看装的什么，不看配置写的什么"**：`ask.rerank_available()`
+  判 `isinstance(reranker, NoopReranker)`，三处出口（`stream_answer` 默认值、CLI `--rerank`、
+  `/api/health` 的 `rerank_configured`）共用它。配了 URL 就默认开，`--no-rerank` / `rerank:false`
+  仍可显式关掉。理由：报告里的 rerank 一行必须对应用户实际跑到的那条链路，
+  否则那行数字描述的是一条只能靠脚本复现的旁路。
+- **前端那个"启用重排"开关以前是一个安静的谎**：没配重排时勾上也不会有任何效果。
+  现在没配就置灰并写明原因。
+
+**两个新的计量事实**
+
+- **重排分数有抖动**：同一份数据两次跑，Recall@5 完全一致（0.950 / 0.800），
+  MRR 分别是 0.737 和 0.732。所以引用重排结果时，小数点后三位不要当"精确值"讲，
+  差异在 ±0.005 量级内应视为同一次测量。dense / sparse / hybrid 是确定性的，没有这个问题。
+- 融合后候选可能少于 `recall_k`（实测 25 条），因为同 id 去重与筛选在融合前就生效了。
+
+**验证**：`277 passed`（270 → 277）、`ruff check rag4prefa tests scripts` 干净、
+前端 script 块 `node --check` 通过。真机端到端问"双面叠合墙的修正系数是多少"，
+答案给出 0.75 并带 `[1][2]` 引用。
+
 ---
 
 ## 11. 深入阅读顺序
+
 
 1. `REFACTOR_PLAN.md`（本目录）—— 重构方案 + **第十二节有实施复盘**，记录计划与现实的 5 处偏差，值得先看。
 2. `F:\project\PyProject\milvus\PROJECT_REVIEW.md` —— 原系统评估报告，说明"为什么要重写"的每一条证据都能定位到行号。

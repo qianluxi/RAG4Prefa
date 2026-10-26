@@ -102,32 +102,49 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 267 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
+pytest -q                                  # 277 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
 python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --top-k 5
 ```
 
-评估集分两份，**不要混成一个平均数**：
+评估集分两份，**不要混成一个平均数**。下面是真机实测（库内 323 块 = 315 块标注语料 + 8 块存量计算书，
+`Qwen/Qwen3-Embedding-0.6B` 1024 维，chunk 80~480 token，`recall_k=50`，`rrf_k=60`，
+重排 `Qwen/Qwen3-Reranker-0.6B`）：
 
-| 文件 | 题数 | 问法 | 纯 BM25 的 Recall@5 |
-|---|---|---|---|
-| `eval/dataset.jsonl` | 30 | 贴近原文术语 | 0.95 |
-| `eval/dataset.paraphrase.jsonl` | 10 | 只描述意图，不用原文术语 | 0.50 |
+| 召回方式 | 基础 30 题 Recall@5 | MRR | 改写 10 题 Recall@5 | MRR |
+|---|---|---|---|---|
+| dense（纯向量） | 0.817 | 0.704 | 0.500 | 0.333 |
+| sparse（纯 BM25） | **0.950** | **0.834** | 0.500 | 0.275 |
+| hybrid（向量 + BM25 + RRF） | 0.900 | 0.721 | 0.700 | 0.520 |
+| rerank（混合 + 重排） | **0.950** | 0.732 | **0.800** | **0.542** |
 
-第一份在纯 BM25 上就到 0.95，说明它测的是"关键词覆盖"而不是语义检索；第二份才是
-拉开差距的地方（"两面都叠合的那种墙要打几折"对"表2 双面叠合墙修正系数 0.75"）。
-只报一份会给出误导性的结论。
+三句话读完这张表：
+
+1. **基础集上纯 BM25 就打了 0.95，混合召回反而低 0.05。** 语料里 96% 是一份软件手册，
+   按钮名、参数名这类专有词密度极高，分词后几乎等于原样命中——这类语料上融合是稀释而不是增强。
+2. **改写集才是语义检索的战场。** 同一个"两面都叠合的那种墙要打几折"，不用原文术语之后
+   BM25 掉到 0.50，混合召回 0.70，开重排 0.80。
+3. **只报一份会给出误导性的结论。** 单看基础集会得出"检索已经很好"，单看改写集会得出
+   "BM25 没用"，两个都不对。
 
 标注改动后要跑 `python scripts/relabel_eval.py`：它按每题的正文锚点重算 `gold_chunk_id`，
 并校验 `eval/corpus.json` 里的语料指纹。**改了解析器就必须重跑**——`chunk_id` 是内容寻址的，
 章节路径变一个字 id 就全换，旧标注会静默失效（评估照样跑完，只是 Recall 莫名变低）。
+
+报告本身带「坐标系」一行（模型、维度、chunk 参数、`recall_k`、`rrf_k`、重排模型），
+因为换掉其中任何一项，前后两次数值就不可比。实测样本存在 `eval/reports/`。
 
 CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`ruff check rag4prefa tests scripts`
 → `pytest -q`。全部离线，不需要任何 Key。
 
 `scripts/eval.py` 输出四组对照——`dense`（纯向量）、`sparse`（纯 BM25）、`hybrid`（向量 + BM25 + RRF）、
 `rerank`（混合 + 重排）——这是"混合检索和重排各自带来多少收益"的量化依据。
-没有配 `R4P_RERANK_URL` 时 `rerank` 一栏等于 `hybrid`（NoopReranker）。
+**没配 `R4P_RERANK_URL` 时报告会显式写「未启用重排」**，而不是让 `rerank` 一栏悄悄等于 `hybrid`
+（那样读者会把两行差异当成重排的收益；曾经就因为两行用了不同深度的候选池，差出过一个 +0.033）。
+
+重排是**可选增强**：配了 URL 默认开启，也可以 `--no-rerank` 显式关掉。它多一次网络往返，
+换来的是上面改写集那 0.10 的 Recall。`/api/health` 的 `rerank_configured` 会告诉前端
+"这台机器到底有没有重排"，免得界面上留一个勾了也不生效的开关。
 
 指标定义（写死在 `tests/test_eval_metrics.py` 里，不接受含糊）：
 
