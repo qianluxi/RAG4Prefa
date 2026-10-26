@@ -102,9 +102,25 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 264 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
+pytest -q                                  # 267 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
 python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
+python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --top-k 5
 ```
+
+评估集分两份，**不要混成一个平均数**：
+
+| 文件 | 题数 | 问法 | 纯 BM25 的 Recall@5 |
+|---|---|---|---|
+| `eval/dataset.jsonl` | 30 | 贴近原文术语 | 0.95 |
+| `eval/dataset.paraphrase.jsonl` | 10 | 只描述意图，不用原文术语 | 0.50 |
+
+第一份在纯 BM25 上就到 0.95，说明它测的是"关键词覆盖"而不是语义检索；第二份才是
+拉开差距的地方（"两面都叠合的那种墙要打几折"对"表2 双面叠合墙修正系数 0.75"）。
+只报一份会给出误导性的结论。
+
+标注改动后要跑 `python scripts/relabel_eval.py`：它按每题的正文锚点重算 `gold_chunk_id`，
+并校验 `eval/corpus.json` 里的语料指纹。**改了解析器就必须重跑**——`chunk_id` 是内容寻址的，
+章节路径变一个字 id 就全换，旧标注会静默失效（评估照样跑完，只是 Recall 莫名变低）。
 
 CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`ruff check rag4prefa tests scripts`
 → `pytest -q`。全部离线，不需要任何 Key。
