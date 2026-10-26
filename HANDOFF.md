@@ -41,8 +41,9 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | 见本轮推送的修复提交（"未确认就是不能查"），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
+| 当前提交 | **`8260e13`**（"未确认就是不能查：把准入从一条路由扩到所有入口"，第十七轮修复），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
 | 上一轮基线 | `9d27eb1` / 代码基线 `75e49ce`（第十七轮复审基于它提出问题） |
+| CI | `.github/workflows/ci.yml`：`8260e13` 上 Actions 全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest，41 秒） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -1098,6 +1099,7 @@ DELETE /api/projects/美睿金座（同状态）  → 503；项目、片段、�
 rebuild              → rebuilt=8，vector_backend=numpy，vector_backend_id=numpy
 恢复后 doctor        → confirmed:true、consistent:true；登记表两项俱全
 主服务（8899，新代码） /api/health → backend 里多了 identity / recorded_identity，confirmed:true
+GitHub Actions（run 40284754083）  → success：安装依赖 / 静态检查 / 离线测试 三步全绿，41 秒
 ```
 
 1. **未确认只保护了 API 的两个路由（P1）。** 判据挂在调用路径上，于是同一个库在
