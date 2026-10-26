@@ -254,7 +254,7 @@ def _ingest_locked(
     except Exception as exc:  # 单文件失败不该拖垮整批
         detail = f"{type(exc).__name__}: {exc}"
         if not facts_committed and (planned or overwritten):
-            detail += _restore_vectors(store, planned, overwritten, stage)
+            detail += _restore_vectors(conn, store, planned, overwritten, stage, doc_id)
         elif facts_committed:
             detail += (
                 f"（{stage}失败，但新版本已生效且可检索；"
@@ -268,7 +268,12 @@ def _ingest_locked(
 
 
 def _restore_vectors(
-    store: VectorStore, planned: list[str], overwritten: list[dict], stage: str
+    conn: sqlite3.Connection,
+    store: VectorStore,
+    planned: list[str],
+    overwritten: list[dict],
+    stage: str,
+    doc_id: str,
 ) -> str:
     """把索引恢复到"这次入库之前"的样子：删掉新增的 id，并把被覆盖的旧行写回去。
 
@@ -279,8 +284,13 @@ def _restore_vectors(
     - 只写回旧行：本次新增的向量留在索引里却没有正文，检索会跳过它们，但它们占掉
       召回名额，稠密召回因此少一条。
 
-    还原本身失败时要说清"哪一步没成、现在是什么状态"，因为这两种残留的修复方式不同：
-    条数多出来（新增没删掉）由一致性检查拦住，内容不一致只能靠 rebuild。
+    **还原本身失败时必须留痕，不能只写进错误信息**（2026-10-24 第十六轮复审）：
+    `upsert` 抛异常不等于批次没生效，而回滚又失败时，索引里可能是"一半旧行、一半新行"。
+    这种状态下 id 集合、条数、模型、维度**全都可以一致**，只能靠一个持久化的标记让
+    检索停下来。标记在 `rebuild` 之后自动清除（归档是权威副本）。
+
+    还原成功则不置标记：常见情况（网络抖一下、upsert 立刻失败）本来是干净的，
+    没必要为此让整个库停服到人工介入。
     """
     parts: list[str] = []
     failed: list[str] = []
@@ -299,10 +309,20 @@ def _restore_vectors(
 
     if not failed:
         return f"（{stage}失败，{'，'.join(parts)}，库仍是上一版）"
+
+    blocked = "检索已停用"
+    try:
+        marker = consistency.mark_unsynced(conn, doc_id)
+        blocked = f"检索已停用（标记 {marker}）"
+    except Exception as exc:  # noqa: BLE001 - 连标记都写不进时只能靠 verify 人工核对
+        blocked = (
+            f"且未能写入阻断标记（{type(exc).__name__}: {exc}）——"
+            "检索可能仍会放行，必须用 `python -m rag4prefa verify` 逐 id 核对"
+        )
     return (
         f"（{stage}失败，{'，'.join([*parts, *failed])}；"
         "索引可能与归档不一致——条数相同也可能内容不同，"
-        "执行 `python -m rag4prefa rebuild` 从归档恢复后再重试同一文件）"
+        f"{blocked}。执行 `python -m rag4prefa rebuild` 从归档恢复后再重试同一文件）"
     )
 
 
@@ -347,13 +367,12 @@ def _update_doc_year(
             "（执行 `python -m rag4prefa reindex`）；本次未做任何改动",
         )
 
-    marker = f"{consistency.UNSYNCED_PREFIX}{doc_id}"
     previous = repo.get_index_state(conn)
     # **先留痕，再改数据**。归档（事实）与向量索引不在同一个事务里，"文档表说 2025、
     # 按 2025 过滤却召回不到这批片段"这个窗口没法靠事后比对发现——条数、模型、维度
     # 全都对得上。只报一条 failed 是不够的：任务失败了，检索还在拿旧过滤列回答
     # （2026-10-24 第十五轮复审）。
-    repo.set_index_state(conn, marker)
+    marker = consistency.mark_unsynced(conn, doc_id)
     try:
         repo.set_document_year(conn, doc_id, doc_year)
     except Exception as exc:  # noqa: BLE001 - 归档没改，索引也没动，可以原样退回

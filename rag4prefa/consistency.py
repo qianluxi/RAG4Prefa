@@ -45,6 +45,28 @@ class IndexMismatch(RuntimeError):
 # 这个从归档覆盖一遍就行（`rebuild` 一条命令两类标记都能清）。
 UNSYNCED_PREFIX = "unsynced:"
 
+# `unsynced:` 后面跟的作用域前缀。文档级直接写 doc_id，项目级走这个前缀
+# （删项目一次影响几十上百个 id，逐个列出来没有意义）。
+UNSYNCED_PROJECT_PREFIX = "project:"
+
+
+def mark_unsynced(conn: sqlite3.Connection, scope: str) -> str:
+    """在"归档与索引要分头改"之前留痕，返回**当前生效**的标记。
+
+    只在状态是 `ready` 时覆盖：已经欠着一笔（例如 `rebuilding:*`、另一个文档的
+    `unsynced:`）时不改写——那条标记同样能阻断检索，覆盖它只会让后来的人以为
+    只有这一处没对齐，把更早的那笔彻底忘掉。
+
+    有了它，调用方不必自己拼字符串：撤销时把 `get_index_state()` 在动手前取到的旧值
+    写回去即可，不需要猜"刚才是 ready 还是另有标记"。
+    """
+    previous = repo.get_index_state(conn)
+    if previous != repo.INDEX_READY:
+        return previous
+    marker = f"{UNSYNCED_PREFIX}{scope}"
+    repo.set_index_state(conn, marker)
+    return marker
+
 
 def pending_message(marker: str) -> str:
     """「上次索引切换没走完」的说明。
@@ -55,10 +77,17 @@ def pending_message(marker: str) -> str:
     发现，只能靠写之前留下的标记。
     """
     if marker.startswith(UNSYNCED_PREFIX):
+        scope = marker[len(UNSYNCED_PREFIX) :]
+        if scope.startswith(UNSYNCED_PROJECT_PREFIX):
+            where = f"项目「{scope[len(UNSYNCED_PROJECT_PREFIX) :]}」"
+        elif scope:
+            where = f"文档 {scope}"
+        else:
+            where = "索引"
         return (
-            f"上一次文档元数据修改没有同步到向量索引（标记 {marker}）："
-            "归档里已经是新值，后端索引可能还是旧的——条数、模型、维度完全一致，"
-            "按年份过滤却会查不到或查到错的那一批。同步完成前检索一律拒绝。"
+            f"上一次改动{where}没有把归档与向量索引同步完（标记 {marker}）："
+            "归档（事实）与后端索引的内容可能已经不一致——条数、模型、维度可以完全一致，"
+            "按内容或按年份过滤却会对不上。同步完成前检索一律拒绝。"
             "执行 `python -m rag4prefa rebuild` 从归档恢复索引即可清除该标记。"
         )
     scope = "全量" if marker.endswith(":*") else f"项目「{marker.split(':', 1)[-1]}」"
@@ -321,6 +350,33 @@ def ensure_backend_current(conn: sqlite3.Connection, store) -> None:
         f"重新执行这条命令即可（新进程会装配到当前后端）。"
         f"确实要改用「{actual}」，用 `python -m rag4prefa rebuild`：它从归档重建，"
         "校验通过后才把活动后端改成新的那个。"
+    )
+
+
+def ensure_active_backend(conn: sqlite3.Connection, store) -> None:
+    """检索准入：手里这个后端必须是库里登记的活动后端。
+
+    为什么读路径也要单独一条：`index_generation` 只能证明"这次查询期间索引没被换过"。
+    一个长期运行的服务装配时持有 Milvus，之后别的进程把活动后端换成 numpy——本次查询
+    的起点已经在切换之后，代次从头到尾没变，两次确认都通过，可这个进程手里的索引早就
+    是另一份了。它不会报错，只会安静地返回切换之前的内容（2026-10-24 第十六轮复审）。
+
+    库里没有登记值（从没确认过）时不在这里拒绝：那属于"本进程没跑确认流程"，由服务层
+    用 `Services.backend_confirmed` 判断。把两种情况混成一条，会让人分不清"该重启"
+    还是"该重建"。
+    """
+    recorded = repo.get_vector_backend(conn)
+    if not recorded:
+        return
+    actual = getattr(store, "name", recorded)
+    if actual == recorded:
+        return
+    raise IndexMismatch(
+        f"检索已拒绝：本进程持有的向量后端是「{actual}」，而库里登记的活动后端已经是"
+        f"「{recorded}」——别的进程换过后端，这个进程手里的索引停在切换之前。"
+        "继续用它检索不会报错，只会返回切换之前的内容。"
+        "重启服务（重新装配后端）后再问；确实就该用这个后端，"
+        "用 `python -m rag4prefa rebuild` 显式切回去。"
     )
 
 

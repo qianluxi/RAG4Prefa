@@ -121,7 +121,7 @@ def test_settle_rebuilds_before_registering_a_backend_whose_ids_differ(
     assert stale.rebuilds == 1, "内容对不上就得先从归档重建，不能直接登记"
     assert stale.ids() == repo.recoverable_chunk_ids(conn), "登记的前提是内容真的对齐了"
     assert repo.get_vector_backend(conn) == "milvus"
-    assert any("不一致" in note for note in services.notes), (
+    assert any("逐 id 校验" in note for note in services.notes), (
         "要留下'为什么重建了一遍'的说明，否则运维只看到启动慢"
     )
 

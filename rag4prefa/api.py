@@ -452,6 +452,7 @@ def create_app(services: Services | None = None) -> FastAPI:
         services = svc(request)
         effective = ask.build_filter(req.question, req.filter, repo.project_names(services.conn))
         try:
+            services.assert_query_ready()
             hits, applied, timings = await ask.search(
                 services.conn,
                 services.store,
@@ -480,6 +481,9 @@ def create_app(services: Services | None = None) -> FastAPI:
         # 模型不一致/索引与事实不符的检查放在开始流之前：能改 HTTP 状态码的时候说清楚，
         # 别用 SSE error 收尾（客户端已经开始读 token 流了）
         try:
+            # 先看"本进程有没有确认过活动后端"，再看索引与配置对不对得上：
+            # 前者挡的是"手里这份索引可能压根不是这一版"，后者挡的是"模型/维度不匹配"。
+            services.assert_query_ready()
             consistency.ensure_queryable(
                 services.conn,
                 services.require_embedder().model,

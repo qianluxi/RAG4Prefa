@@ -252,9 +252,23 @@ def test_reingest_smaller_version_drops_stale_chunks(
 
 
 class HalfWritingStore(NumpyStore):
-    """写到一半就抛：模拟向量索引写入中途失败。"""
+    """写到一半就抛：模拟向量索引写入中途失败。
+
+    **只失败一次**。第二次写入发生在回滚里（把被覆盖的旧行写回去），它必须能成功——
+    这次用例要证的是"撤回之后仍然自洽"。如果补偿也失败，那是另一类状态：索引里可能
+    新旧混杂、而条数与 id 都对得上，只能靠持久化标记挡住检索，见
+    `test_review16.py::test_a_failed_rollback_leaves_a_marker_so_queries_stop`。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, dim: int) -> None:
+        super().__init__(conn, dim)
+        self._failed = False
 
     def upsert(self, items) -> None:  # type: ignore[override]
+        if self._failed:
+            super().upsert(items)
+            return
+        self._failed = True
         super().upsert(list(items)[: max(1, len(items) // 2)])
         raise RuntimeError("模拟索引写入中途失败")
 
@@ -342,11 +356,20 @@ class FullWriteThenRaiseStore(NumpyStore):
     这是最狠的部分写入——残留里**一定**包含本次新增的 chunk_id，正好用来验证
     撤回是不是按"写入前算好的清单"执行。只写前半批的那种故障，前半批很可能全是
     沿用旧 id 的片段（内容没变的段落），撤回与不撤回看起来一样，测不出问题。
+
+    同样只抛一次：抛出之后回滚要能把旧行写回去，否则就落在"补偿也失败"那一种状态上
+    （由 `test_review16.py` 单独覆盖）。
     """
+
+    def __init__(self, conn: sqlite3.Connection, dim: int) -> None:
+        super().__init__(conn, dim)
+        self._failed = False
 
     def upsert(self, items) -> None:  # type: ignore[override]
         super().upsert(list(items))
-        raise RuntimeError("模拟最后一批写入后连接断开")
+        if not self._failed:
+            self._failed = True
+            raise RuntimeError("模拟最后一批写入后连接断开")
 
 
 def test_partial_write_rollback_covers_newly_created_chunks(

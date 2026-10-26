@@ -21,7 +21,7 @@ from .adapters.vectors import (
 )
 from .concurrency import MaintenanceBusy, maintenance_lock, worker_alive
 from .config import Settings, get_settings
-from .consistency import collect_issues, inspect
+from .consistency import IndexMismatch, collect_issues, ensure_active_backend, inspect
 from .credentials import CredentialPool, UserCredentials
 from .db import connect, init_db
 from .repo import (
@@ -50,6 +50,12 @@ class Services:
     reranker: Reranker
     notes: list[str] = field(default_factory=list)
     fell_back: bool = False
+    # 本进程"确认过活动后端"的结论。三态，别合并：
+    #   None = 从没跑过确认流程（CLI、库层面直接构造、测试夹具）；
+    #   True = 确认过（登记成功，或者库里本来记着的就是手里这个）；
+    #   False = 跑过但没能证明（抢不到锁、重建失败、读不到后端条数）。
+    # 只有 False 会被检索挡下：那时本进程确实试过，并且知道自己没说服自己。
+    backend_confirmed: bool | None = None
     # 多用户自带 Key：池子按指纹复用客户端，视图共享同一个池
     credentials: CredentialPool | None = None
     user_label: str | None = None
@@ -108,7 +114,7 @@ class Services:
             raise LLMError("未配置大模型服务（R4P_LLM_API_KEY）")
         return self.llm
 
-    def settle_backend(self) -> None:
+    def settle_backend(self) -> bool:
         """确认"这个库的活动后端"——**能把集合打开，不等于它就是当前版本**。
 
         为什么必须单独一步（2026-10-24 第十五轮复审）：`open_store()` 只要集合能打开
@@ -117,85 +123,102 @@ class Services:
         活动后端，后续写入就落进一个内容不对的索引——而条数一致时，连"索引 vs 归档"
         的计数校验都发现不了。
 
-        协议只有一条：**先证明，再登记**。
+        协议只有一条：**先证明，再登记**（第十六轮把"证明"收紧到内容级）。
 
-        - 归档非空 → 后端 id 集合必须与归档完全一致；不一致就从归档重建（不重算
-          embedding），重建并逐 id 校验通过之后才登记；
-        - 归档为空 → 后端也必须是空的。否则那是上一版留下的孤儿向量，"登记"等于
-          承认一份没有任何正文的索引；
-        - 证明不了（读不到主键、重建失败）→ **不登记**，并说清怎么修。之后的写入
-          会被 `ensure_backend_current` 挡住：宁可停住，也不要往一份没证明过的索引里写。
+        - 同一后端且已登记 → 直接确认。这是启动的常规路径，不能每次整库重写；
+        - 归档非空而登记值不是它（首次确认或换后端）→ **按归档整体重建**，逐 id 校验
+          通过后才由 `rebuild_store` 在同一个事务里登记。只比 id 集合是不够的：id 相同
+          而向量值、`doc_year`、`project_code` 是旧的那种索引，每天都在正常返回结果；
+        - 归档为空 → 后端也必须读得出是空的。**读不到不是零**：SDK/连接抖一下就把
+          "无法确认"降级成"确认为空"，等于让一个证明不了自己的后端进了登记表；
+        - 证明不了 → 不登记，`backend_confirmed=False`，检索与写入都拒绝。
 
         整段在维护锁里：登记活动后端与"谁在写"必须互斥，否则刚证明完就被另一个进程
-        改掉了。锁拿不到就跳过（不登记），下次启动再核对——启动不该被别人的入库卡住。
+        改掉了。锁拿不到就跳过（不登记、也不确认），下次启动再核对——启动不该被别人的
+        入库卡住，但也不能因此假装自己确认过。
         """
         owner = self.owner
         if owner is not self:
-            owner.settle_backend()
-            return
+            return owner.settle_backend()
         recorded = get_vector_backend(self.conn)
         if recorded == self.store.name:
-            return
+            self.backend_confirmed = True
+            return True
         try:
             with maintenance_lock(
                 self.conn, purpose=f"确认活动后端 {self.store.name}", timeout=0.0
             ):
-                self._settle_locked(recorded)
+                self.backend_confirmed = self._settle_locked(recorded)
         except MaintenanceBusy as exc:
+            self.backend_confirmed = False
             self.notes.append(
                 f"未确认活动后端（{exc}）——另一个维护动作正在改索引。"
-                "本次先按配置打开的后端继续用，下次启动会重新核对"
+                "本次按配置打开的后端不会登记，检索与写入都会拒绝；确认完成前请重启服务"
             )
+        except Exception as exc:  # noqa: BLE001 - 确认失败不能让服务起不来
+            self.backend_confirmed = False
+            self.notes.append(
+                f"确认活动后端时出错（{_describe(exc)}）；本次不登记，"
+                "检索与写入都会拒绝。修好上面的问题后重启服务即可重试"
+            )
+        return bool(self.backend_confirmed)
 
-    def _settle_locked(self, recorded: str | None) -> None:
+    def _settle_locked(self, recorded: str | None) -> bool:
+        """在维护锁里确认后端。返回"是否已登记为活动后端"。"""
         target = self.store.name
         archive = repo.recoverable_chunk_ids(self.conn)
-        if archive:
+        if not archive:
+            # 归档为空：没有内容可比对，只能核对"索引也必须是空的"。
             try:
-                actual = self.store.ids()
-            except Exception as exc:  # 后端读不出主键时不能假设它写对了
+                leftover = self.store.count()
+            except Exception as exc:  # noqa: BLE001 - 读不到 ≠ 空
+                # 以前这里把异常折成 0：SDK 超时、连接被占、Lite 文件锁住，全都被读成
+                # "后端是空的"，接着登记。之后 `open_store` 又把它当"已有活动后端"，
+                # 于是这个从没被证实过的后端一路被信任下去（2026-10-24 第十六轮复审）。
                 self.notes.append(
-                    f"读不到向量索引的主键，无法确认活动后端（{_describe(exc)}）；"
-                    "本次不登记。执行 `python -m rag4prefa doctor` 看后端实际状态"
+                    f"归档为空，但读不到 {target} 索引的实际条数（{_describe(exc)}），"
+                    "无法确认它是空的；本次不登记活动后端。"
+                    "执行 `python -m rag4prefa doctor` 看后端到底怎么了"
                 )
-                return
-            if actual != archive:
-                from .ingest import rebuild_store  # 局部导入，避免循环依赖
-
-                try:
-                    moved = rebuild_store(self.conn, self.store)
-                except Exception as exc:  # noqa: BLE001 - 启动不能因为对齐失败就起不来
-                    self.notes.append(
-                        f"{target} 索引里的内容与归档不一致，按归档重建也没成功"
-                        f"（{_describe(exc)}）；本次不登记活动后端。"
-                        "执行 `python -m rag4prefa rebuild` 修好后再启动"
-                    )
-                    return
+                return False
+            if leftover:
                 self.notes.append(
-                    f"{target} 索引里的内容与归档不一致（条数可能相同，id 不同），"
-                    f"已按归档重建 {moved} 条"
+                    f"归档里没有任何片段，而 {target} 索引里还有 {leftover} 条向量"
+                    "（上一版留下的）；未登记为活动后端。"
+                    "执行 `python -m rag4prefa rebuild` 清掉这些残留后再启动"
                 )
+                return False
             set_vector_backend(self.conn, target)
             if recorded and recorded != target:
-                self.notes.append(f"活动后端由「{recorded}」切换为「{target}」")
-            return
+                self.notes.append(
+                    f"活动后端由「{recorded}」切换为「{target}」（库为空，无需迁移）"
+                )
+            return True
 
-        # 归档为空：没有内容可以互相比对，但"空归档 + 非空索引"必须当成异常——
-        # 那说明这条索引属于另一份数据，把它登记下来只会让每次检索都命中没有正文的向量。
+        # 归档非空、登记值又不是它：**内容必须整份重写一遍才算证明**。
+        #
+        # 只比 id 集合是上一轮的做法，它证明的是"记录的身份一致"。Milvus 里还有向量值、
+        # doc_year、project_code：从 Milvus 切到 numpy、在 numpy 上重建过向量或改过年份、
+        # 旧集合一直没同步——这时的 id 集合可以完全相同，而内容整整差一代。日常校验
+        # 只看条数/模型/维度，一条也发现不了。
+        from .ingest import rebuild_store  # 局部导入，避免循环依赖
+
         try:
-            leftover = self.store.count()
-        except Exception:  # pragma: no cover - 后端不可用时按"读不到"处理
-            leftover = 0
-        if leftover:
+            moved = rebuild_store(self.conn, self.store)
+        except Exception as exc:  # noqa: BLE001 - 启动不能因为对齐失败就起不来
+            why = f"库里记的是「{recorded}」" if recorded else "之前没有登记过活动后端"
             self.notes.append(
-                f"归档里没有任何片段，而 {target} 索引里还有 {leftover} 条向量"
-                "（上一版留下的）；未登记为活动后端。"
-                "执行 `python -m rag4prefa rebuild` 清掉这些残留后再启动"
+                f"「{target}」尚未登记为活动后端（{why}），而它与归档的内容是否一致无法证明"
+                f"——按归档重建也没成功（{_describe(exc)}）。本次不登记，检索与写入都会被拒绝；"
+                "执行 `python -m rag4prefa rebuild` 修好后再重启"
             )
-            return
-        set_vector_backend(self.conn, target)
-        if recorded and recorded != target:
-            self.notes.append(f"活动后端由「{recorded}」切换为「{target}」（库为空，无需迁移）")
+            return False
+        why = f"库里记的是「{recorded}」" if recorded else "之前没有登记过活动后端"
+        self.notes.append(
+            f"已把归档的 {moved} 条向量重建进「{target}」并逐 id 校验（{why}）："
+            "换后端时不重写内容就只能证明 id 相同，证明不了向量与过滤列是这一版"
+        )
+        return True
 
     def maybe_promote(self) -> bool:
         """启动时若因维度未知回退到 numpy，首次入库拿到维度后迁回 Milvus。
@@ -265,6 +288,30 @@ class Services:
         self.notes.append(f"已把 {moved} 条归档向量迁移到 Milvus")
         return True
 
+    def assert_query_ready(self) -> None:
+        """检索准入的服务级判据：本进程到底确认过活动后端没有。
+
+        两条证据，缺一不可：
+
+        1. `backend_confirmed is not False`——启动时确实证明过（或库里早就是它）。
+           `False` 意味着"试过、但没能证明"：抢不到维护锁、重建失败、读不到后端条数。
+           这时按配置打开的那个后端**可能**是对的，但本进程拿不出证据，检索照旧会返回
+           一份看起来正常的答案（2026-10-24 第十六轮复审）。
+        2. 手里这个后端仍是库里登记的活动后端——长跑的服务不会因为别人换了后端就自动
+           换过来，它只是继续查旧索引，一声不响。
+
+        `None` 不拦：那表示"这个进程没跑确认流程"，出现在 CLI 与直接用 `Services` 的
+        调用里。生产装配一定走 `build_services`，那里必跑 `settle_backend`。
+        """
+        if self.owner.backend_confirmed is False:
+            raise IndexMismatch(
+                "检索已拒绝：本进程启动时没能确认活动后端——它可能与归档的内容不一致"
+                "（条数、模型、维度都能对得上，只有向量和过滤列不同）。"
+                "原因见 `/api/health` 的 notes；用 `python -m rag4prefa rebuild` "
+                "从归档恢复后重启服务"
+            )
+        ensure_active_backend(self.conn, self.store)
+
     def health(self) -> dict:
         # 后端条数是"索引 vs 归档"交叉校验的一半，读不到就如实说读不到，
         # 不要拿 None 当 0 —— 那会把"查不了"伪装成"索引是空的"。
@@ -282,11 +329,23 @@ class Services:
         )
         if store_error:
             issues.append(f"读不到向量索引的实际条数，无法完成交叉校验：{store_error}")
+        recorded = repo.get_vector_backend(self.conn)
+        if recorded and recorded != self.store.name:
+            # 条数、模型、维度全对也可能出现这个状态：换后端后本进程没重新装配。
+            # 检索已被 `assert_query_ready` 挡住，这里要让运维先看见原因。
+            issues.append(
+                f"本进程持有的向量后端是「{self.store.name}」，库里登记的活动后端是"
+                f"「{recorded}」——这个进程手里的索引停在切换之前，检索会被拒绝；重启服务"
+            )
         return {
             # 索引与配置对不上时不能报"健康"：那种状态能跑，但检索结果不可信
             "ok": bool(self.embedder and self.llm) and not issues,
             "backend": {
                 "name": self.store.name,
+                # 库里登记的（别的进程也能看到）与本进程确认的，分开报：
+                # 只报一个 name 会让人以为"打开的就是登记的那个"
+                "recorded": recorded,
+                "confirmed": self.backend_confirmed,
                 "vectors": store_count,
                 "dim": self.store.dim,
                 "fell_back": self.fell_back,
