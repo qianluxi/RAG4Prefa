@@ -18,6 +18,12 @@ import pytest
 pymupdf = pytest.importorskip("pymupdf", reason="pdf 解析需要 pymupdf")
 
 from rag4prefa.adapters.parsers import parse_document  # noqa: E402
+from rag4prefa.adapters.parsers.headings import (  # noqa: E402
+    MAX_LEVEL,
+    MAX_SIZE_LEVELS,
+    build_sections,
+    text_heading_level,
+)
 from rag4prefa.adapters.parsers.pdf import parse_pdf  # noqa: E402
 from rag4prefa.adapters.vectors import NumpyStore  # noqa: E402
 from rag4prefa.config import Settings  # noqa: E402
@@ -179,6 +185,202 @@ def test_pdf_without_text_layer_is_rejected_with_reason(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="扫描件"):
         parse_pdf(path)
+
+
+def test_pdf_garbled_text_layer_is_rejected_with_reason(tmp_path: Path) -> None:
+    """取得到字符、取出来的却不是汉字：必须拒绝，且说清"换版本"而不是"做 OCR"。
+
+    这是真实撞到的局面：方正书版导出的 pdf 缺 ToUnicode 映射，文字层里存的是字形
+    编号，`get_text()` 会返回 `!"#$%&'()*` 这样的串。它"有 1 万多个字符"，
+    只查字符数的闸门完全拦不住——那些乱码会一路入库，把 BM25 的文档频率
+    和向量空间一起拖坏，而且全程没有任何报错。
+    """
+    doc = pymupdf.open()
+    noisy = '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
+    for _ in range(4):
+        page = doc.new_page()
+        for row in range(20):
+            page.insert_text((60, 100 + row * 18), noisy, fontsize=10)
+    path = tmp_path / "方正书版乱码.pdf"
+    doc.save(str(path))
+    doc.close()
+
+    with pytest.raises(ValueError, match="ToUnicode") as exc:
+        parse_pdf(path)
+    # 用户能做的事和扫描件不同：原件多半是可复制的，换一份能选中文字的版本即可
+    assert "OCR" in str(exc.value)
+
+
+def test_pdf_english_document_passes_readability_check(tmp_path: Path) -> None:
+    """英文文档不能被可读性判据误伤：汉字占比为 0 是正常的，靠拉丁词密度放行。"""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for row in range(25):
+        page.insert_text(
+            (60, 80 + row * 16),
+            "The precast column shall be erected after the grout sleeve is verified.",
+            fontsize=10,
+        )
+    path = tmp_path / "english.pdf"
+    doc.save(str(path))
+    doc.close()
+
+    sections = parse_pdf(path)  # 不抛异常即通过
+    assert sum(len(s.text) for s in sections) > 300
+
+
+def test_pdf_short_document_skips_readability_check(tmp_path: Path) -> None:
+    """样本太短时不做可读性判断：几十个字撑不起一个占比，误判成乱码更糟。"""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    lines = [
+        "工程概况：本工程地上十二层，标准层层高四点二米。",
+        "1.1 结构体系为装配式框架，预制率不低于百分之四十。",
+        "1.2 抗震设防烈度六度，设计使用年限五十年。",
+        "1.3 预制构件包括叠合板、预制楼梯与预制外墙挂板。",
+        "编制依据：GB 50010、GB 50204 及地方标准。",
+    ]
+    for row, line in enumerate(lines):
+        page.insert_text((60, 100 + row * 18), line, fontname=_CN, fontsize=10)
+    path = tmp_path / "短文档.pdf"
+    doc.save(str(path))
+    doc.close()
+
+    sections = parse_pdf(path)  # 只有一百多字，没过可读性闸门的门槛，照样放行
+    assert sum(len(s.text) for s in sections) < 300
+
+
+def test_pdf_toc_page_is_skipped_entirely(tmp_path: Path) -> None:
+    """目录页整页丢弃：它的条目就是"编号一行、标题一行"，会凭空长出假章节树。
+
+    YJK 手册（368 页）的目录有 5 页、上百条，全部被当成标题——它们是 461 节里
+    绝大多数空节点的来源，而且因为编号逐级递增，会构造出一棵和正文无关的树。
+    """
+    path = _make_pdf(
+        tmp_path / "带目录.pdf",
+        [
+            [  # 目录页：点线引导符
+                (60, "目 录", 18, _CN),
+                (100, "1.1 装配式设计要点............................. 1", 10, _CN),
+                (120, "1.2 结构计算................................... 5", 10, _CN),
+                (140, "1.3 构件拆分................................... 9", 10, _CN),
+                (160, "1.4 施工图出图................................ 12", 10, _CN),
+            ],
+            [  # 正文页
+                (60, "第1 章 概述", 18, _CN),
+                (100, _FRAME, _CN_BODY, _CN),
+            ],
+        ],
+    )
+
+    sections = parse_pdf(path)
+    titles = [s.title for s in sections]
+    assert "第1 章 概述" in titles
+    # 目录文本一个字都不该进正文：点线行、目录里的编号都会污染检索。
+    # 不跳目录时它们会被当成正文吸进"前言"节——所以断言的是"文本不在"，
+    # 而不是"标题不在"（目录行与正文同字号时，它本来也成不了标题）。
+    body = "\n".join(s.title + s.text for s in sections)
+    assert "....." not in body, "目录页的点线内容不能进入正文"
+    assert "装配式设计要点" not in body, "目录条目不能当正文"
+
+
+def test_pdf_number_only_line_is_merged_with_following_heading(tmp_path: Path) -> None:
+    """编号与标题名分两行的排版要拼回一条标题。
+
+    pdf 里 `1.1` 单独一行、`装配式设计要点` 下一行很常见。不合并会得到两个节点：
+    前一个只有编号、正文为空，后一个层级由字号排名决定——章节树长成
+    `1.1 > 装配式设计要点`，引用时只能显示"第 1.1 节"。
+    YJK 手册实测 461 节里有 195 个这样的空节点。
+    """
+    path = _make_pdf(
+        tmp_path / "编号分行.pdf",
+        [
+            [
+                (60, "第1 章 概述", 18, _CN),
+                (100, "1.1", 16, _CN),
+                (140, "装配式设计要点", 14, _CN),
+                (180, _FRAME, _CN_BODY, _CN),
+            ]
+        ],
+    )
+
+    sections = parse_pdf(path)
+    titles = [s.title for s in sections]
+    assert "1.1 装配式设计要点" in titles, titles
+    assert "1.1" not in titles, "编号不能单独成节"
+    merged = next(s for s in sections if s.title == "1.1 装配式设计要点")
+    assert merged.level == 2, "层级该由编号决定，而不是由下一行的字号排名决定"
+    assert _FRAME in merged.text
+
+
+def test_pdf_chapter_heading_with_space_before_unit_is_level_one(tmp_path: Path) -> None:
+    """「第1 章」中间的空格不能让它失去"章"的身份。
+
+    中英混排的排版软件常在这种地方插空格；一旦认不出 `第X章`，一级标题会退回
+    "按字号排名"的结果，层级跟着整棵树错位（YJK 手册的 `第1 章概述` 就落在 L3）。
+
+    这里的字号是**故意反过来**排的（节比章更大）：只有认编号才能得到正确的 1/2，
+    按字号排名会给出相反的 2/1。字号与逻辑层级一致时两种判据结果相同，
+    那样的样例证明不了任何事。
+    """
+    path = _make_pdf(
+        tmp_path / "空格章节.pdf",
+        [
+            [
+                (60, "第1 章 概述", 14, _CN),  # 章：字号较小
+                (100, _FRAME, _CN_BODY, _CN),
+                (140, "第 2 节 计算参数", 18, _CN),  # 节：字号反而更大
+                (180, _INTRO, _CN_BODY, _CN),
+            ]
+        ],
+    )
+
+    by_title = {s.title: s for s in parse_pdf(path)}
+    assert by_title["第1 章 概述"].level == 1, "认编号才给得出 1 级"
+    assert by_title["第 2 节 计算参数"].level == 2
+
+
+def test_formula_number_with_closing_paren_is_not_a_heading() -> None:
+    """`1）` 是公式编号，不是标题；`（1）` 成对出现才算。
+
+    上海计算细则实测：`1）预制柱比例 = ...` 这类行被判成一级标题，
+    22 个只有几十字的公式碎片各自成章，把章节树撑成一片噪声。
+    """
+    assert text_heading_level("1）预制柱比例") is None
+    assert text_heading_level("（1）预制柱比例") == 0  # 成对括号 = 相对级别标题
+    assert text_heading_level("1.1 装配式设计要点") == 2
+
+
+def test_build_sections_clamps_level_to_domain_limit() -> None:
+    """解析器给出的级别不能把章节树撑破 `Section.level <= 9`。
+
+    YJK 手册（368 页）实测撞出过 level=10：pdf 的层级来自"字号排名"，
+    而一份真实文档里的字号远不止 9 种，全换算成层级就会排出十几层。
+    夹紧点放在组装层，这样 docx（Word 大纲级别最多 9）与 pdf 共用一道口子。
+    """
+    sections = build_sections([(12, "过深的标题"), (None, "正文")])
+    assert [s.level for s in sections] == [MAX_LEVEL]
+
+
+def test_pdf_font_size_ranks_are_capped_to_max_levels(tmp_path: Path) -> None:
+    """字号排名只取前若干个字号：多出来的字号落进最深一层，而不是继续往下钻。"""
+    sizes = [20, 18, 16, 14, 13, 12, 11]  # 7 种"比正文大"的字号，正文 10
+    doc = pymupdf.open()
+    page = doc.new_page()
+    y = 90
+    for index, size in enumerate(sizes):
+        page.insert_text((60, y), f"标题层{index}", fontname=_CN, fontsize=size)
+        y += size + 14
+    for _ in range(6):
+        page.insert_text((60, y), _FRAME, fontname=_CN, fontsize=_CN_BODY)
+        y += 18
+    path = tmp_path / "多字号.pdf"
+    doc.save(str(path))
+    doc.close()
+
+    sections = parse_pdf(path)
+    assert sections
+    assert max(s.level for s in sections) <= MAX_SIZE_LEVELS
 
 
 def test_pdf_table_cells_are_kept_as_rows(tmp_path: Path) -> None:

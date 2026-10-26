@@ -30,7 +30,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ...domain import Section
-from .headings import build_sections, clean_text, looks_like_title, text_heading_level
+from .headings import (
+    MAX_SIZE_LEVELS,
+    build_sections,
+    clean_text,
+    looks_like_title,
+    text_heading_level,
+)
 
 try:  # pymupdf 1.24 起同时提供 pymupdf 与 fitz 两个名字，早于它的只有 fitz
     import pymupdf
@@ -54,6 +60,28 @@ _FURNITURE_BUDGET = 0.30  # 被判定为页眉页脚的行超过这个比例，�
 _MIN_TEXT_CHARS = 50  # 全文可提取字符少于这个数，视为没有文字层
 _FURNITURE_RATIO_MIN = 20  # 少于这么多段时不用比例保护：短文档里页眉本来占比就高
 _CONTINUATION_GAP = 1.0  # 行间空隙不超过一个字号，就认为是同一段内的换行
+
+# 可读性判据（阈值按实测标定，见 tests/test_pdf_parser.py 的乱码用例）。
+#
+# 为什么需要这一层：有些 pdf **取得到字，但取到的不是汉字**。方正书版一类排版软件
+# 输出的 Type1 子集字体常常没有 ToUnicode 映射，pymupdf 只能给出字形编号，
+# 于是"可提取字符 10899 个"看上去像成功，实际是一串 `!"#$%&'()*`。
+# 只检查字符数的闸门对这种文件完全失效——它会一路入库，把 BM25 的文档频率
+# 和向量空间一起拖坏，而且没有任何报错。
+_MIN_CHARS_FOR_READABILITY = 300  # 太短的文档样本不足，不判
+_MIN_CJK_RATIO = 0.15  # 汉字占比下限（正常的纯中文正文约 0.6~0.9）
+_MIN_WORD_DENSITY = 40.0  # 每千字符里 3 个以上连续拉丁字母的组数（正常英文约 90~130）
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+_LATIN_WORD = re.compile(r"[A-Za-z]{3,}")
+
+# 目录页判据：点线引导符（"3.2 非装配式构件......45"）。用 5 个点起步，
+# 中文正文的省略号是「……」，不会撞上。
+_TOC_DOTS = re.compile(r"\.{5,}")
+_TOC_MIN_LINES = 3  # 至少这么多行才可能整页是目录
+_TOC_RATIO = 0.30  # 且占有效行比例够高（实测目录页约 0.49，正文页 < 0.1）
+
+# 只有编号、没有标题名的一行（`1.1`、`4.6.2`）。它多半是被排版拆开的半个标题。
+_NUMBER_ONLY = re.compile(r"^\d+(?:[.．]\d+)*[.．]?$")
 
 _PAGE_NO = re.compile(r"^[-—–\s]*\d{1,4}[-—–\s]*$")
 _PAGE_NO_CN = re.compile(r"^第\s*\d+\s*页(\s*[,，/]?\s*共\s*\d+\s*页)?$")
@@ -159,9 +187,44 @@ def _table_rows(table) -> list[str]:
     return rows
 
 
-def _collect(doc) -> list[_Item]:
+def _looks_like_toc(lines: list[str]) -> bool:
+    """这一页是不是目录页：大多数行都是「标题......页码」的点线引导符。
+
+    目录必须整页丢掉，理由不是"它没用"，而是**它的危害比没用大**：目录条目本身
+    就是「编号一行、标题一行」，编号行长得很像标题（短、无标点收尾），于是
+    `4.6`、`4.6.1`、`4.6.2` 会依次成为章节节点，凭空长出一棵和正文无关的树。
+    YJK 手册（368 页）实测：目录 5 页贡献了 462 节里的绝大部分空节点。
+
+    两条件同时成立才算：点线行数够多，且占有效行的比例够高。只看绝对数量会把
+    "一页里恰好有几个省略号"误判掉。
+    """
+    if not lines:
+        return False
+    dotted = sum(1 for line in lines if _TOC_DOTS.search(line))
+    return dotted >= _TOC_MIN_LINES and dotted / len(lines) >= _TOC_RATIO
+
+
+def _toc_pages(texts: list[str]) -> list[int]:
+    """标出目录页。若多数页都被判成目录，说明判据在这份文档上失效，一律不跳。
+
+    保护是必要的：一份**本身就是目录**的文档（书目、索引）如果整篇被跳过，
+    会得到"零内容"而不是"解析失败"，用户看到的是空库而不是原因。
+    """
+    flags = [
+        _looks_like_toc([ln.strip() for ln in text.splitlines() if ln.strip()])
+        for text in texts
+    ]
+    if sum(flags) > len(flags) / 2:
+        return []
+    return [pno for pno, hit in enumerate(flags) if hit]
+
+
+def _collect(doc, *, skip_pages: set[int] | None = None) -> list[_Item]:
     items: list[_Item] = []
+    skip = skip_pages or set()
     for pno, page in enumerate(doc):
+        if pno in skip:
+            continue
         try:
             found = list(page.find_tables().tables)
         except Exception:  # noqa: BLE001 - 表格识别是增强项，失败就当没有表
@@ -314,14 +377,26 @@ def _merge_continuations(items: list[_Item]) -> list[_Item]:
 
 
 def _size_ranks(items: list[_Item], body: float) -> dict[float, int]:
-    """「看着像标题」的字号按降序排名，给没有编号的标题一个层级。"""
+    """「看着像标题」的字号按降序排名，给没有编号的标题一个层级。
+
+    只排前 `MAX_SIZE_LEVELS` 个字号：真实文档没有十几级标题，多出来的字号
+    （图注、表注、脚注、页眉）如果各占一级，章节树会被切成十几层碎片。
+    排名之外的字号统一落到最深层，仍算标题，只是不再往深处走。
+    """
     weight: Counter[float] = Counter()
     for item in items:
         if item.kind != "text":
             continue
         if item.size >= body + 0.3 and (item.bold or item.size >= body + 1.0):
             weight[item.size] += len(item.text)
-    return {size: rank + 1 for rank, size in enumerate(sorted(weight, reverse=True))}
+    ordered = sorted(weight, reverse=True)
+    ranks = {
+        size: rank + 1 for rank, size in enumerate(ordered[:MAX_SIZE_LEVELS])
+    }
+    floor = min(MAX_SIZE_LEVELS, len(ordered))
+    for size in ordered[MAX_SIZE_LEVELS:]:
+        ranks[size] = floor
+    return ranks
 
 
 def _level_of(
@@ -355,6 +430,41 @@ def _level_of(
     return None
 
 
+def _merge_number_only_heads(
+    events: list[tuple[int | None, str]],
+) -> list[tuple[int | None, str]]:
+    """把「编号独占一行」的标题与紧随其后的标题行拼回去。
+
+    pdf 里很常见的排版是编号和标题名分成两行（`1.1` 一行、`装配式设计要点` 一行），
+    有时两行字号还不一样。分开处理会得到两个节点：前一个只有编号、正文为空，
+    后一个的层级由字号排名决定——章节树于是长成 `1.1 > 装配式设计要点`，
+    父节点是空的、子节点才是真标题，引用时只能显示"第 1.1 节"。
+
+    YJK 手册（368 页）实测：461 节里有 195 个这种空节点，占 42%。
+
+    只合并"下一行也是标题、且不含编号"的情况：`2.1` 后面跟 `2.1.1` 是两级标题，
+    拼起来就成了 `2.1 2.1.1`，比不合并更糟。
+    """
+    out: list[tuple[int | None, str]] = []
+    index = 0
+    while index < len(events):
+        level, text = events[index]
+        title = text.strip()
+        if level is not None and _NUMBER_ONLY.match(title):
+            nxt = events[index + 1] if index + 1 < len(events) else None
+            if nxt is not None and nxt[0] is not None:
+                name = nxt[1].strip()
+                merged = f"{title} {name}"
+                merged_level = text_heading_level(merged)
+                if not _NUMBER_ONLY.match(name) and merged_level:
+                    out.append((merged_level, merged))
+                    index += 2
+                    continue
+        out.append((level, text))
+        index += 1
+    return out
+
+
 def _events(
     items: list[_Item], body: float, ranks: dict[float, int], *, trust_numbers: bool
 ) -> list[tuple[int | None, str]]:
@@ -368,20 +478,62 @@ def _events(
     return out
 
 
+def _ensure_readable(text: str) -> None:
+    """拦下"取得到字符、但取到的不是文字"的 pdf。
+
+    两种坏法各有一条消息，因为用户能做的事不一样：
+
+    * **字符太少**（`_MIN_TEXT_CHARS`）——扫描件/图片导出的，需要 OCR 或换版本；
+    * **字符够多但读不出内容**——字体缺 ToUnicode 映射，换版本通常就能解决，
+      因为原件多半是可复制的。
+
+    判据是"两条里占一条"：汉字占比够高（中文文档），或拉丁词密度够高（英文文档）。
+    两者都不满足说明既不像中文也不像英文，那它就不是能直接检索的文本。
+    正常的纯数字表格会被这条拦下——这是有意的：这类页面作为检索语料价值本来就低，
+    而且拦下来能看见原因，比悄悄入库一堆 `1.20 | 0.35` 好。
+    """
+    stripped = text.strip()
+    if len(stripped) < _MIN_CHARS_FOR_READABILITY:
+        return
+    cjk = len(_CJK.findall(stripped)) / len(stripped)
+    words = len(_LATIN_WORD.findall(stripped)) / len(stripped) * 1000
+    if cjk >= _MIN_CJK_RATIO or words >= _MIN_WORD_DENSITY:
+        return
+    raise ValueError(
+        "这个 pdf 能取到字符，但取出来的不是可读文字"
+        f"（{len(stripped)} 个字符里汉字占 {cjk:.1%}、每千字只有 {words:.0f} 个英文词）。"
+        "常见原因是导出的字体缺少 ToUnicode 映射——方正书版等排版软件很常见，"
+        "文字层里存的是字形编号而不是汉字编码，任何工具都无法还原。"
+        "请换一份可复制、可搜索的版本（在阅读器里能选中文字并复制出来的那种）；"
+        "只有图片的扫描件则需要先做 OCR。"
+        "文件未被入库，索引与归档没有任何改动。"
+    )
+
+
 def parse_pdf(path: str | Path) -> list[Section]:
     """解析为 Section 列表。认不出标题的文档退化成一节，不报错。"""
     with pymupdf.open(str(path)) as doc:
         if doc.page_count == 0:
             raise ValueError("这个 pdf 没有任何页面，无法解析")
-        items = _collect(doc)
-        total_chars = sum(len(item.text) for item in items)
-        if total_chars < _MIN_TEXT_CHARS:
+
+        # 两道准入闸门都在**跳目录之前**、并且看**全文**：
+        # "有没有文字层""取出来的字读不读得懂"是整份文档的属性。
+        # 先跳目录再判断会把"目录 5 页 + 正文 1 页"这种文档误判成扫描件——
+        # 剩下的正文字符可能确实不足 50 个，但它不是扫描件。
+        texts = [page.get_text("text") for page in doc]
+        raw = "\n".join(texts)
+        visible = len(raw.strip())
+        if visible < _MIN_TEXT_CHARS:
             raise ValueError(
-                f"这个 pdf 几乎取不到文字（可提取字符 {total_chars} 个），"
+                f"这个 pdf 几乎取不到文字（可提取字符 {visible} 个），"
                 "大概率是扫描件或图片导出的。当前管线不做 OCR，请提供带文字层的版本，"
                 "或先用外部工具（如 Acrobat、abbyy）做一次文字识别。"
                 "文件未被入库，索引与归档没有任何改动。"
             )
+        _ensure_readable(raw)
+
+        skip = set(_toc_pages(texts))
+        items = _collect(doc, skip_pages=skip)
 
         body = _body_size(doc)
         items = _drop_furniture(items, doc, body)
@@ -393,5 +545,6 @@ def parse_pdf(path: str | Path) -> list[Section]:
             # 整篇没有一个"看着像标题"的行：多半是标题与正文同字号、都不加粗，
             # 只能靠编号分层的老公文。退回"只信编号"，总比整篇塞进一节强。
             events = _events(items, body, ranks, trust_numbers=True)
+        events = _merge_number_only_heads(events)
 
     return build_sections(events)
