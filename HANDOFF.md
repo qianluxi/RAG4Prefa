@@ -44,9 +44,9 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | **`50547ac`**（"README 补上评估集说明：两份数据集不能混成一个平均数"，第二十一轮收尾），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
-| 上一轮基线 | `594fcc5`（PDF 解析撞真实文档）→ `f859f90`（评估集建成）→ `50547ac`（评估说明） |
-| CI | `.github/workflows/ci.yml`：`50547ac`、`28fd78f`、`594fcc5` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest 277 项） |
+| 当前提交 | **`959a106`**（"真机跑通：323 块入库、三方一致，评估四行对照与结论一起写进文档"，第二十二轮），已推送 `origin/main`，本地与远端一致；往后以 `git log -1 --oneline` 为准 |
+| 上一轮基线 | `50547ac`（评估说明）→ `3a049b1`（重排开关）→ `7705f5f`（评估口径）→ `959a106`（真机） |
+| CI | `.github/workflows/ci.yml`：`959a106`、`7705f5f`、`3a049b1` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest 277 项） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
