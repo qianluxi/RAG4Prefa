@@ -1,30 +1,28 @@
-{"question": "上海对新建民用建筑的装配式实施范围是怎么规定的？", "gold_chunk_ids": ["2a7bcd3fe6cef48761687217b9e814ca", "4ca114ebefbab080925e0bc16093195c"], "note": "实施范围与40%/60%底线", "anchor": ["的单体预制率是指混凝土结构、钢\n— 1 —\n结构", "率或装配率应按《计算细则》执行。四、各区（县）政"]}
-{"question": "单体预制率和单体装配率分别指什么？", "gold_chunk_ids": ["27e06ef1001ce4be59ab57ba325ab181", "48ea096659ce10f0e14aae62dbd8b1e2"], "note": "两个指标的定义", "anchor": ["率。其中，预制构件包括以下类型：墙体（剪力墙、外", "全装修、单元式幕墙、集成式厨房、集成式卫生间、集"]}
-{"question": "框架结构里墙体构件的权重系数取多少？", "gold_chunk_ids": ["029cbff3333699b13d3bf98946dfc23d"], "note": "表1 框架结构权重", "anchor": ["面叠合墙 | 0.30\n5 | 楼梯 | 0.1"]}
-{"question": "剪力墙结构里双面叠合墙的修正系数是多少？", "gold_chunk_ids": ["bfc9148284e8b5b259495a254f13647a"], "note": "表2 剪力墙结构权重与修正", "anchor": ["免模板 | 0.40\n7 | 空调板 | 0.0"]}
-{"question": "单体装配率由哪几个部分组成？", "gold_chunk_ids": ["27e06ef1001ce4be59ab57ba325ab181"], "note": "预制率+部品装配率+其他", "anchor": ["全装修、单元式幕墙、集成式厨房、集成式卫生间、集"]}
-{"question": "「其他」这一项里包含哪六项工业化技术？", "gold_chunk_ids": ["ef80dc907cd32ff001bc34261d787bb2"], "note": "六项技术清单", "anchor": ["预制，现场直接安装的墙体。4)集成式楼板，是指集"]}
-{"question": "凸窗在预制率计算中算进哪个分项？", "gold_chunk_ids": ["33aef360e4ba4093cb0fca2f84fb378b"], "note": "名词解释：凸窗计入墙体", "anchor": ["板；4、全预制柱/斜撑是指在工厂预制现场安装的预"]}
-{"question": "这本计算细则适用于哪些结构类型和结构体系？", "gold_chunk_ids": ["48ea096659ce10f0e14aae62dbd8b1e2"], "note": "适用范围", "anchor": ["率。其中，预制构件包括以下类型：墙体（剪力墙、外"]}
-{"question": "审查意见里对多联机的 APF 值提了什么要求？", "gold_chunk_ids": ["17e4d98012ad3d8317d6f2ae1a13f2aa"], "note": "审查意见单", "anchor": ["建评分情况（提高8%），暖施002第八.2.2条"]}
-{"question": "结构与保温一体化具体指什么做法？", "gold_chunk_ids": ["ef80dc907cd32ff001bc34261d787bb2"], "note": "六项技术定义", "anchor": ["预制，现场直接安装的墙体。4)集成式楼板，是指集"]}
-{"question": "同一层里现浇墙肢和预制墙肢都有，现浇墙肢的地震作用要放大吗？", "gold_chunk_ids": ["bad262ffa37878057100dc661a87f1fe"], "note": "1.1 增大系数", "anchor": ["结构计算主要进行以下有关预制构件信息相关的调整："]}
-{"question": "预制墙底接缝在底部加强部位该套哪条公式？", "gold_chunk_ids": ["ff3cf6aac430070dce4c185ffcb66b38"], "note": "6.5.1-3", "anchor": ["加强部位则按式6.5.1-2 进行；北京地标下预"]}
-{"question": "按北京地标算墙底接缝，非底部加强部位用哪条公式？", "gold_chunk_ids": ["ff3cf6aac430070dce4c185ffcb66b38"], "note": "5.5.1-2", "anchor": ["加强部位则按式6.5.1-2 进行；北京地标下预"]}
-{"question": "配筋简图上标的 PC16.45-16.38 是什么意思？", "gold_chunk_ids": ["6ba90e5aa856f0f61700255bc4e42213"], "note": "两端所需纵筋面积", "anchor": ["算，预制梁左端需配置的纵向钢筋面积为1645mm"]}
-{"question": "在施工图里改了键槽尺寸，怎么让它参与接缝验算？", "gold_chunk_ids": ["6ba90e5aa856f0f61700255bc4e42213"], "note": "只设计（不计算）", "anchor": ["算，预制梁左端需配置的纵向钢筋面积为1645mm"]}
-{"question": "脱模验算时那个荷载放大系数有什么规定？", "gold_chunk_ids": ["f74a20872faadaa8f3dc65170b8d3f63"], "note": "动力系数≥1.2，JGJ1-2014 6.2.3", "anchor": ["）脱模验算动力系数考虑脱膜验算时的荷载放大系数。"]}
-{"question": "叠合板编号 DBD67-4224-1 里的 67 和 4224 分别代表什么？", "gold_chunk_ids": ["1fc10ed10981565bf421ea3fe56e1cf2"], "note": "厚度与标志尺寸", "anchor": ["名称“DBD67-4224-1”的叠合板有多块，"]}
-{"question": "双向板接缝钢筋的搭接长度默认取多少？", "gold_chunk_ids": ["8483ce6f4660a4ccead21d9b66eed2a5"], "note": "35d", "anchor": ["小于所填写的宽度限值时，将不再绘制桁架钢筋。24"]}
-{"question": "板跨比较大时，怎么把上弦钢筋直径统一成一个值？", "gold_chunk_ids": ["8b8b35801c10b4f4af94b6edd63f85cc"], "note": "3500,10 参数", "anchor": ["飞筋参数有两种设置方式，一种为自动设置；一种为手"]}
-{"question": "PK 预应力叠合板的预制底板有多厚？有几种板宽？", "gold_chunk_ids": ["9ad9ee92fd6932a01888b57cf4c8b8d3"], "note": "30mm，1m/0.5m", "anchor": ["，软件需要有楼板总厚度数据。软件对PK 预应力叠"]}
-{"question": "预制梁批量编辑时怎么把已有梁的参数直接拿过来用？", "gold_chunk_ids": ["0a348e01e279a53ea3789408c06a0872"], "note": "拾取参数", "anchor": ["为方便用户快速完成批量编辑中的参数设置，4.0."]}
-{"question": "凹口上现浇部分高度设成自动时，程序怎么取值？", "gold_chunk_ids": ["0a348e01e279a53ea3789408c06a0872"], "note": "h1=max(板厚, h-h2)", "anchor": ["为方便用户快速完成批量编辑中的参数设置，4.0."]}
-{"question": "指定预制柱时可以设置哪些拆分参数？", "gold_chunk_ids": ["0a1a76446f01043dc51a4c3fbeff0e83"], "note": "柱高/柱底键槽/排气孔/柱顶键槽", "anchor": ["执行“指定预制柱”菜单后会弹出预制柱拆分参数设置"]}
-{"question": "预制梁的自动拆分和精确拆分有什么区别？", "gold_chunk_ids": ["497ecca3b9cc6e4224b56f1fed15fdd8", "bbecc8764eef18556d8f386742a372c5"], "note": "限值 vs 精确定义", "anchor": ["对于框架梁不宜小于150mm，对于非框架梁不宜小", "精确拆分页下通过拆分参数可准确定义凹口和键槽尺寸"]}
-{"question": "ALC 板能做成企口板吗？配筋有哪几种形式？", "gold_chunk_ids": ["7ad2e19833caabd5e675e2cbd77ae05e"], "note": "企口板/单层与双层网片", "anchor": ["和宽度会灰显，勾选企口板则可以对企口宽度和深度进"]}
-{"question": "预制梁吊装验算的吊点放在什么位置？", "gold_chunk_ids": ["f773f87ef4b1ce69177986821b28f89a"], "note": "0.207L", "anchor": ["验算预制柱吊装验算在“专项验算”菜单下进行(见下"]}
-{"question": "从平面图读进预制构件的配筋，换个楼层还在不在？", "gold_chunk_ids": ["bfb102a540f4b61955c53aa76ed47a61"], "note": "切楼层会清除", "anchor": ["图中的平法配筋读取到预制构件中，程序提供了该菜单"]}
-{"question": "专业协同里，预制构件上的开洞怎么和机电对上？", "gold_chunk_ids": ["b56ad616b801c2f3e412f64a82dd4684"], "note": "自动生成预留洞口", "anchor": ["关构件的预制信息。\n预制构件上的开洞信息将对接机"]}
-{"question": "叠合板的吊点数量和位置由哪些参数决定？", "gold_chunk_ids": ["f74a20872faadaa8f3dc65170b8d3f63"], "note": "带 filter=软件手册", "filter": {"projects": ["软件手册"]}, "anchor": ["）脱模验算动力系数考虑脱膜验算时的荷载放大系数。"]}
-{"question": "预制率的计算公式是什么？", "gold_chunk_ids": ["27e06ef1001ce4be59ab57ba325ab181"], "note": "带 filter=装配式规范", "filter": {"projects": ["装配式规范"]}, "anchor": ["全装修、单元式幕墙、集成式厨房、集成式卫生间、集"]}
+// 基础集：问法贴近原文术语，测的是「关键词覆盖」能力。
+// gold 由 `python scripts/relabel_eval.py --write` 按 anchor 计算，不要手写 id。
+// anchor 必须在该题筛选范围内**唯一命中**——它同时是"标注不过期"的保险。
+{"question": "上海对新建民用建筑的装配式实施范围是怎么规定的？", "anchor": ["建筑高度100 米以上的新建居住建筑"], "note": "实施范围与 15%/35% 底线", "filter": {"projects": ["装配式规范"]}, "gold_chunk_ids": ["4ca114ebefbab080925e0bc16093195c"]}
+{"question": "双面叠合墙在计算预制率时的修正系数是多少？", "anchor": ["双面叠合墙 | 0.75\n单面叠合墙 | 0.30\n注：本表适用于"], "note": "同一行在表1~表4 里重复出现，被切进了两个块；只标其中一块——保守口径，Recall 宁低不高", "gold_chunk_ids": ["bfc9148284e8b5b259495a254f13647a"]}
+{"question": "单体装配率由哪几个部分组成？", "anchor": ["建筑单体装配率 = 建筑单体预制率 + 部品装配率"], "note": "预制率 + 部品装配率 + 其他", "gold_chunk_ids": ["27e06ef1001ce4be59ab57ba325ab181"]}
+{"question": "「其他」这一项里包含哪六项工业化技术？", "anchor": ["结构与保温一体化、墙体与窗框一体化、集成式墙体"], "note": "六项技术清单", "gold_chunk_ids": ["ef80dc907cd32ff001bc34261d787bb2"]}
+{"question": "凸窗在预制率计算中算进哪个分项？", "anchor": ["凸窗所在的预制墙体计入墙体分项"], "note": "名词解释：凸窗计入墙体", "gold_chunk_ids": ["33aef360e4ba4093cb0fca2f84fb378b"]}
+{"question": "这本计算细则适用于哪些结构类型和结构体系？", "anchor": ["涵盖剪力墙结构、框架结构、框架-剪力墙（筒体）结构"], "note": "适用范围", "gold_chunk_ids": ["48ea096659ce10f0e14aae62dbd8b1e2"]}
+{"question": "按方法二简化计算时，框架结构里柱的权重系数取多少？", "anchor": ["柱/斜撑 | 0.10 | 全预制柱/斜撑 | 0.90"], "note": "表1 框架结构权重", "gold_chunk_ids": ["029cbff3333699b13d3bf98946dfc23d"]}
+{"question": "全装修在细则里是怎么定义的？", "anchor": ["全装修并不是简单的毛坯房加装修"], "note": "全装修定义", "gold_chunk_ids": ["1f3c6078bd5259facac0353e02ce6b72"]}
+{"question": "空调板算哪一类构件，权重系数是多少？", "anchor": ["空调板是指放置空调外机的搁板"], "note": "名词解释：空调板", "gold_chunk_ids": ["33aef360e4ba4093cb0fca2f84fb378b"]}
+{"question": "浙江省的装配式建筑评价分哪几个阶段，最后以哪个为准？", "anchor": ["装配率以竣工阶段评价的结论为准"], "note": "设计阶段 / 竣工阶段", "gold_chunk_ids": ["0824aed262e2eb90c221fa9e32aac061"]}
+{"question": "浙江省装配式建筑包括哪几类结构？", "anchor": ["包括装配式混凝土结构建筑、装配式钢结构建筑"], "note": "定义：四类结构", "gold_chunk_ids": ["0824aed262e2eb90c221fa9e32aac061"]}
+{"question": "设计变更导致装配率降低、不符合承诺要求时，浙江省要求建设单位怎么办？", "anchor": ["因设计变更导致装配率降低不符合承诺要求"], "note": "重新计算并提交材料", "gold_chunk_ids": ["08d88040bdbaa175af47d95d0c80728d"]}
+{"question": "浙江省装配式建筑评价结果主要用在哪些地方？", "anchor": ["优先推荐“钱江杯”优质工程"], "note": "结果应用", "gold_chunk_ids": ["5b97af29c47c7d6ee929c4c48ca6e791"]}
+{"question": "审查意见里对多联机的 APF 值提了什么要求？", "anchor": ["28<CC<50kw时的APF值不应小于4.536"], "note": "闵行项目审查意见单", "gold_chunk_ids": ["17e4d98012ad3d8317d6f2ae1a13f2aa"]}
+{"question": "东街项目预制率总表里，1# 楼的单体预制率是多少？", "anchor": ["369.73 | 1828.16 | 20.22%"], "note": "预制率计算总表", "gold_chunk_ids": ["0b8a082d900e3b84b29915f975f50b4f"]}
+{"question": "东街项目的设计依据引用了哪些湖州市的政策文件？", "anchor": ["湖州市推进新型建筑工业化项目建设管理办法"], "note": "设计依据：政策文件", "gold_chunk_ids": ["fe07be8f5a20b4cdc705206d9975a222"]}
+{"question": "东街项目设计依据里引用了哪本叠合板图集？", "anchor": ["《桁架钢筋混凝土叠合板(60mm 厚底板)》"], "note": "设计依据：标准图集", "gold_chunk_ids": ["9fd5e511360c4fe7320bac515052544f"]}
+{"question": "东街项目哪些单体参与工业化建筑评价，幼儿园算不算？", "anchor": ["幼儿园按“应做尽做”原则不参与"], "note": "20 幢住宅 + 1 幢商业办公", "gold_chunk_ids": ["136a68728ec54be830e485b19d4e735c"]}
+{"question": "东街项目 4# 楼重复使用最多的三个规格外窗合计多少樘、占比多少？", "anchor": ["重复使用最多的三个规格的外窗总数 | 450"], "note": "外窗统计表", "gold_chunk_ids": ["053a2796854cd558f09c6a0f37dd7612"]}
+{"question": "标准化设计对预制内隔墙板重复使用规格提了什么比例要求？", "anchor": ["单体建筑中重复使用最多的一个规格的预制内隔墙板的面积之和"], "note": "评价条文 4.2.9", "gold_chunk_ids": ["b9bb427ceb6bfbef56a263a2fd0ca3eb"]}
+{"question": "东街项目的深化设计要结合哪些施工条件来考虑？", "anchor": ["综合考虑施工外架条件和模板支撑系统"], "note": "评价条文 4.2.27", "gold_chunk_ids": ["7cd1a3e18c3b6b32aa9507395add44c9"]}
+{"question": "南湖项目自评价表里用的是哪种结构体系的分值口径？", "anchor": ["钢框架—混凝土剪力墙混合结构"], "note": "南湖自评价表", "gold_chunk_ids": ["8f25aa9023957af7931c1c2bf82ddce0"]}
+{"question": "美睿金座 1# 楼内隔墙非砌筑的应用比例是多少？", "anchor": ["77.30%"], "note": "1# 楼内隔墙非砌筑", "gold_chunk_ids": ["1d991e7224ff559ffdd90036613328b3"]}
+{"question": "美睿金座 2# 楼非承重围护墙与保温隔热一体化的比例是多少？", "anchor": ["93.70%"], "note": "2# 楼围护墙", "gold_chunk_ids": ["5b69c7c8465ed3a2f6b630b3b38ac302"]}
+{"question": "美睿金座 3# 楼内隔墙非砌筑的应用比例是多少？", "anchor": ["78.17%"], "note": "3# 楼内隔墙非砌筑", "gold_chunk_ids": ["09c62da89ae2fb12ce84ba0a96094bbd"]}
