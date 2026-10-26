@@ -93,6 +93,26 @@ def delete_project(conn: sqlite3.Connection, name: str) -> list[str]:
     return chunk_ids
 
 
+def delete_document(conn: sqlite3.Connection, doc_id: str) -> list[str]:
+    """删单个文档并返回被删掉的 chunk_id（供向量库同步清理）。
+
+    与 `delete_project` 一样，片段、全文索引、向量归档一起删；向量索引由调用方
+    （admin 层）在维护锁内同步清理。误把文档导进错误项目时用这个收回，不必删整个项目。
+    """
+    chunk_ids = [
+        r["id"]
+        for r in conn.execute("SELECT id FROM chunks WHERE doc_id = ?", (doc_id,))
+    ]
+    with transaction(conn):
+        if chunk_ids:
+            marks = ",".join("?" * len(chunk_ids))
+            conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({marks})", chunk_ids)
+            conn.execute(f"DELETE FROM vectors WHERE chunk_id IN ({marks})", chunk_ids)
+        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        _bump(conn, DATA_REVISION_KEY)
+    return chunk_ids
+
+
 # ── documents ───────────────────────────────────────────────
 
 
@@ -308,12 +328,13 @@ def _write_chunk(conn: sqlite3.Connection, c: Chunk) -> None:
     conn.execute(
         """
         INSERT INTO chunks (id, doc_id, ordinal, chapter_path, title, text,
-                            token_count, content_sha)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            token_count, content_sha, page)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             ordinal = excluded.ordinal, chapter_path = excluded.chapter_path,
             title = excluded.title, text = excluded.text,
-            token_count = excluded.token_count, content_sha = excluded.content_sha
+            token_count = excluded.token_count, content_sha = excluded.content_sha,
+            page = excluded.page
         """,
         (
             c.id,
@@ -324,6 +345,7 @@ def _write_chunk(conn: sqlite3.Connection, c: Chunk) -> None:
             c.text,
             c.token_count,
             c.content_sha,
+            c.page,
         ),
     )
     conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (c.id,))
@@ -340,7 +362,7 @@ def get_chunks(conn: sqlite3.Connection, chunk_ids: Iterable[str]) -> dict[str, 
     marks = ",".join("?" * len(ids))
     rows = conn.execute(
         f"""
-        SELECT c.id, c.title, c.text, c.chapter_path, c.doc_id,
+        SELECT c.id, c.title, c.text, c.chapter_path, c.page, c.doc_id,
                d.filename, d.doc_year, d.project_name, p.code AS project_code
         FROM chunks c
         JOIN documents d ON d.id = c.doc_id
@@ -355,6 +377,7 @@ def get_chunks(conn: sqlite3.Connection, chunk_ids: Iterable[str]) -> dict[str, 
             "title": r["title"],
             "text": r["text"],
             "chapter_path": json.loads(r["chapter_path"]),
+            "page": r["page"],
             "filename": r["filename"],
             "doc_year": r["doc_year"],
             "project_name": r["project_name"],
@@ -652,7 +675,7 @@ def chunks_for_reindex(
         params.append(project_name)
     rows = conn.execute(
         f"""
-        SELECT c.id, c.text, c.title, c.chapter_path, d.project_name,
+        SELECT c.id, c.text, c.title, c.chapter_path, c.page, d.project_name,
                COALESCE(p.code, '') AS project_code, d.doc_year
         FROM chunks c
         JOIN documents d ON d.id = c.doc_id
@@ -668,6 +691,7 @@ def chunks_for_reindex(
             "text": r["text"],
             "title": r["title"],
             "chapter_path": r["chapter_path"],
+            "page": r["page"],
             "project_name": r["project_name"],
             "project_code": r["project_code"],
             "doc_year": r["doc_year"],

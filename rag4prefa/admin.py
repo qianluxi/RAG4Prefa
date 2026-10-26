@@ -101,3 +101,31 @@ def delete_project(conn: sqlite3.Connection, store: VectorStore, name: str) -> d
             ) from exc
         repo.set_index_state(conn, previous)
         return {"deleted": True, "chunks": len(chunk_ids)}
+
+
+def delete_document(conn: sqlite3.Connection, store: VectorStore, doc_id: str) -> dict:
+    """删单个文档。与 `delete_project` 同一套互斥与留痕约束（见其 docstring）。"""
+    with maintenance_lock(conn, purpose=f"删除文档 {doc_id}", timeout=0.0):
+        consistency.ensure_backend_current(conn, store)
+        if not repo.get_document_by_id(conn, doc_id):
+            return {"deleted": False, "reason": "文档不存在"}
+
+        previous = repo.get_index_state(conn)
+        marker = consistency.mark_unsynced(
+            conn, f"{consistency.UNSYNCED_PROJECT_PREFIX}doc:{doc_id}"
+        )
+        try:
+            chunk_ids = repo.delete_document(conn, doc_id)
+        except Exception:
+            repo.set_index_state(conn, previous)
+            raise
+        try:
+            store.delete(chunk_ids)
+        except Exception as exc:
+            raise consistency.IndexMismatch(
+                f"文档「{doc_id}」的事实与归档已删除，但向量索引里的 {len(chunk_ids)} 条没能删掉"
+                f"（{type(exc).__name__}: {exc}）。检索已停用（标记 {marker}）。"
+                "执行 `python -m rag4prefa rebuild` 从归档重建索引即可清除该标记"
+            ) from exc
+        repo.set_index_state(conn, previous)
+        return {"deleted": True, "chunks": len(chunk_ids)}

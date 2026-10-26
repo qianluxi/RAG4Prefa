@@ -99,6 +99,28 @@
     padding: 8px 10px; background: #fcfcfd; font-size: 12.5px;
   }
   .card .src { color: var(--muted); font-size: 11.5px; margin-bottom: 3px; }
+  .card .page {
+    display: inline-block; font-size: 11px; color: var(--brand);
+    background: var(--brand-soft); border-radius: 4px; padding: 0 6px; margin-left: 6px;
+    white-space: nowrap;
+  }
+  .card.hit { border-left-color: #b45309; background: #fffbeb; }
+  .thinking {
+    display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px;
+    padding: 10px 14px;
+  }
+  .thinking .dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--brand);
+    animation: blink 1.2s infinite ease-in-out;
+  }
+  .thinking .dot:nth-child(2) { animation-delay: .2s; }
+  .thinking .dot:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .2; } 40% { opacity: 1; } }
+  .src-toggle {
+    margin-top: 6px; font-size: 12px; color: var(--brand); cursor: pointer;
+    background: none; border: none; padding: 0; font: inherit;
+  }
+  .src-toggle:hover { text-decoration: underline; }
   .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
   .composer input { flex: 1; }
   .hint { color: var(--muted); font-size: 12px; padding: 0 18px 8px; }
@@ -239,6 +261,16 @@
       <strong>Embedding 模型由服务端统一决定</strong>，不能按用户切换——
       否则同一批文档会混进两套向量，检索结果看起来正常却不可信。
     </p>
+  </div>
+</div>
+
+<div class="drawer" id="sources">
+  <header>
+    <h1 style="font-size:14px">引用来源</h1>
+    <button class="ghost" id="close-sources" style="margin-left:auto">关闭</button>
+  </header>
+  <div class="body" id="sources-body">
+    <p class="kbd">回答中 [n] 角标对应的文档片段。点击角标可跳转到对应条目。</p>
   </div>
 </div>
 
@@ -436,12 +468,20 @@ async function ask() {
   botMsg.appendChild(el("div", "who", "RAG4Prefa"));
   const bubble = el("div", "bubble md", "");
   botMsg.appendChild(bubble);
-  const cards = el("div", "cards");
-  botMsg.appendChild(cards);
+  const thinking = el("div", "thinking");
+  thinking.appendChild(el("span", "", "正在检索回答中"));
+  thinking.appendChild(el("span", "dot"));
+  thinking.appendChild(el("span", "dot"));
+  thinking.appendChild(el("span", "dot"));
+  botMsg.appendChild(thinking);
+  const srcToggle = el("button", "src-toggle", "查看来源");
+  srcToggle.style.display = "none";
+  botMsg.appendChild(srcToggle);
   $("messages").appendChild(botMsg);
   $("messages").scrollTop = $("messages").scrollHeight;
 
   let answer = "";
+  let firstToken = false;
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -459,17 +499,20 @@ async function ask() {
     }
     for await (const { event, data } of readEvents(res)) {
       if (event === "meta") {
+        thinking.remove();
         $("status").textContent =
           `候选 ${data.candidates} · ${data.filter_desc || "全库"} · ` +
           `embed ${data.timings.embed_ms}ms / dense ${data.timings.dense_ms}ms / bm25 ${data.timings.sparse_ms}ms` +
           (data.rerank_error ? ` · 重排失败：${data.rerank_error}` : "");
       } else if (event === "token") {
+        if (!firstToken) { firstToken = true; thinking.remove(); }
         answer += data.text || "";
         bubble.innerHTML = renderAnswer(answer);
         $("messages").scrollTop = $("messages").scrollHeight;
       } else if (event === "citations") {
-        renderCitations(cards, data.items || []);
+        renderCitations(data.items || [], botMsg, srcToggle);
       } else if (event === "error") {
+        thinking.remove();
         bubble.classList.add("err");
         bubble.textContent = `出错：${data.message}`;
       } else if (event === "done") {
@@ -477,6 +520,7 @@ async function ask() {
       }
     }
   } catch (err) {
+    thinking.remove();
     bubble.classList.add("err");
     bubble.textContent = `请求失败：${err.message}`;
   } finally {
@@ -652,21 +696,70 @@ function renderAnswer(text) {
 }
 /* MD-RENDER-END */
 
-function renderCitations(container, items) {
-  container.innerHTML = "";
+/* 当前这条回答的引用来源。抽屉是全局单例（见 #sources），但每次问答的引用
+   独立：这里只负责"把来源渲染进抽屉、让本条消息的『查看来源』能打开抽屉、
+   让答案里的 [n] 角标能定位到对应卡片"。 */
+function renderCitations(items, botMsg, srcToggle) {
+  if (!items.length) return;
+
+  const body = $("sources-body");
+  body.innerHTML = "";
+  const note = el("p", "kbd", "回答中 [n] 角标对应的文档片段。点击角标可跳转到对应条目。");
+  body.appendChild(note);
+
+  const cards = [];
   for (const item of items) {
     const card = el("div", "card");
-    card.appendChild(el("div", "src",
-      `[${item.n}] ${item.project}${item.project_code ? " / " + item.project_code : ""} · ${item.filename}`));
-    card.appendChild(el("div", "", item.chapter || "（未分章）"));
+    card.id = `src-${item.n}`;
+
+    const head = el("div", "src",
+      `[${item.n}] ${item.project}${item.project_code ? " / " + item.project_code : ""} · ${item.filename}`);
+    if (item.page) {
+      head.appendChild(el("span", "page", `第 ${item.page} 页`));
+    }
+    card.appendChild(head);
+
+    const chapter = item.chapter && item.chapter !== "前言"
+      ? item.chapter
+      : item.filename;
+    card.appendChild(el("div", "", chapter));
+
     if (item.snippet) {
       const snip = el("div", "src", item.snippet);
       snip.style.marginTop = "4px";
       card.appendChild(snip);
     }
-    container.appendChild(card);
+    body.appendChild(card);
+    cards.push(card);
   }
+
+  // 「查看来源」：打开抽屉（默认收起，只有点了才滑出）
+  srcToggle.style.display = "";
+  srcToggle.textContent = `查看来源（${items.length} 条）`;
+  srcToggle.onclick = () => openSources();
+
+  // 答案里的 [n] 角标 → 打开抽屉 + 高亮对应卡片
+  botMsg.querySelectorAll(".cite").forEach((el) => {
+    el.onclick = () => {
+      openSources();
+      cards.forEach((c) => c.classList.remove("hit"));
+      const target = cards.find((c) => c.id === `src-${el.dataset.n}`);
+      if (target) {
+        target.classList.add("hit");
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    };
+  });
 }
+
+function openSources() {
+  $("sources").classList.add("open");
+}
+
+function closeSources() {
+  $("sources").classList.remove("open");
+}
+
 
 /* ── 上传 ─────────────────────────────────── */
 async function upload() {
@@ -922,6 +1015,7 @@ $("upload").onclick = upload;
 $("toggle-settings").onclick = openSettings;
 $("who").onclick = openSettings;
 $("close-settings").onclick = () => $("settings").classList.remove("open");
+$("close-sources").onclick = closeSources;
 $("save-creds").onclick = saveCreds;
 $("clear-creds").onclick = clearCreds;
 

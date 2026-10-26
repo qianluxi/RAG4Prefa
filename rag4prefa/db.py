@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     title        TEXT NOT NULL,
     text         TEXT NOT NULL,
     token_count  INTEGER NOT NULL,
-    content_sha  TEXT NOT NULL
+    content_sha  TEXT NOT NULL,
+    page         INTEGER                 -- 起始物理页码（1-based），docx 为 NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
 
@@ -116,9 +117,21 @@ def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """就地补列。`CREATE TABLE IF NOT EXISTS` 对已有库**不会**加列，所以历史库要单独
+    补。这里只做幂等的小步迁移：缺哪列补哪列，绝不重建表（重建会丢数据、还要重新调
+    embedding）。page 列是纯展示字段，补出来是 NULL 也不影响检索——旧库要拿到页码，
+    重新入库对应文档即可。
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(chunks)")}
+    if "page" not in cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN page INTEGER")
 
 
 @contextmanager

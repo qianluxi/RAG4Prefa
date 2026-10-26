@@ -203,6 +203,7 @@ async def stream_answer(
                     "project_code": h.project_code,
                     "filename": h.filename,
                     "chapter": " > ".join(h.chapter_path),
+                    "page": h.page,
                     "score": round(h.rerank_score or h.score, 4),
                     "snippet": h.text[:240],
                 }

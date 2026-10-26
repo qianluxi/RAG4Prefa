@@ -67,6 +67,7 @@ def build_chunks(
                     text=piece,
                     token_count=estimate_tokens(piece),
                     content_sha=_sha(piece),
+                    page=section.page,
                 )
             )
 

@@ -93,13 +93,19 @@ def kind_for(level: int) -> SectionKind:
 
 
 def build_sections(
-    events: Iterable[tuple[int | None, str]], *, preamble_title: str = "前言"
+    events: Iterable[tuple[int | None, str] | tuple[int | None, str, int | None]],
+    *,
+    preamble_title: str = "前言",
 ) -> list[Section]:
-    """把「(级别, 文本)」流折成章节树。
+    """把「(级别, 文本[, 页码])」流折成章节树。
 
     级别为 None 表示正文行，归到最近一个标题名下；为 0 表示相对级别（见
     `text_heading_level`），由这里挂到最近一个绝对级别标题的下一层——这件事必须由
     组装方做，因为只有它知道"最近一个绝对级别"是多少。
+
+    页码（可选第三元，1-based）只有 pdf 有：`section.page` 取该节标题那一行所在的
+    物理页，作为"这一节的起始页"。docx 不传，`page` 恒为 None。它是展示字段，
+    不参与 chunk_id——所以两个解析器可以一个带一个不带，章节树结构完全一致。
 
     两个解析器共用这一份：章节树是 `chunking._chunk_id` 的输入之一，
     如果两份实现各写一遍栈，pdf 与 docx 的层级偏差会以"同一文档两个 md5"的形式出现。
@@ -121,7 +127,9 @@ def build_sections(
             sections.append(current)
         current, buffer = None, []
 
-    for level, text in events:
+    for event in events:
+        level, text = event[0], event[1]
+        page = event[2] if len(event) > 2 else None
         if level is None:
             (buffer if current is not None else preamble).append(text)
             continue
@@ -138,7 +146,11 @@ def build_sections(
         while stack and stack[-1][0] >= level:
             stack.pop()
         current = Section(
-            title=text, kind=kind_for(level), level=level, path=[t for _, t in stack]
+            title=text,
+            kind=kind_for(level),
+            level=level,
+            path=[t for _, t in stack],
+            page=page,
         )
         stack.append((level, text))
 
@@ -153,6 +165,7 @@ def build_sections(
                 level=0,
                 path=[],
                 text="\n".join(preamble),
+                page=None,
             ),
         )
     return sections

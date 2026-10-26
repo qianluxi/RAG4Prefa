@@ -431,8 +431,8 @@ def _level_of(
 
 
 def _merge_number_only_heads(
-    events: list[tuple[int | None, str]],
-) -> list[tuple[int | None, str]]:
+    events: list[tuple[int | None, str, int | None]],
+) -> list[tuple[int | None, str, int | None]]:
     """把「编号独占一行」的标题与紧随其后的标题行拼回去。
 
     pdf 里很常见的排版是编号和标题名分成两行（`1.1` 一行、`装配式设计要点` 一行），
@@ -444,11 +444,13 @@ def _merge_number_only_heads(
 
     只合并"下一行也是标题、且不含编号"的情况：`2.1` 后面跟 `2.1.1` 是两级标题，
     拼起来就成了 `2.1 2.1.1`，比不合并更糟。
+
+    合并时页码取编号那一行（前一行）的页——标题的物理位置在编号行，不在名字行。
     """
-    out: list[tuple[int | None, str]] = []
+    out: list[tuple[int | None, str, int | None]] = []
     index = 0
     while index < len(events):
-        level, text = events[index]
+        level, text, page = events[index]
         title = text.strip()
         if level is not None and _NUMBER_ONLY.match(title):
             nxt = events[index + 1] if index + 1 < len(events) else None
@@ -457,24 +459,27 @@ def _merge_number_only_heads(
                 merged = f"{title} {name}"
                 merged_level = text_heading_level(merged)
                 if not _NUMBER_ONLY.match(name) and merged_level:
-                    out.append((merged_level, merged))
+                    out.append((merged_level, merged, page))
                     index += 2
                     continue
-        out.append((level, text))
+        out.append((level, text, page))
         index += 1
     return out
 
 
 def _events(
     items: list[_Item], body: float, ranks: dict[float, int], *, trust_numbers: bool
-) -> list[tuple[int | None, str]]:
-    out: list[tuple[int | None, str]] = []
+) -> list[tuple[int | None, str, int | None]]:
+    """事件流：`(级别, 文本, 页码)`。页码是 `_Item.page + 1`（pymupdf 是 0-based，
+    用户看到的是 1-based 的物理页）。table 的行也带页码，正文归到标题名下时，
+    标题那一行的页码就是这一节的起始页。"""
+    out: list[tuple[int | None, str, int | None]] = []
     for item in items:
         if item.kind == "table":
-            out.extend((None, line) for line in item.text.split("\n"))
+            out.extend((None, line, item.page + 1) for line in item.text.split("\n"))
             continue
         level = _level_of(item, body, ranks, trust_numbers=trust_numbers)
-        out.append((level, item.text))
+        out.append((level, item.text, item.page + 1))
     return out
 
 
@@ -541,7 +546,7 @@ def parse_pdf(path: str | Path) -> list[Section]:
         ranks = _size_ranks(items, body)
 
         events = _events(items, body, ranks, trust_numbers=False)
-        if items and not any(level is not None for level, _ in events):
+        if items and not any(level is not None for level, _, _ in events):
             # 整篇没有一个"看着像标题"的行：多半是标题与正文同字号、都不加粗，
             # 只能靠编号分层的老公文。退回"只信编号"，总比整篇塞进一节强。
             events = _events(items, body, ranks, trust_numbers=True)

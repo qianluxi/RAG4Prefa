@@ -67,7 +67,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（7 311 行 Python + 865 行单页 HTML + 6 115 行测试，均按非空行计）
+## 3. 代码地图（7 407 行 Python + 948 行单页 HTML + 6 171 行测试，均按非空行计）
 
 行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
@@ -495,6 +495,15 @@ API 一览（实现见 `api.py`，说明见 README）：
     流式渲染每来一个 token 拿全文重渲一次即可（答案几 KB），未闭合的 `**` 会短暂显示
     成源码，闭合后自动恢复——不追求"半个标签"的实时美化。
     验收见 `tests/test_web_markdown.py`（抽出源码交给 node 跑真实实现，四条反证）。
+14. **页码是展示字段，绝不能进 `chunk_id`**（2026-10-26）。给引用来源加"文件页码"时，
+    PDF 有物理页码、docx 没有（Word 分页是渲染期动态算的，文件里不存在稳定页码）。
+    页码只能作为 `Section.page` / `Chunk.page` 的展示字段透传到 citations，**不能参与
+    内容寻址**——否则"同一段正文因排版微调页码变了"就会换 id，把内容寻址退化成位置寻址
+    （`tests/test_chunking.py::test_page_is_not_part_of_chunk_identity` 钉死这一点）。
+    db 迁移用 `_migrate`（`PRAGMA table_info` 判列，缺了 `ALTER TABLE ADD COLUMN`）——
+    `CREATE TABLE IF NOT EXISTS` 对已有库**不会**加列，旧库补列后 page 全是 NULL，
+    要拿到页码得 `ingest --force` 重新解析对应文档（`reindex` 只读归档、不重新解析，
+    拿不到 page）。
 
 ---
 

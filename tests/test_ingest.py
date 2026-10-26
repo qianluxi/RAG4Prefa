@@ -89,6 +89,29 @@ def test_delete_project_removes_vectors_and_rows(
     assert repo.fts_search(conn, "悬挑", limit=5) == []
 
 
+def test_delete_document_removes_only_that_document(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """删单个文档只影响它自己：同项目的另一份文档、以及别的项目的文档都不该被波及。"""
+    embedder = FakeEmbedder()
+    store = _store(conn)
+    ingest_file(
+        conn, store, embedder, settings, path=docx_file, project_name="甲项目", doc_year=2024
+    )
+    ingest_file(
+        conn, store, embedder, settings, path=docx_file, project_name="乙项目", doc_year=2024
+    )
+
+    doc_id = repo.get_document(conn, "甲项目", docx_file.name).id
+    chunk_ids = repo.delete_document(conn, doc_id)
+    store.delete(chunk_ids)
+
+    assert repo.get_document(conn, "甲项目", docx_file.name) is None
+    assert repo.get_document(conn, "乙项目", docx_file.name) is not None
+    assert store.count() == len(repo.chunks_for_reindex(conn))
+    assert repo.fts_search(conn, "悬挑", limit=5)  # 乙项目还在，能召回
+
+
 def test_search_filters_by_project(
     conn: sqlite3.Connection, settings: Settings, docx_file: Path
 ) -> None:

@@ -137,6 +137,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
                 doc_year=args.year,
                 # 操作员按下去就知道要等：排队而不是立刻拒绝
                 timeout=None,
+                force=args.force,
             )
         except MaintenanceBusy as exc:
             # 排队也会被推到超时（另一进程持锁不放手），此时一个文件都没处理
@@ -371,6 +372,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--code", default="")
     p.add_argument("--started-on", default="")
     p.add_argument("--year", type=int, default=None)
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="强制重新解析并覆盖（重新调 embedding）。解析逻辑升级后补新字段（如 PDF 页码）时用",
+    )
     p.set_defaults(func=cmd_ingest)
 
     p = sub.add_parser("reindex", help="按 SQLite 重建向量索引")

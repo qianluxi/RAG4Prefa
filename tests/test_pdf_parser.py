@@ -114,6 +114,20 @@ def test_pdf_header_and_page_number_do_not_become_content(tmp_path: Path) -> Non
     assert "共 2 页" not in joined, "页码不该进正文"
 
 
+def test_pdf_section_carries_physical_page(tmp_path: Path) -> None:
+    """标题所在的物理页（1-based）要透传到 Section.page，供引用侧栏标注「第 N 页」。"""
+    pages = [
+        [(80, "第一章 工程概况", 16, _CN), (140, _INTRO, _CN_BODY, _CN)],
+        [(80, "第二章 结构计算", 16, _CN), (140, _FRAME, _CN_BODY, _CN)],
+    ]
+    path = _make_pdf(tmp_path / "跨页.pdf", pages)
+    sections = parse_pdf(path)
+    by_title = {s.title: s for s in sections}
+
+    assert by_title["第一章 工程概况"].page == 1
+    assert by_title["第二章 结构计算"].page == 2
+
+
 def test_pdf_paragraph_first_line_is_not_treated_as_heading(tmp_path: Path) -> None:
     """（一）开头的**段落首行**不是标题。
 

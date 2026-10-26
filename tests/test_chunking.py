@@ -15,6 +15,37 @@ def _section(title: str, text: str, path: list[str], level: int = 2) -> Section:
     )
 
 
+def test_chunk_inherits_section_page() -> None:
+    """section.page 是展示字段，要原样继承到它名下的 chunk；但**不参与 chunk_id**。"""
+    section = Section(
+        title="1.1 结构概况",
+        kind=SectionKind.section,
+        level=2,
+        path=["第一章"],
+        text="正文内容。",
+        page=7,
+    )
+    (chunk,) = build_chunks([section], "doc", max_tokens=100, min_tokens=20)
+    assert chunk.page == 7
+
+
+def test_page_is_not_part_of_chunk_identity() -> None:
+    """页码变了（排版微调）不该让同一段正文换 id——否则内容寻址就退化成位置寻址。"""
+    def build(page: int | None) -> str:
+        section = Section(
+            title="1.1 甲",
+            kind=SectionKind.section,
+            level=2,
+            path=["第1章"],
+            text="同一段正文。",
+            page=page,
+        )
+        return build_chunks([section], "doc", max_tokens=100, min_tokens=20)[0].id
+
+    assert build(7) == build(8)
+    assert build(None) == build(3)
+
+
 def test_empty_sections_do_not_produce_chunks() -> None:
     chunks = build_chunks([_section("空标题", "   ", [])], "doc", max_tokens=100, min_tokens=20)
     assert chunks == []

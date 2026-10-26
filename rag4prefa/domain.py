@@ -24,6 +24,11 @@ class Section(BaseModel):
     path: list[str] = Field(default_factory=list)  # 祖先标题，不含自身
     text: str = ""
     number: str | None = None
+    # 起始物理页码（1-based）。只有 PDF 有稳定的物理页码；docx 的分页是渲染期
+    # 动态决定的，文件里根本不存在页码，所以 docx 恒为 None，定位靠 chapter_path。
+    # 这是**展示字段**，不参与 chunk_id（内容寻址），排版微调导致的页码变化
+    # 不会让同一段正文换 id。
+    page: int | None = None
 
     @property
     def full_path(self) -> list[str]:
@@ -39,6 +44,8 @@ class Chunk(BaseModel):
     text: str
     token_count: int
     content_sha: str
+    # 见 Section.page：展示用，不参与寻址。docx 为 None。
+    page: int | None = None
 
 
 class Filter(BaseModel):
@@ -81,6 +88,8 @@ class Hit(BaseModel):
     chapter_path: list[str] = Field(default_factory=list)
     title: str = ""
     text: str = ""
+    # 起始物理页码（1-based），docx 为 None。展示用，不参与召回与寻址。
+    page: int | None = None
 
 
 class ProjectInfo(BaseModel):

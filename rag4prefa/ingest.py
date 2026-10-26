@@ -435,6 +435,7 @@ def ingest_batch(
     started_on: str | None = None,
     doc_year: int | None = None,
     timeout: float | None = 0.0,
+    force: bool = False,
 ) -> list[FileOutcome]:
     """入库一批文件。**整批一次占住维护锁**，而不是每个文件各抢一次。
 
@@ -448,6 +449,9 @@ def ingest_batch(
       就不会出现"前两个文件写进 numpy、根服务已经在查 Milvus"。
 
     抢锁失败在这里抛出 `MaintenanceBusy`，此时任务、项目、文档都还没被动过。
+
+    `force=True` 强制重新解析并覆盖（重新调 embedding）。用途之一：解析逻辑升级后
+    （例如给 PDF 补了页码提取），想让旧文档拿到新字段而不必删了重传。
     """
     with maintenance_lock(
         conn, purpose=f"入库 {project_name}（{len(files)} 个文件）", timeout=timeout
@@ -463,6 +467,7 @@ def ingest_batch(
             project_code=project_code,
             started_on=started_on,
             doc_year=doc_year,
+            force=force,
         )
 
 
@@ -478,6 +483,7 @@ def _ingest_batch_locked(
     project_code: str = "",
     started_on: str | None = None,
     doc_year: int | None = None,
+    force: bool = False,
 ) -> list[FileOutcome]:
     # 装配发生在锁外，手里这个后端可能已经不是库里记着的那个了（见函数说明）。
     # 必须排在项目/任务写入**之前**：被拦住时要做到一个字节都没改。
@@ -498,6 +504,7 @@ def _ingest_batch_locked(
             project_name=project_name,
             project_code=project_code,
             doc_year=doc_year,
+            force=force,
         )
         outcomes.append(outcome)
         repo.update_job(
