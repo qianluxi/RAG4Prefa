@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 from collections.abc import Iterator
@@ -19,7 +20,7 @@ from rag4prefa.adapters.rerank import NoopReranker
 from rag4prefa.adapters.vectors import NumpyStore
 from rag4prefa.config import Settings
 from rag4prefa.db import connect, init_db
-from rag4prefa.domain import Filter
+from rag4prefa.domain import Filter, Hit
 from rag4prefa.ingest import ingest_file
 from rag4prefa.services import Services
 from tests import mock_openai
@@ -46,6 +47,10 @@ def services(tmp_path: Path) -> Iterator[Services]:
         vector_backend="numpy",
         chunk_max_tokens=120,
         chunk_min_tokens=30,
+        # 显式关掉重排：Settings 会读本机 .env，开发机上开了重排就会让"未启用重排"
+        # 那条断言语义反转。CI 上没有 .env，这个坑只在本地复现。
+        rerank_url="",
+        rerank_api_key="",
     )
     settings.ensure_dirs()
     init_db(settings.db_path)
@@ -228,3 +233,68 @@ def test_dataset_loader_skips_comment_lines(tmp_path: Path) -> None:
     )
     rows = ev.load_dataset(path)
     assert len(rows) == 1
+
+
+def test_rerank_and_hybrid_share_one_candidate_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rerank 行的唯一变量必须是「有没有重排」，不能连候选池一起换掉。
+
+    曾经的实现里 rerank 把 k 换成 `max(k*4, 20)` 再走同一段融合代码：融合池深 100、
+    只把前 20 条交给重排；而 hybrid 是 50 深的池子取前 5。池深和截断位置两个变量一起动，
+    于是在没有配重排服务（NoopReranker）的情况下两行数字仍然不同——真实数据上差到 +0.033，
+    报告读起来就像「重排有收益」，其实一个候选都没被重排过。这里钉住两件事：池深一致，
+    且 rerank 拿到的是整个池而不是已经截断的 top-k。
+    """
+    seen: list[int] = []
+    pool = [
+        Hit(chunk_id=f"c{i:03d}", score=1.0 - i / 100, project_name="p", filename="f.docx")
+        for i in range(60)
+    ]
+
+    async def fake_retrieve(conn, store, embedder, settings, *, question, filt, recall_k):
+        seen.append(recall_k)
+        return pool[:recall_k], [], {}
+
+    monkeypatch.setattr(ev.ask, "retrieve", fake_retrieve)
+
+    class _Svc:
+        conn = object()
+        store = object()
+        settings = object()
+        reranker = NoopReranker()
+
+        @staticmethod
+        def require_embedder() -> object:
+            return object()
+
+    hybrid = asyncio.run(ev.hybrid_hits(_Svc(), "q", Filter(), 5))
+    rerank = asyncio.run(ev.rerank_hits(_Svc(), "q", Filter(), 5))
+
+    assert seen == [50, 50], f"两种模式必须用同一个候选池，实际 {seen}"
+    assert len(hybrid) == 5
+    assert [h.chunk_id for h in rerank] == [h.chunk_id for h in hybrid], (
+        "NoopReranker 下 rerank 与 hybrid 的 top-k 必须一致"
+    )
+
+
+def test_report_says_when_rerank_is_disabled(services: Services, docx_file: Path) -> None:
+    """没配 R4P_RERANK_URL 时必须写「未启用重排」，否则那一行会被当成重排的收益。"""
+    gold_ids = _seed(services, docx_file)
+    rows = [{"question": "缓粘结预应力的张拉控制要点", "gold_chunk_ids": gold_ids[:1]}]
+
+    result = ev.evaluate(services, rows, 3, list(ev.MODES))
+    assert result["rerank_enabled"] is False
+    assert "未启用重排" in ev.report(result, 3)
+
+    result["rerank_enabled"] = True
+    assert "未启用重排" not in ev.report(result, 3)
+
+
+def test_report_compares_hybrid_against_both_dense_and_sparse(
+    services: Services, docx_file: Path
+) -> None:
+    """只报「相对纯向量」的增益，会把「混合召回其实不如纯 BM25」这种情况藏起来。"""
+    gold_ids = _seed(services, docx_file)
+    rows = [{"question": "缓粘结预应力的张拉控制要点", "gold_chunk_ids": gold_ids[:1]}]
+    text = ev.report(ev.evaluate(services, rows, 3, list(ev.MODES)), 3)
+    assert "相对纯向量" in text
+    assert "相对纯稀疏" in text

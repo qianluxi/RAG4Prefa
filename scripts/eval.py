@@ -138,7 +138,21 @@ async def sparse_hits(
     return [Hit(score=s, **details[cid]) for cid, s in pairs if cid in details]
 
 
-async def hybrid_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
+def _hybrid_pool_size(k: int) -> int:
+    """混合召回的候选池深度。至少 50，且随 k 放大。
+
+    这个数必须**显式写死并被 hybrid 与 rerank 共用**：RRF 融合后的头部顺序与候选深度
+    有关，池子不同，同一个问题拿到的 top-k 就不同。曾经 rerank 是把 k 换成
+    `max(k*4, 20)` 再走同一段融合代码——融合池深变成 100、却只把其中前 20 条交给重排，
+    而 hybrid 是 50 深的池子取前 5。**池深和截断位置两个变量一起动**，于是在没有配重排
+    服务（NoopReranker）的情况下两行数字仍然不同（真实数据上差到 +0.033），报告读起来
+    就像"重排带来了 +0.033"，实际上一个候选都没被重排过。
+    """
+    return max(k * 5, 50)
+
+
+async def hybrid_pool(services, question: str, filt: Filter, k: int) -> list[Hit]:
+    """取深度 ≥ `_hybrid_pool_size(k)` 的融合候选池，不做截断。"""
     hits, _, _ = await ask.retrieve(
         services.conn,
         services.store,
@@ -146,13 +160,18 @@ async def hybrid_hits(services, question: str, filt: Filter, k: int) -> list[Hit
         services.settings,
         question=question,
         filt=filt,
-        recall_k=max(k * 5, 50),
+        recall_k=_hybrid_pool_size(k),
     )
-    return hits[:k]
+    return hits
+
+
+async def hybrid_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
+    return (await hybrid_pool(services, question, filt, k))[:k]
 
 
 async def rerank_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
-    candidates = await hybrid_hits(services, question, filt, max(k * 4, 20))
+    # 候选池与 hybrid 完全一致：两行之间唯一的变量是"有没有重排"。
+    candidates = await hybrid_pool(services, question, filt, k)
     return await services.reranker.rerank(question, candidates, k)
 
 
@@ -173,6 +192,24 @@ async def retrieve_for(
 
 def evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dict:
     return asyncio.run(_evaluate(services, rows, k, modes))
+
+
+def _run_context(services) -> dict:
+    """跑出这组数字时用的坐标系。缺一项，数字就不能跟前一次直接比。"""
+    settings = services.settings
+    state = consistency.inspect(services.conn)
+    rerank_on = ask.rerank_available(getattr(services, "reranker", None))
+    return {
+        # 以索引里登记的为准（state），它才是这批向量真正的来源；
+        # 配置只是"打算用什么"，两者不一致时检索本来就会被拒绝。
+        "embedding_model": state.model or settings.embedding_model,
+        "embedding_dim": state.dim or settings.embedding_dim,
+        "chunk_max_tokens": settings.chunk_max_tokens,
+        "chunk_min_tokens": settings.chunk_min_tokens,
+        "recall_k": settings.recall_k,
+        "rrf_k": settings.rrf_k,
+        "rerank_model": settings.rerank_model if rerank_on else "",
+    }
 
 
 async def _evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dict:
@@ -221,6 +258,12 @@ async def _evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dic
         "samples": len(rows) - len(skipped),
         "skipped": skipped,
         "warnings": warnings,
+        # 没配 R4P_RERANK_URL 时 reranker 是 NoopReranker：那一行必须被标成"未启用"，
+        # 否则读者会把它当成"重排的收益"。判据与 CLI / /api/health 共用同一个函数。
+        "rerank_enabled": ask.rerank_available(getattr(services, "reranker", None)),
+        # 数值的"坐标系"必须跟数值一起走：换模型/换维度/换 chunk 参数/换 rrf_k 之后
+        # 前后两次数值不可比，而报告本身不会提醒下一届读者这件事。
+        "context": _run_context(services),
     }
 
 
@@ -233,7 +276,9 @@ def run(dataset_path: Path, k: int, modes: list[str]) -> dict:
         rows = load_dataset(dataset_path)
         if not rows:
             raise ValueError(f"数据集为空：{dataset_path}")
-        return evaluate(services, rows, k, modes)
+        result = evaluate(services, rows, k, modes)
+        result["dataset"] = str(dataset_path)
+        return result
     finally:
         services.close()
 
@@ -249,7 +294,20 @@ def report(result: dict, k: int) -> str:
         f"（跳过 {len(result['skipped'])} 条无标注/无问题的记录）",
         f"- 指标：Recall@{k}、MRR、nDCG@{k}，相关性按 chunk 二值判定",
         f"- Recall@{k} = |TopK ∩ Gold| / |Gold|，Gold 为**本题筛选范围内**的相关 chunk 集合",
-        "- 片段标注已解析成范围内包含它的全部 chunk，三个指标共用同一个 Gold\n",
+        "- 片段标注已解析成范围内包含它的全部 chunk，三个指标共用同一个 Gold",
+    ]
+    ctx = result.get("context") or {}
+    if ctx:
+        rerank = f"`{ctx['rerank_model']}`" if ctx.get("rerank_model") else "未启用"
+        lines.append(
+            f"- 坐标系：embedding `{ctx['embedding_model']}`（{ctx['embedding_dim']} 维）· "
+            f"chunk {ctx['chunk_min_tokens']}~{ctx['chunk_max_tokens']} token · "
+            f"recall_k={ctx['recall_k']} · rrf_k={ctx['rrf_k']} · 重排 {rerank}"
+        )
+    if result.get("dataset"):
+        lines.append(f"- 数据集：`{result['dataset']}`")
+    lines += [
+        "",
         f"| 召回方式 | 有效样本 | Recall@{k} | MRR | nDCG@{k} |",
         "|---|---|---|---|---|",
     ]
@@ -269,11 +327,39 @@ def report(result: dict, k: int) -> str:
             "\n> 注意：各召回方式的有效样本数不同，均值建立在不同的题目集合上，"
             "横向比较只能作参考。失败原因见下方「需要处理的数据问题」。"
         )
-    if {"dense", "hybrid"} <= set(modes) and modes["dense"]["recall"] and modes["hybrid"]["recall"]:
-        gain = statistics.mean(modes["hybrid"]["recall"]) - statistics.mean(
-            modes["dense"]["recall"]
+    def _mean(mode: str) -> float | None:
+        values = modes.get(mode, {}).get("recall") or []
+        return statistics.mean(values) if values else None
+
+    def _gain_over(base: str) -> float | None:
+        """hybrid 相对另一路召回的 Recall 差；任一方没有有效样本就不给数。"""
+        base_mean, hybrid_mean = _mean(base), _mean("hybrid")
+        if base_mean is None or hybrid_mean is None:
+            return None
+        return hybrid_mean - base_mean
+
+    # 只报"相对纯向量"的增益会诱导读者以为混合召回就是最好的。
+    # 语料里专有名词密度高时 BM25 往往压过混合召回，这个负值必须一起报出来。
+    comparisons = [
+        (label, gain)
+        for label, base in (("纯向量", "dense"), ("纯稀疏", "sparse"))
+        if (gain := _gain_over(base)) is not None
+    ]
+    if comparisons:
+        lines.append("")
+        for label, gain in comparisons:
+            lines.append(f"混合召回相对{label}：Recall@{k} {gain:+.3f}")
+
+    if "rerank" in modes and not result.get("rerank_enabled", False):
+        lines.append(
+            "\n> `rerank` 一栏**未启用重排**（没配 `R4P_RERANK_URL`，走的是 NoopReranker）："
+            "候选池与 hybrid 相同，数值应当与 hybrid 完全一致。"
+            "若两者不同，说明两条管道哪里走岔了，而不是重排有收益。"
         )
-        lines.append(f"\n混合召回相对纯向量：Recall@{k} {gain:+.3f}")
+    else:
+        hybrid_mean, rerank_mean = _mean("hybrid"), _mean("rerank")
+        if hybrid_mean is not None and rerank_mean is not None:
+            lines.append(f"开重排相对 hybrid：Recall@{k} {rerank_mean - hybrid_mean:+.3f}")
     if len(result["warnings"]) == 0 and not result["skipped"]:
         return "\n".join(lines)
     lines.append(f"\n## 需要处理的数据问题（{len(result['warnings'])}）\n")
