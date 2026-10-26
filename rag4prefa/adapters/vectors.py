@@ -13,10 +13,12 @@ from array import array
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import Protocol
 
 import numpy as np
 
+from .. import repo
 from ..concurrency import sqlite_write
 from ..domain import Filter
 
@@ -89,11 +91,35 @@ def _normalize(vec: list[float]) -> np.ndarray:
     return arr / norm if norm else arr
 
 
+@dataclass(frozen=True)
+class _Snapshot:
+    """一次加载得到的完整索引视图。
+
+    为什么整体换而不是逐个字段赋值：`search` 要同时用到 ids、矩阵和筛选列，
+    分几次赋值时读者可能拿到"上一版的矩阵 + 这一版的 ids"，索引越界或张冠李戴。
+    Python 里给一个属性赋值是原子的，所以把这几样捆成一个不可变对象，
+    读者取一次引用就拿到一致的一套。
+    """
+
+    ids: tuple[str, ...] = ()
+    projects: tuple[str, ...] = ()
+    codes: tuple[str, ...] = ()
+    years: tuple[int | None, ...] = ()
+    mat: np.ndarray = dc_field(default_factory=lambda: np.zeros((0, 1), dtype=np.float32))
+
+
 class NumpyStore:
     """精确余弦检索（暴力遍历）。
 
     优点：零外部依赖、Windows 可跑、结果可复现（无近似召回误差）；
     代价：O(n) 扫描。十万级 chunk 以内延迟仍在毫秒级，超出请切 Milvus。
+
+    与 Milvus 最大的结构差别：这里的索引**就是内存里的一份拷贝**，而 Milvus 是
+    独立存储。所以这个后端额外要管两件 Milvus 不需要管的事：
+
+    1. 同进程多线程写时，内存矩阵和 `vectors` 表可能短暂脱节（`_load` 期间）；
+    2. 别的进程（CLI reindex/rebuild）改了归档，本进程的内存矩阵不会自己变新。
+       靠 `meta.index_generation` 发现，见 `_refresh_if_stale`。
     """
 
     name = "numpy"
@@ -102,14 +128,20 @@ class NumpyStore:
         self._conn = conn
         self.dim = dim
         self.notes: list[str] = []
-        self._ids: list[str] = []
-        self._projects: list[str] = []
-        self._codes: list[str] = []
-        self._years: list[int | None] = []
-        self._mat: np.ndarray = np.zeros((0, dim or 1), dtype=np.float32)
+        self._revision: tuple[int, int] = (-1, -1)
+        self._snap = _Snapshot()
         self._load()
 
     # ── 内部 ────────────────────────────────────────
+
+    @property
+    def _ids(self) -> list[str]:
+        """兼容旧读法（测试里按条数构造假 id 集合）。"""
+        return list(self._snap.ids)
+
+    @property
+    def _mat(self) -> np.ndarray:
+        return self._snap.mat
 
     def _load(self) -> None:
         """按归档重建内存矩阵。
@@ -120,16 +152,9 @@ class NumpyStore:
         所以这里只跳过组不成的行、把原因记进 notes，让"能不能检索"由
         `consistency` 统一判定：跳过的行会让后端条数少于归档，那就是阻断项。
         """
-        self._ids = []
-        self._projects = []
-        self._codes = []
-        self._years = []
-        self._mat = np.zeros((0, self.dim or 1), dtype=np.float32)
         rows = self._conn.execute(
             "SELECT chunk_id, project_name, project_code, doc_year, dim, vec FROM vectors"
         ).fetchall()
-        if not rows:
-            return
 
         # dim 字段是声明，float32 字节数才是事实。两者对不上的行组不进矩阵，
         # 硬拼的话 vstack 会抛一句既不说是哪行、也不说怎么办的 dimensions must match。
@@ -140,10 +165,13 @@ class NumpyStore:
         }
         usable = [r for r in rows if r["chunk_id"] not in bad]
         if not usable:
-            self.notes.append(
-                f"归档里 {len(rows)} 条向量的字节长度与声明维度都不符，索引为空；"
-                "执行 `python -m rag4prefa reindex` 从原文重新生成向量"
-            )
+            if rows:
+                self.notes.append(
+                    f"归档里 {len(rows)} 条向量的字节长度与声明维度都不符，索引为空；"
+                    "执行 `python -m rag4prefa reindex` 从原文重新生成向量"
+                )
+            self._snap = _Snapshot(mat=np.zeros((0, self.dim or 1), dtype=np.float32))
+            self._revision = repo.get_store_revision(self._conn)
             return
 
         # 声明维度本身不一致（历史库混过多套）时，只能取条数最多的那一套：
@@ -158,45 +186,76 @@ class NumpyStore:
                 "已跳过；索引因此少于归档，检索会被拒绝，执行 `python -m rag4prefa reindex` 修复"
             )
 
-        self._ids = [r["chunk_id"] for r in kept]
-        self._projects = [r["project_name"] for r in kept]
-        self._codes = [r["project_code"] for r in kept]
-        self._years = [r["doc_year"] for r in kept]
         self.dim = dim
-        self._mat = np.vstack([np.frombuffer(r["vec"], dtype=np.float32) for r in kept])
+        self._snap = _Snapshot(
+            ids=tuple(r["chunk_id"] for r in kept),
+            projects=tuple(r["project_name"] for r in kept),
+            codes=tuple(r["project_code"] for r in kept),
+            years=tuple(r["doc_year"] for r in kept),
+            mat=np.vstack([np.frombuffer(r["vec"], dtype=np.float32) for r in kept]),
+        )
+        # 记下"这份内存矩阵对应哪一代归档"。别的进程改了归档会把这个数推上去，
+        # 那时本进程的矩阵就是过期的——它既不会报错，也不会自己变。
+        self._revision = repo.get_store_revision(self._conn)
 
-    def _rebuild_slice(self) -> None:
-        self._load()
+    def _refresh_if_stale(self) -> None:
+        """归档被别的进程改过（或本进程换过一代）时，重新加载内存矩阵。
+
+        为什么一定要有这一步：维护锁只保证"同一时刻只有一个人在写"，写完就把锁放开了。
+        CLI 跑一次 `reindex` 之后，API 进程里的矩阵还是旧的，而一致性检查看的是
+        SQLite 里的条数与模型——两边可以完全对得上（重建换了模型但片段数没变、
+        改一版文档换了几个 chunk），于是"检查通过、检索用的是旧内容"。
+
+        代次是只增不减的计数器，不承担任何语义，只回答"我看的这一版还是最新的吗"。
+        换索引和换内容推的是两个不同的计数器，这里都看——缓存过期就是过期，
+        至于"要不要因此否决一次在途查询"是 `ask` 的判断，不是缓存的。
+        """
+        if repo.get_store_revision(self._conn) == self._revision:
+            return
+        with sqlite_write():
+            if repo.get_store_revision(self._conn) == self._revision:
+                return
+            self._load()
 
     # ── 对外 ────────────────────────────────────────
 
     def upsert(self, items: Sequence[VectorItem]) -> None:
+        """一批向量一次性写入。
+
+        **先全部校验、再一次性提交**：旧实现逐条 `INSERT OR REPLACE`，校验也在循环里，
+        于是第 2 条不合格时第 1 条已经写进事务了。这个事务不属于任何显式边界，随后
+        任何一次 `commit()`——比如另一个线程更新任务进度——都会把它一起提交。结果是
+        "入库失败、旧向量却已经被新版覆盖"，而回滚逻辑只会删掉本次新增的 id，
+        删不掉被覆盖的那几行。
+        """
         if not items:
             return
-        if not self.dim:
-            self.dim = len(items[0].vector)
-        new_rows = []
+        dim = self.dim or len(items[0].vector)
+        rows: list[tuple] = []
         for item in items:
             arr = _normalize(item.vector)
-            if arr.shape[0] != self.dim:
-                raise ValueError(f"向量维度 {arr.shape[0]} 与索引维度 {self.dim} 不一致")
-            self._conn.execute(
-                "INSERT OR REPLACE INTO vectors (chunk_id, project_name, project_code, doc_year,"
-                " dim, model, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            if arr.shape[0] != dim:
+                raise ValueError(f"向量维度 {arr.shape[0]} 与索引维度 {dim} 不一致")
+            rows.append(
                 (
                     item.chunk_id,
                     item.project_name,
                     item.project_code,
                     item.doc_year,
-                    self.dim,
+                    dim,
                     item.model,
                     array("f", arr.tolist()).tobytes(),
-                ),
+                )
             )
-            new_rows.append((item, arr))
         with sqlite_write():
-            self._conn.commit()
-            self._rebuild_slice()
+            with self._conn:  # 整个批次要么全进、要么全不进
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO vectors (chunk_id, project_name, project_code,"
+                    " doc_year, dim, model, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+            self.dim = dim
+            self._load()
 
     def delete(self, chunk_ids: Sequence[str]) -> None:
         if not chunk_ids:
@@ -205,39 +264,43 @@ class NumpyStore:
         with sqlite_write():
             self._conn.execute(f"DELETE FROM vectors WHERE chunk_id IN ({marks})", list(chunk_ids))
             self._conn.commit()
-            self._rebuild_slice()
+            self._load()
 
     def search(
         self, vector: list[float], *, limit: int, filt: Filter | None = None
     ) -> list[tuple[str, float]]:
-        if not self._ids:
+        self._refresh_if_stale()
+        snap = self._snap  # 取一次引用：矩阵、ids、筛选列必须是同一版
+        if not snap.ids:
             return []
         query = _normalize(vector)
-        if query.shape[0] != self._mat.shape[1]:
-            raise ValueError(f"查询维度 {query.shape[0]} 与索引维度 {self._mat.shape[1]} 不一致")
-        scores = self._mat @ query
+        if query.shape[0] != snap.mat.shape[1]:
+            raise ValueError(f"查询维度 {query.shape[0]} 与索引维度 {snap.mat.shape[1]} 不一致")
+        scores = snap.mat @ query
 
-        mask = np.ones(len(self._ids), dtype=bool)
+        mask = np.ones(len(snap.ids), dtype=bool)
         if filt:
             if filt.projects:
                 wanted = set(filt.projects)
-                mask &= np.array([p in wanted for p in self._projects], dtype=bool)
+                mask &= np.array([p in wanted for p in snap.projects], dtype=bool)
             if filt.year_from is not None:
-                mask &= np.array([y is not None and y >= filt.year_from for y in self._years])
+                mask &= np.array([y is not None and y >= filt.year_from for y in snap.years])
             if filt.year_to is not None:
-                mask &= np.array([y is not None and y <= filt.year_to for y in self._years])
+                mask &= np.array([y is not None and y <= filt.year_to for y in snap.years])
         if not mask.any():
             return []
 
         scores = np.where(mask, scores, -np.inf)
         order = np.argsort(-scores)[:limit]
-        return [(self._ids[i], float(scores[i])) for i in order if np.isfinite(scores[i])]
+        return [(snap.ids[i], float(scores[i])) for i in order if np.isfinite(scores[i])]
 
     def count(self) -> int:
-        return len(self._ids)
+        self._refresh_if_stale()
+        return len(self._snap.ids)
 
     def ids(self) -> set[str]:
-        return set(self._ids)
+        self._refresh_if_stale()
+        return set(self._snap.ids)
 
     def clear(self) -> None:
         with sqlite_write():
@@ -279,6 +342,34 @@ class NumpyStore:
                     )
             self.dim = dim
             self._load()
+
+
+class StoreRef:
+    """指向"当前后端"的引用，而不是某个具体后端对象。
+
+    为什么需要这一层：入批处理任务在开始时就拿到了 `services.store`，而那个指针可能
+    在批次执行期间被迁移换掉（numpy → Milvus）。把对象本身传下去，任务就会一直往
+    旧后端写：根服务已经查 Milvus，归档也在 SQLite 里更新了，只有新数据躺在没人读的
+    numpy 表里。维护锁能保证"写的时候没有别人在迁移"，但锁不住"手里这个对象是不是
+    迁移之前的那一个"——那是取参数那一刻就定死的。
+
+    每次访问都重新解析，指针变了这里就跟上。
+    """
+
+    def __init__(self, resolve) -> None:
+        self._resolve = resolve
+
+    def _target(self):
+        return self._resolve()
+
+    def __getattr__(self, name: str):
+        return getattr(self._target(), name)
+
+    def __repr__(self) -> str:  # pragma: no cover - 只在调试输出里出现
+        try:
+            return f"StoreRef({self._target()!r})"
+        except Exception:
+            return "StoreRef(<无法解析>)"
 
 
 class MilvusStore:

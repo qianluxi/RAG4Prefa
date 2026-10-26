@@ -11,12 +11,13 @@ import json
 import sys
 from pathlib import Path
 
-from . import admin, ask, consistency, ingest, repo
+from . import admin, ask, concurrency, consistency, ingest, repo
 from .adapters.vectors import RebuildError
+from .concurrency import MaintenanceBusy
 from .config import get_settings
 from .consistency import IndexMismatch
 from .db import init_db
-from .domain import Filter
+from .domain import Filter, JobState
 from .services import build_services
 
 
@@ -61,32 +62,50 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 2
 
     services = build_services()
+    # 自己也是"正在工作的进程"：占住租约，另一个终端里的 doctor 就不会把这次入库的
+    # 任务标成"进程中断"。抢不到说明有服务进程在跑——那时租约在它手上，清理本来也
+    # 不会发生，继续入库即可（并发写由维护锁挡住）。
+    leased = concurrency.WORKER_LEASE.acquire(services.conn, timeout=0.0)
     try:
         import uuid
 
         job_id = uuid.uuid4().hex[:12]
-        repo.upsert_project(services.conn, args.project, args.code, args.started_on)
+        # 项目与任务都不在这里预建：`ingest_batch` 会把它们放进维护锁里面写。
+        # 先在锁外建好，一旦被别的维护动作挡住，就会留下一个"看起来导过了"的空项目。
         repo.create_job(
             services.conn,
             job_id,
             "ingest",
             {"project": args.project, "files": [f.name for f in files]},
         )
-        outcomes = ingest.ingest_batch(
-            services.conn,
-            services.store,
-            services.require_embedder(),
-            services.settings,
-            job_id=job_id,
-            files=files,
-            project_name=args.project,
-            project_code=args.code,
-            doc_year=args.year,
-        )
+        try:
+            outcomes = ingest.ingest_batch(
+                services.conn,
+                services.store,
+                services.require_embedder(),
+                services.settings,
+                job_id=job_id,
+                files=files,
+                project_name=args.project,
+                project_code=args.code,
+                started_on=args.started_on or None,
+                doc_year=args.year,
+                # 操作员按下去就知道要等：排队而不是立刻拒绝
+                timeout=None,
+            )
+        except MaintenanceBusy as exc:
+            # 排队也会被推到超时（另一进程持锁不放手），此时一个文件都没处理
+            repo.update_job(
+                services.conn, job_id, state=JobState.failed, message=f"没有执行：{exc}"
+            )
+            print(f"入库未执行：{exc}", file=sys.stderr)
+            return 2
         services.maybe_promote()
         _print([o.as_dict() for o in outcomes])
         return 0 if any(o.status == "indexed" for o in outcomes) else 1
     finally:
+        if leased:
+            concurrency.WORKER_LEASE.release()
         services.close()
 
 

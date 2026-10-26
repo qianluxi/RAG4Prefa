@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from . import admin, ask, concurrency, consistency, ingest, repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
+from .adapters.vectors import StoreRef
 from .concurrency import MaintenanceBusy
 from .consistency import IndexMismatch
 from .credentials import (
@@ -95,7 +96,18 @@ def create_app(services: Services | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.services = services or build_services()
+        # 占住"服务进程租约"：它只是一把活着的证明，不保护数据。别处的 CLI 靠它区分
+        # "上一个进程死了、该清理遗留任务"和"这个进程正在写、别动它的任务"。
+        # 抢不到说明同一个库上已经有另一个服务进程——那种部署本身就不对（整进程一条
+        # 写连接），如实说出来，但不要因此起不来。
+        root_services = app.state.services
+        if not concurrency.WORKER_LEASE.acquire(root_services.conn, timeout=0.0):
+            root_services.notes.append(
+                "同一个数据库上已经有另一个服务进程在运行；本进程不会清理未完成任务，"
+                "两个进程同时写同一个库也不被支持"
+            )
         yield
+        concurrency.WORKER_LEASE.release()
         app.state.services.close()
 
     app = FastAPI(title="RAG4Prefa", version="0.1.0", lifespan=lifespan)
@@ -316,7 +328,9 @@ def create_app(services: Services | None = None) -> FastAPI:
             raise HTTPException(400, "没有可处理的 .docx 文件")
 
         job_id = uuid.uuid4().hex[:12]
-        repo.upsert_project(services.conn, project_name, code, started_on or None)
+        # 项目刻意不在这里建：它一旦落库，用户在列表里就会看到"已经导入过"。
+        # 真正的准入是 `ingest_batch` 里的维护锁，而它在项目的写入之前——
+        # 见下面 `run()`。
         repo.create_job(
             services.conn,
             job_id,
@@ -330,29 +344,41 @@ def create_app(services: Services | None = None) -> FastAPI:
             # 期间根服务可能已经迁到 Milvus。继续往视图里的旧 numpy 写，就成了
             # "归档在 A、根服务查 B"。Key 仍然按这个请求的凭据走。
             root = services.owner
+            # 用 StoreRef 而不是把 `root.store` 传下去：批次可能要跑几分钟，
+            # 期间后端被迁移换掉时，那个"取参数时定死"的对象就过期了。
+            sink = StoreRef(lambda: root.store)
             try:
                 await asyncio.to_thread(
                     ingest.ingest_batch,
                     root.conn,
-                    root.store,
+                    sink,
                     services.require_embedder(),
                     services.settings,
                     job_id=job_id,
                     files=saved,
                     project_name=project_name,
                     project_code=code,
+                    started_on=started_on or None,
                     doc_year=doc_year,
                 )
-                # 迁移只能由根服务执行（`maybe_promote` 内部会转交），
-                # 在视图上迁移等于"迁完了根服务还不知道"。
-                root.maybe_promote()
+            except MaintenanceBusy as exc:
+                # 批次级准入被拒时，项目、文档、任务状态都还没被动过（见 ingest_batch）。
+                # 这里只把"没执行"如实写进任务，不让它显示成"入库失败"。
+                repo.update_job(
+                    root.conn, job_id, state=JobState.failed, message=f"没有执行：{exc}"
+                )
+                return
             except Exception as exc:
                 repo.update_job(
-                    services.conn,
+                    root.conn,
                     job_id,
                     state=JobState.failed,
                     message=f"{type(exc).__name__}: {exc}",
                 )
+                return
+            # 迁移只能由根服务执行（`maybe_promote` 内部会转交），
+            # 在视图上迁移等于"迁完了根服务还不知道"。
+            root.maybe_promote()
 
         asyncio.create_task(run())
         return JSONResponse({"job_id": job_id, "files": [p.name for p in saved]}, status_code=202)

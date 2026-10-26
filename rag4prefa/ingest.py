@@ -270,8 +270,55 @@ def ingest_batch(
     files: list[Path],
     project_name: str,
     project_code: str = "",
+    started_on: str | None = None,
+    doc_year: int | None = None,
+    timeout: float | None = 0.0,
+) -> list[FileOutcome]:
+    """入库一批文件。**整批一次占住维护锁**，而不是每个文件各抢一次。
+
+    为什么粒度是"整批"：
+
+    - 项目记录、任务记录一旦落库，用户就会把它当成"已经导过了"。如果只在文件级别
+      抢锁，第一个文件成功、第二个撞上别人的重建，项目照样存在、任务照样是 failed，
+      库里留下一个只有一半内容的项目；更糟的是调用方（API）在**批次开始之前**就把
+      项目建好了，一次被拒绝就能留下一个空项目。
+    - 批次期间后端指针可能被迁移换掉。把"当前后端"锁在批次里读一次（`StoreRef`），
+      就不会出现"前两个文件写进 numpy、根服务已经在查 Milvus"。
+
+    抢锁失败在这里抛出 `MaintenanceBusy`，此时任务、项目、文档都还没被动过。
+    """
+    with maintenance_lock(
+        conn, purpose=f"入库 {project_name}（{len(files)} 个文件）", timeout=timeout
+    ):
+        return _ingest_batch_locked(
+            conn,
+            store,
+            embedder,
+            settings,
+            job_id=job_id,
+            files=files,
+            project_name=project_name,
+            project_code=project_code,
+            started_on=started_on,
+            doc_year=doc_year,
+        )
+
+
+def _ingest_batch_locked(
+    conn: sqlite3.Connection,
+    store: VectorStore,
+    embedder: Embedder,
+    settings: Settings,
+    *,
+    job_id: str,
+    files: list[Path],
+    project_name: str,
+    project_code: str = "",
+    started_on: str | None = None,
     doc_year: int | None = None,
 ) -> list[FileOutcome]:
+    # 项目与任务状态都在锁内写：锁外的"预创建"一旦被拒绝就是一条假记录
+    repo.upsert_project(conn, project_name, project_code, started_on)
     repo.update_job(conn, job_id, state=JobState.running, progress=0.0, message="开始解析")
 
     outcomes: list[FileOutcome] = []

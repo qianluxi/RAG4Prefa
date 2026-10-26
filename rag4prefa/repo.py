@@ -89,6 +89,7 @@ def delete_project(conn: sqlite3.Connection, name: str) -> list[str]:
             conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({marks})", chunk_ids)
             conn.execute(f"DELETE FROM vectors WHERE chunk_id IN ({marks})", chunk_ids)
         conn.execute("DELETE FROM projects WHERE name = ?", (name,))
+        _bump(conn, DATA_REVISION_KEY)
     return chunk_ids
 
 
@@ -257,6 +258,10 @@ def commit_document_version(
                 " dim, model, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
+        # 归档和片段一起变了：别的进程手里的 numpy 缓存（它就是这两张表的视图）
+        # 从此刻起是旧的。这里只推"内容代次"而不是"索引代次"——向量空间没变，
+        # 在途查询的结果仍然成立，不该因为它把一次检索判死。
+        _bump(conn, DATA_REVISION_KEY)
     return stale
 
 
@@ -622,7 +627,78 @@ def get_index_state(conn: sqlite3.Connection) -> str:
 
 
 def set_index_state(conn: sqlite3.Connection, state: str) -> None:
-    set_meta(conn, INDEX_STATE_KEY, state)
+    with transaction(conn):
+        _write_index_state(conn, state)
+        _bump_generation(conn)
+
+
+# ── 索引代次 ────────────────────────────────────────────────
+#
+# 归档与向量索引每被改一次，代次 +1。它解决的是**进程之间**的那类不一致：
+# 维护锁能挡住两个进程同时写，但挡不住"CLI 重建完了，API 进程里 numpy 的内存矩阵
+# 还是旧的"——锁释放之后，API 手里那一份既没有报错、也没有任何标记说明它过期了。
+# 代次是个单调计数器，只增不减：读方记住自己加载时的值，发现变了就重新加载，
+# 或者拒绝用这份缓存做检索。
+#
+# 为什么不能用"条数"代替：条数相同、id 不同是这类事故的常态（改一版文档换了几个
+# chunk、重建换了模型但片段数没变），条数完全看不出来。
+#
+# 为什么分成两个计数器：**换索引**和**换内容**对读方的影响不同。
+# - `index_generation` 变了 ⇒ 向量空间可能变了（换了模型/换了后端）。在途查询的
+#   查询向量可能属于旧模型，必须作废重来，不能"接着查"；
+# - `data_revision` 变了 ⇒ 只是多了/少了内容。缓存要刷新，但在途查询的结果依然成立
+#   （查询向量还是同一个模型算的），不该因此把一次正常的检索判死——否则"有人上传
+#   文档时别人就问不了问题"，比问题本身更烦人。
+INDEX_GENERATION_KEY = "index_generation"
+DATA_REVISION_KEY = "data_revision"
+
+
+def _counter(conn: sqlite3.Connection, key: str) -> int:
+    raw = get_meta(conn, key)
+    return int(raw) if raw and raw.isdigit() else 0
+
+
+def get_index_generation(conn: sqlite3.Connection) -> int:
+    """向量空间那一代。只有换索引（模型、后端、整体重建）才会推它。"""
+    return _counter(conn, INDEX_GENERATION_KEY)
+
+
+def get_data_revision(conn: sqlite3.Connection) -> int:
+    return _counter(conn, DATA_REVISION_KEY)
+
+
+def get_store_revision(conn: sqlite3.Connection) -> tuple[int, int]:
+    """内存型后端（numpy）判断"我这份缓存过没过期"用的一对数。"""
+    return get_index_generation(conn), get_data_revision(conn)
+
+
+def _bump(conn: sqlite3.Connection, key: str) -> int:
+    """在调用方**已有**的事务里把计数器 +1，返回新值。
+
+    刻意不自己开事务：所有调用点都在 `with transaction(conn)` 里面，嵌套开事务会在
+    内层退出时提前 `commit()`，把外层还没写完的东西一起提交掉——那正是写锁要防的事。
+    """
+    value = _counter(conn, key) + 1
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, str(value))
+    )
+    return value
+
+
+def _bump_generation(conn: sqlite3.Connection) -> int:
+    return _bump(conn, INDEX_GENERATION_KEY)
+
+
+def bump_index_generation(conn: sqlite3.Connection) -> int:
+    """外部主动作废别人的缓存（例如测试模拟"另一个进程换了索引"）。"""
+    with transaction(conn):
+        return _bump_generation(conn)
+
+
+def _write_index_state(conn: sqlite3.Connection, state: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (INDEX_STATE_KEY, state)
+    )
 
 
 def set_index_meta(
@@ -632,6 +708,7 @@ def set_index_meta(
 
     分开写会留下"模型已更新、状态还是 rebuilding"的中间态，而读方看到模型对得上
     就会放行检索——那正是这个标记要消除的窗口，所以三者必须在同一个事务里落地。
+    代次一起 +1：这是在换索引，任何读过旧索引的人都必须知道。
     """
     with transaction(conn):
         conn.executemany(
@@ -642,6 +719,7 @@ def set_index_meta(
                 (INDEX_STATE_KEY, state),
             ],
         )
+        _bump_generation(conn)
 
 
 # ── 管理视图（给 admin 用，避免上层写 SQL）─────────────────

@@ -22,13 +22,14 @@ import pytest
 
 from rag4prefa import concurrency, repo
 from rag4prefa.adapters.rerank import NoopReranker
-from rag4prefa.adapters.vectors import NumpyStore
+from rag4prefa.adapters.vectors import NumpyStore, StoreRef
 from rag4prefa.concurrency import (
     MaintenanceBusy,
     maintenance_lock,
 )
 from rag4prefa.config import Settings
-from rag4prefa.ingest import ingest_file, reindex
+from rag4prefa.domain import JobState
+from rag4prefa.ingest import ingest_batch, ingest_file, reindex
 from rag4prefa.services import Services
 from tests.conftest import FakeEmbedder
 
@@ -276,3 +277,137 @@ def test_upload_is_refused_with_a_readable_status_while_maintenance_runs(
     assert resp.status_code == 503, "不是服务器错误，是「现在不行」"
     assert "全量重建" in resp.json()["detail"]
     assert repo.get_project(conn, "甲项目") is None, "被拒绝时不该留下空项目"
+
+
+# ── 批次对着"旧后端对象"写：锁住了也没用 ────────────────────
+
+
+class RecordingTarget:
+    """迁移目标：独立存储（和真 Milvus 一样不共享 `vectors` 表），记录收到的写入。"""
+
+    name = "milvus"
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.dim = int(args[2]) if len(args) > 2 else 0
+        self.notes: list[str] = []
+        self._ids: set[str] = set()
+
+    def rebuild(self, items) -> None:  # type: ignore[override]
+        self._ids = {i.chunk_id for i in items}
+
+    def upsert(self, items) -> None:  # type: ignore[override]
+        self._ids |= {i.chunk_id for i in items}
+
+    def delete(self, chunk_ids) -> None:  # type: ignore[override]
+        self._ids -= set(chunk_ids)
+
+    def count(self) -> int:
+        return len(self._ids)
+
+    def ids(self) -> set[str]:
+        return set(self._ids)
+
+    def clear(self) -> None:
+        self._ids = set()
+
+    def search(self, vector, *, limit, filt=None):  # type: ignore[override]
+        return []
+
+
+def test_a_batch_that_started_on_an_old_backend_still_writes_to_the_current_one(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    docx_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """上传任务先拿到旧后端、之后才轮到它跑：必须写进**当前**后端。
+
+    复审的时序：任务 B 取到 numpy 对象 → 任务 A 入库并迁移到 Milvus → A 放锁 →
+    B 才轮到执行。锁没有失效，问题是"对象在取参数那一刻就定死了"。写进旧对象之后，
+    根服务查 Milvus 看不到这批内容，归档里却有——两边条数都能"看起来正常"。
+    """
+    store = NumpyStore(conn, FakeEmbedder.dim)
+    _seed(conn, store, settings, docx_file)
+    services = Services(
+        settings=settings.model_copy(update={"vector_backend": "auto"}),
+        conn=conn,
+        store=store,
+        embedder=FakeEmbedder(),
+        llm=None,
+        reranker=NoopReranker(),
+        fell_back=True,
+    )
+    monkeypatch.setattr("rag4prefa.services.MilvusStore", RecordingTarget)
+
+    # 批次在迁移之前就把"当前后端"这句话记下来了，但每次用的时候才去解析
+    sink = StoreRef(lambda: services.store)
+    assert sink._target() is store
+
+    assert services.maybe_promote() is True
+    target = services.store
+    assert isinstance(target, RecordingTarget)
+    assert sink._target() is target, "解析要跟得上指针"
+
+    job_id = "job-late"
+    repo.create_job(conn, job_id, "ingest", {"project": "乙项目"})
+    ingest_batch(
+        conn,
+        sink,
+        FakeEmbedder(),
+        settings,
+        job_id=job_id,
+        files=[docx_file],
+        project_name="乙项目",
+        doc_year=2024,
+    )
+
+    assert target.ids() == repo.archived_chunk_ids(conn), (
+        "新一批数据没进当前后端：根服务查 Milvus、数据躺在旧 numpy 里"
+    )
+
+
+def test_a_refused_batch_creates_no_project_and_no_running_job(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """被挡住的一批什么都不能留下。
+
+    以前 API 与 CLI 都在"抢锁之前"就建好了项目和任务：一旦被别的维护动作挡住，
+    项目列表里多一个空项目、任务显示失败，用户还得自己判断哪些文件导过了。
+    现在项目与任务状态都在锁内写，抢不到锁等于一个字节都没动。
+    """
+    store = NumpyStore(conn, FakeEmbedder.dim)
+    job_id = "job-busy"
+    repo.create_job(conn, job_id, "ingest", {"project": "乙项目"})
+
+    held, release = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        with maintenance_lock(conn, purpose="全量重建", timeout=0.0):
+            held.set()
+            release.wait(10)
+
+    worker = threading.Thread(target=hold, daemon=True)
+    worker.start()
+    assert held.wait(10)
+
+    try:
+        with pytest.raises(MaintenanceBusy):
+            ingest_batch(
+                conn,
+                store,
+                FakeEmbedder(),
+                settings,
+                job_id=job_id,
+                files=[docx_file],
+                project_name="乙项目",
+                doc_year=2024,
+            )
+    finally:
+        release.set()
+        worker.join(10)
+
+    assert repo.get_project(conn, "乙项目") is None, "被拒绝时不许留下空项目"
+    job = repo.get_job(conn, job_id)
+    assert job is not None
+    assert job.state is JobState.queued, "一个文件都没处理，任务不该被写成运行中或失败"
+    assert repo.chunk_count(conn) == 0

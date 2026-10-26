@@ -259,11 +259,41 @@ class HalfWritingStore(NumpyStore):
         raise RuntimeError("模拟索引写入中途失败")
 
 
-class NoDeleteStore(NumpyStore):
-    """删不掉旧向量：模拟切换最后一步失败。"""
+class NoDeleteStore:
+    """独立存储的假后端（像 Milvus 那样自己存一份 id）：删旧向量时抛错。
+
+    刻意**不继承** `NumpyStore`：numpy 的索引就是 `vectors` 表的视图，而切换事实时
+    表里的旧行已经被同一个事务删掉了，它表达不出"索引比归档多"这个状态——
+    而那正是本用例要测的东西（只有独立存储的后端才会留下这种残留）。
+    """
+
+    name = "no-delete"
+    notes: list[str] = []
+
+    def __init__(self, conn, dim: int) -> None:
+        self.dim = dim
+        self._ids: set[str] = set()
+
+    def upsert(self, items) -> None:  # type: ignore[override]
+        self._ids |= {i.chunk_id for i in items}
 
     def delete(self, chunk_ids) -> None:  # type: ignore[override]
         raise RuntimeError("模拟删除旧向量失败")
+
+    def search(self, vector, *, limit, filt=None):  # type: ignore[override]
+        return []
+
+    def count(self) -> int:
+        return len(self._ids)
+
+    def ids(self) -> set[str]:
+        return set(self._ids)
+
+    def clear(self) -> None:
+        self._ids = set()
+
+    def rebuild(self, items) -> None:  # type: ignore[override]
+        self._ids = {i.chunk_id for i in items}
 
 
 def _state_is_clean(conn: sqlite3.Connection, store: NumpyStore) -> bool:

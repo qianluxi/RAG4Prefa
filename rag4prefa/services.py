@@ -18,7 +18,7 @@ from .adapters.vectors import (
     NumpyStore,
     VectorStore,
 )
-from .concurrency import MaintenanceBusy, maintenance_lock
+from .concurrency import MaintenanceBusy, maintenance_lock, worker_alive
 from .config import Settings, get_settings
 from .consistency import collect_issues, inspect
 from .credentials import CredentialPool, UserCredentials
@@ -247,7 +247,19 @@ def open_store(settings: Settings, conn: sqlite3.Connection) -> tuple[VectorStor
     return NumpyStore(conn, dim), notes, False
 
 
-def build_services(settings: Settings | None = None) -> Services:
+def build_services(
+    settings: Settings | None = None, *, recover_interrupted: bool | None = None
+) -> Services:
+    """装配服务。
+
+    `recover_interrupted` 决定要不要把库里遗留的 `running` / `queued` 任务标成中断。
+    默认值是"没别人在跑才标"：这个库现在同时被 uvicorn 和 CLI 使用，光看数据库
+    分不出"上一个进程已经死了"和"另一个进程正在写"。以前每次装配都无条件清理，
+    于是跑一次 `doctor` 就能把在线入库任务标成 failed，而数据其实还在写。
+
+    判活的依据是 `concurrency.WORKER_LEASE`——服务进程活着就一直占着的文件锁，
+    进程退出由内核释放，不需要心跳，也不会留下残留。
+    """
     settings = settings or get_settings()
     settings.ensure_dirs()
     init_db(settings.db_path)
@@ -255,14 +267,25 @@ def build_services(settings: Settings | None = None) -> Services:
 
     store, notes, fell_back = open_store(settings, conn)
 
-    # 入库任务跑在进程内，上次进程死掉留下的 running/queued 永远不会前进
-    interrupted = mark_interrupted_jobs(conn)
-    if interrupted:
-        notes.append(f"已把上次进程遗留的 {interrupted} 个任务标记为失败")
-    # 同一类问题在文档维度也要收尾，否则它会永远显示"正在入库"
-    dangling = mark_interrupted_documents(conn)
-    if dangling:
-        notes.append(f"已把上次进程中断时处于入库中的 {dangling} 个文档标记为失败，可重新导入")
+    if recover_interrupted is None:
+        recover_interrupted = not worker_alive(conn)
+    if recover_interrupted:
+        # 入库任务跑在进程内，上次进程死掉留下的 running/queued 永远不会前进
+        interrupted = mark_interrupted_jobs(conn)
+        if interrupted:
+            notes.append(f"已把上次进程遗留的 {interrupted} 个任务标记为失败")
+        # 同一类问题在文档维度也要收尾，否则它会永远显示"正在入库"
+        dangling = mark_interrupted_documents(conn)
+        if dangling:
+            notes.append(
+                f"已把上次进程中断时处于入库中的 {dangling} 个文档标记为失败，可重新导入"
+            )
+    else:
+        # 说清"为什么这次不动它们"，否则运维会以为清理逻辑失效了
+        notes.append(
+            "检测到另一个服务进程正在使用同一个数据库，已跳过对未完成任务的中断清理"
+            "（那些任务可能正在别的进程里跑）"
+        )
 
     embedder: Embedder | None
     try:

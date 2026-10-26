@@ -20,6 +20,7 @@ from .adapters.llm import LLM
 from .adapters.rerank import Reranker
 from .adapters.vectors import VectorStore
 from .config import Settings
+from .consistency import IndexMismatch
 from .domain import Filter, Hit
 from .filters import describe, parse_filter
 from .prompts import SYSTEM_ANSWER, build_answer_prompt
@@ -51,6 +52,28 @@ def _to_hits(conn: sqlite3.Connection, scores: dict[str, float], limit: int) -> 
     return hits
 
 
+def _ensure_same_index(conn: sqlite3.Connection, version: int, stage: str) -> None:
+    """确认"我看到的那一代索引"还没被换掉。
+
+    为什么需要它：`ensure_queryable` 与真正检索之间隔着一次网络往返（算查询向量）。
+    那几秒里另一个进程完全可以做完整量重建——换了模型、维度还一样，于是查询向量
+    出自旧模型、索引已是新的一版。余弦照算、接口照返回，只有语义悄悄错位：**这类
+    结果不报错，只是不可信**，比报错难发现得多。
+
+    维护锁保护的是"写"，不能把查询也塞进去排队——一次重建要几分钟，让所有提问等
+    它结束是不可接受的。所以用代次做一次轻量的版本确认（读一条 meta，成本可忽略）：
+    算完向量后确认一次，检索完成后再确认一次。第二次是必须的——切换可能正好发生在
+    `search` 执行期间，那时第一次确认已经通过了。
+    """
+    now = repo.get_index_generation(conn)
+    if now != version:
+        raise IndexMismatch(
+            f"{stage}向量索引被换掉了（代次 {version} → {now}），本次检索作废。"
+            "查询向量可能出自旧模型，继续用它查新索引会得到'能跑但语义错位'的结果。"
+            "直接重试即可。"
+        )
+
+
 async def retrieve(
     conn: sqlite3.Connection,
     store: VectorStore,
@@ -64,6 +87,9 @@ async def retrieve(
     """返回 (融合后的候选, 实际生效的筛选条件, 各阶段耗时)。"""
     recall = recall_k or settings.recall_k
     timings: dict[str, float] = {}
+    # 先取号再检查：顺序反过来的话，"检查通过 → 这次切换开始 → 取号拿到新号"会被
+    # 当成一路没变，白检查一次。
+    version = repo.get_index_generation(conn)
     # 查询向量与文档向量必须出自同一个模型，否则检索"能跑但结果无意义"。
     # 同时核对后端实际条数与归档：归档对、索引少写几条时，稠密召回会静默漏内容。
     consistency.ensure_queryable(
@@ -74,10 +100,14 @@ async def retrieve(
     t0 = time.perf_counter()
     vector = await asyncio.to_thread(embedder.embed_one, question)
     timings["embed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    _ensure_same_index(conn, version, "计算查询向量期间")
 
     t0 = time.perf_counter()
     dense = await asyncio.to_thread(lambda: store.search(vector, limit=recall, filt=filt))
     timings["dense_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    # 切换也可能正好落在 search 里面：那条路径已经通过了上一次确认，
+    # 结果里却可能混着两代索引的分数，只能丢掉重来。
+    _ensure_same_index(conn, version, "检索期间")
 
     t0 = time.perf_counter()
     sparse = await asyncio.to_thread(lambda: repo.fts_search(conn, query, limit=recall, filt=filt))

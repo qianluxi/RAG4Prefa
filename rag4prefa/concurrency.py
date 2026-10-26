@@ -1,6 +1,6 @@
 """写入协调：同一时刻只允许一个会改事实或改索引的动作。
 
-为什么需要两把锁，而不是一把：
+三把锁，各管一件事，不能合并：
 
 1. **写锁（进程内，可重入）**——所有写事务共用一条 SQLite 连接。
    `check_same_thread=False` 只解决"能不能用"，没解决"能不能交错"：两个线程同时开
@@ -10,11 +10,17 @@
    而且必须跨进程：`uvicorn` 和 `python -m rag4prefa reindex` 是两个进程，进程内锁
    管不到对方。跨进程用操作系统文件锁：进程被杀时内核自动释放，不会留下"永远上锁"
    的假故障（用 `O_EXCL` 建锁文件就得自己判活、自己清残留，那是另一类 bug 的来源）。
+3. **工作租约（跨进程）**——服务进程活着就一直占着。它不保护数据，只回答一个问题：
+   "库里那些 `running` 的任务，是上一个进程死了留下的，还是另一个进程正在写？"
 
 维护锁的粒度是"一次动作"，不是"一条语句"。理由是重建的执行顺序：读快照 →
 算 embedding（可能几分钟）→ 写归档 → 换索引。如果只在写的时候加锁，算完才发现事实
 表已经被改过——那时条数可能仍然一样，只有 id 不一样（`rebuild_store` 的条数校验
 发现不了，`verify_ids` 才能，而它不在主路径上）。所以从读快照到切换完成必须独占。
+
+维护锁管得住"同一时刻只有一个动作在改数据"，管不住"别人的内存缓存过期了"：
+CLI 重建完成后锁就释放了，API 进程里的 numpy 矩阵还是旧的，两边都没报错。那一层
+靠 `meta.index_generation`（代次）解决，见 `repo`。
 
 抢不到锁的语义分两种，调用方自己选：
 - `timeout=0`：立刻抛 `MaintenanceBusy`。API 场景要的就是这个——用户宁可看到
@@ -34,6 +40,7 @@ from pathlib import Path
 from typing import IO
 
 MAINTENANCE_LOCK_NAME = "maintenance.lock"
+WORKER_LOCK_NAME = "worker.lock"
 _HOLDER_SUFFIX = ".holder"
 
 
@@ -57,12 +64,10 @@ _MAINTENANCE_GUARD = threading.Lock()
 _depth = threading.local()
 
 
-def lock_path_for(conn) -> Path | None:
-    """维护锁文件的位置：跟数据库同一个目录。
-
-    从连接上读而不是从配置读，是为了让所有拿得到 `conn` 的调用方（ingest、reindex、
-    rebuild、api、cli）用同一把锁——传配置容易漏一处，漏掉的那处就是并发窗口。
-    内存库没有文件可放锁，返回 None，退化成进程内互斥。
+def _db_dir(conn) -> Path | None:
+    """数据库文件所在目录。从连接上读而不是从配置读，是为了让所有拿得到 `conn`
+    的调用方用同一套锁；传配置容易漏一处，漏掉的那处就是并发窗口。
+    内存库没有文件可放锁，返回 None。
     """
     try:
         rows = conn.execute("PRAGMA database_list").fetchall()
@@ -71,8 +76,14 @@ def lock_path_for(conn) -> Path | None:
     for row in rows:
         # 列顺序是 (seq, name, file)：按序号取值，别指望 row_factory
         if row[1] == "main" and row[2]:
-            return Path(row[2]).parent / MAINTENANCE_LOCK_NAME
+            return Path(row[2]).parent
     return None
+
+
+def lock_path_for(conn) -> Path | None:
+    """维护锁文件的位置：跟数据库同一个目录。"""
+    parent = _db_dir(conn)
+    return parent / MAINTENANCE_LOCK_NAME if parent else None
 
 
 class _FileLock:
@@ -264,3 +275,75 @@ def is_busy(conn) -> str | None:
         file_lock.release()
         return None
     return _read_holder(path) or "另一个维护动作"
+
+
+class WorkerLease:
+    """服务进程的生命周期租约：进程活着就一直占着一个文件锁。
+
+    解决的问题不是"同时写"，而是**误判别人死了**：`build_services()` 会把
+    `running` / `queued` 的任务标成"进程中断"（那本来是为崩溃恢复准备的）。可同一个
+    库现在同时被 uvicorn 和 CLI 使用，于是跑一次 `doctor` 就能把在线入库任务标成
+    failed——数据其实还在写，用户看到一条假的失败。
+
+    光看数据库分不出"上一个进程已经死了"和"另一个进程正在干活"：两种情况都是
+    `state='running'`。文件锁能分辨，而且不需要心跳、不需要判活、也不会留下要人工
+    清理的残留——进程一退，内核就放手。
+    """
+
+    def __init__(self) -> None:
+        self._file: _FileLock | None = None
+        self._memory = False  # 内存库没有文件可锁：一个进程一个库，天然独占
+
+    @property
+    def held(self) -> bool:
+        return self._file is not None or self._memory
+
+    @property
+    def path(self) -> Path | None:
+        return self._file.path if self._file else None
+
+    def acquire(self, conn, *, timeout: float | None = 0.0) -> bool:
+        """抢租约。`timeout=0` 表示"已经有别的服务进程在占"，不排队。"""
+        if self.held:
+            return True
+        parent = _db_dir(conn)
+        if parent is None:
+            self._memory = True
+            return True
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        lock = _FileLock(parent / WORKER_LOCK_NAME)
+        while True:
+            if lock.try_acquire():
+                self._file = lock
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            remaining = float("inf") if deadline is None else deadline - time.monotonic()
+            time.sleep(0.05 if remaining < 0.5 else 0.2)
+
+    def release(self) -> None:
+        lock, self._file = self._file, None
+        self._memory = False
+        if lock is not None:
+            lock.release()
+
+
+WORKER_LEASE = WorkerLease()
+
+
+def worker_alive(conn) -> bool:
+    """除了本进程，是否还有别的进程正持着租约（也就是"还有一个服务在跑"）。
+
+    判据是"抢不到那把文件锁"。抢得到并立刻放开，说明没有活着的占用者，那就可以
+    放心把遗留的 running 任务标成中断了。
+    """
+    if WORKER_LEASE.held:
+        return True
+    parent = _db_dir(conn)
+    if parent is None:
+        return False
+    probe = _FileLock(parent / WORKER_LOCK_NAME)
+    if probe.try_acquire():
+        probe.release()
+        return False
+    return True
