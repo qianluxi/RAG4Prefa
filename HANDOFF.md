@@ -30,7 +30,8 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | 以 `git log -1 --oneline` 为准；本轮修复的基线是 `f85ce2c`（本地与 `origin/main` 一致，工作区干净） |
+| 当前提交 | 截至 2026-10-26 交接为 **`04d122c`**（"把三条契约补上"），已推送 `origin/main`，本地与远端一致、工作区干净；往后以 `git log -1 --oneline` 为准 |
+| 上一轮基线 | `f85ce2c`（第十三轮复审基于它提出问题，`04d122c` 是针对它的修复） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
