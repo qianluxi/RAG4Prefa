@@ -276,7 +276,7 @@ async function loadHealth() {
   const badge = $("health");
   try {
     const h = await api("/api/health");
-    renderServerModels(h.models);
+    renderServerModels(h.models, h.server_key_fallback);
     const backend = `${h.backend.name} · ${h.backend.vectors} 片段`;
     const issues = (h.index && h.index.issues) || [];
     // 重排开关跟随服务端实配：没配重排服务时勾上也不会有效果，就置灰并说明原因，
@@ -526,12 +526,18 @@ function syncWho() {
   who.classList.toggle("on", !!creds);
 }
 
-function renderServerModels(models) {
+function renderServerModels(models, serverKeyFallback) {
   if (!models) return;
   const dim = models.embedding_dim ? `${models.embedding_dim} 维` : "维度自动探测";
-  $("server-models").textContent =
+  let note =
     `embedding 固定为 ${models.embedding_model}（${dim}）· 对话模型可选（当前 ${models.llm_model}）。` +
     `Key 必须与它指向的服务商一致。`;
+  // 关掉回落时，服务端不再替匿名请求付额度：不填自己的 Key 连检索/问答都调不通。
+  // 这时候"用自己的 Key"从可选项变成必填项，提示必须说在用户点按钮之前。
+  if (serverKeyFallback === false) {
+    note += `本部署不接受匿名请求：请在下方填写你自己的 API Key，否则检索与问答会收到 401。`;
+  }
+  $("server-models").textContent = note;
 }
 
 function renderUserList() {

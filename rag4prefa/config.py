@@ -61,6 +61,14 @@ class Settings(BaseSettings):
 
     log_level: str = Field(default="INFO")
 
+    # 未携带用户 Key 的请求，是否允许回落到 `.env` 里那份**服务端公共 Key**。
+    #
+    # 单机演示必须开着：CLI、curl、旧客户端都不带 `X-R4P-*` 头，关掉就什么都调不通。
+    # 但公网部署必须关掉——那份 Key 的额度是"任何能访问端口的人"共用的，匿名请求
+    # 可以无限消耗它，而账单只有一个人付。关掉之后，未带 Key 的请求会收到 401，
+    # 并被告知去哪里填自己的 Key，而不是先烧掉几百次调用再报额度不足。
+    allow_server_key_fallback: bool = True
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def db_path(self) -> Path:

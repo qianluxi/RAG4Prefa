@@ -483,3 +483,157 @@ def test_choosing_an_llm_model_does_not_touch_embedding(
 
     assert data["server"]["embedding_model"] == settings.embedding_model
     assert data["server"]["embedding_base_url"] == settings.embedding_base_url
+
+
+# ---------------------------------------------------------------- 服务端 Key 回落开关
+
+
+def _strict_env(tmp_path: Path, allow_fallback: bool) -> tuple[Services, Settings]:
+    """与 api_env 相同的假服务，但可控制是否允许匿名请求回落到服务端公共 Key。"""
+    from rag4prefa.adapters.embed import Embedder
+    from rag4prefa.adapters.llm import LLM
+
+    mock_openai.reset()
+    server = mock_openai.serve()
+    base = mock_openai.base_url(server)
+    settings = Settings(
+        data_dir=tmp_path,
+        embedding_base_url=base,
+        embedding_api_key="sk-server",
+        embedding_model="mock-embed",
+        embedding_dim=mock_openai.DIM,
+        embedding_batch=4,
+        llm_base_url=base,
+        llm_api_key="sk-server",
+        llm_model="mock-chat",
+        vector_backend="numpy",
+        chunk_max_tokens=120,
+        chunk_min_tokens=30,
+        allow_server_key_fallback=allow_fallback,
+    )
+    settings.ensure_dirs()
+    init_db(settings.db_path)
+    conn = connect(settings.db_path)
+    services = Services(
+        settings=settings,
+        conn=conn,
+        store=NumpyStore(conn, mock_openai.DIM),
+        embedder=Embedder(settings, conn),
+        llm=LLM(settings),
+        reranker=NoopReranker(),
+    )
+    return services, settings
+
+
+def test_anonymous_request_is_rejected_when_fallback_is_off(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """关掉回落时，不带 Key 的请求不能白嫖服务端公共额度，应直接 401。
+
+    这不是"厂商会报 401 所以在这里拦也一样"——等厂商报的时候额度已经烧掉一部分，
+    而且用户看到的报错是 "Token is invalid"，会去反复核对那把**他根本没填过**的 Key。
+    """
+    services, settings = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        ingest_file(
+            services.conn,
+            services.store,
+            services.require_embedder(),
+            settings,
+            path=docx_file,
+            project_name="甲项目",
+        )
+        with TestClient(create_app(services)) as client:
+            resp = client.post("/api/search", json={"question": "要点", "top_k": 3})
+            assert resp.status_code == 401
+            assert "X-R4P-Embedding-Key" in resp.json()["detail"]
+    finally:
+        services.close()
+
+
+def test_anonymous_chat_is_rejected_when_fallback_is_off(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    services, settings = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        ingest_file(
+            services.conn,
+            services.store,
+            services.require_embedder(),
+            settings,
+            path=docx_file,
+            project_name="甲项目",
+        )
+        with TestClient(create_app(services)) as client, client.stream(
+            "POST", "/api/chat", json={"question": "要点", "top_k": 3}
+        ) as resp:
+            assert resp.status_code == 401
+    finally:
+        services.close()
+
+
+def test_user_key_still_works_when_fallback_is_off(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """关掉回落只是拒绝匿名，不是拒绝一切。带上自己的 Key 仍然该放行。
+
+    判据必须落在"请求头真的被拿去调了厂商"上，而不是只看 200——否则一个
+    把所有请求都放行的实现也能通过这条测试。
+    """
+    services, settings = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        ingest_file(
+            services.conn,
+            services.store,
+            services.require_embedder(),
+            settings,
+            path=docx_file,
+            project_name="甲项目",
+        )
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            resp = client.post(
+                "/api/search",
+                json={"question": "要点", "top_k": 3},
+                headers=_user_headers("alice", embedding="sk-alice-embed"),
+            )
+        assert resp.status_code == 200
+        assert mock_openai.LAST_AUTH["/v1/embeddings"] == "Bearer sk-alice-embed"
+    finally:
+        services.close()
+
+
+def test_anonymous_request_still_allowed_by_default(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """默认（回落开）时匿名请求照常走服务端公共 Key——CLI / curl 行为不能变。"""
+    services, settings = _strict_env(tmp_path, allow_fallback=True)
+    try:
+        ingest_file(
+            services.conn,
+            services.store,
+            services.require_embedder(),
+            settings,
+            path=docx_file,
+            project_name="甲项目",
+        )
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            resp = client.post("/api/search", json={"question": "要点", "top_k": 3})
+        assert resp.status_code == 200
+        assert mock_openai.LAST_AUTH["/v1/embeddings"] == "Bearer sk-server"
+    finally:
+        services.close()
+
+
+def test_health_reports_whether_fallback_is_on(
+    tmp_path: Path,
+) -> None:
+    """前端要据这个字段把"用自己的 Key"从可选改成必填，而不是让用户点一次失败一次。"""
+    services, _ = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        with TestClient(create_app(services)) as client:
+            data = client.get("/api/health").json()
+        assert data["server_key_fallback"] is False
+    finally:
+        services.close()

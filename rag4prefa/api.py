@@ -152,6 +152,28 @@ def create_app(services: Services | None = None) -> FastAPI:
         """
         return request.app.state.services.for_credentials(from_headers(request.headers))
 
+    def svc_billable(request: Request) -> Services:
+        """会花掉 Key 额度的入口（入库 / 检索 / 问答）用它，而不是 `svc()`。
+
+        `R4P_ALLOW_SERVER_KEY_FALLBACK=false` 时，**不带 Key 就直接拒绝**。这一条是给
+        公网部署用的：`.env` 里那份公共 Key 的额度对"任何能访问端口的人"开放，匿名
+        请求可以无限消耗它，而账单只有一个人付。单机演示保持默认 true，CLI 与 curl
+        的行为完全不变。
+
+        为什么要在这里拦而不是让厂商报 401：那时候额度已经烧掉了一部分，而且用户看到
+        的是厂商的 "Token is invalid"，会去反复核对那把**他根本没填过**的 Key。
+        """
+        creds = from_headers(request.headers)
+        root = request.app.state.services
+        if creds is None and not root.settings.allow_server_key_fallback:
+            raise HTTPException(
+                401,
+                "这个部署不接受匿名请求：服务端不代付模型额度。"
+                "请在设置里填入自己的 API Key（请求头 X-R4P-Embedding-Key / X-R4P-LLM-Key），"
+                "只要 Key 属于服务端指定的那家服务商即可。",
+            )
+        return root.for_credentials(creds)
+
     @app.get("/api/health")
     def health(request: Request) -> dict:
         return svc(request).health()
@@ -323,7 +345,7 @@ def create_app(services: Services | None = None) -> FastAPI:
         started_on: str = Form(default=""),
         year: int | None = Form(default=None),
     ) -> JSONResponse:
-        services = svc(request)
+        services = svc_billable(request)
         # 没有可用 key 时在"创建项目/落盘"之前就拒绝，别留一个空项目让人以为导过了
         try:
             services.require_embedder()
@@ -447,7 +469,10 @@ def create_app(services: Services | None = None) -> FastAPI:
         if not info:
             raise HTTPException(404, "项目不存在")
         summary = ""
-        if services.llm:
+        # 摘要会真调一次大模型。这一页的主体是项目信息，不值得为"没填 Key"整页 401；
+        # 但也不能拿服务端公共额度去替匿名请求生成摘要——那是同一个漏洞的侧门。
+        may_generate = services.user_label or services.settings.allow_server_key_fallback
+        if services.llm and may_generate:
             try:
                 summary = admin.summarize_project(services.conn, services.llm, project_name)
             except Exception:
@@ -479,7 +504,7 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     @app.post("/api/search")
     async def search(request: Request, req: SearchRequest) -> dict:
-        services = svc(request)
+        services = svc_billable(request)
         effective = ask.build_filter(req.question, req.filter, repo.project_names(services.conn))
         try:
             services.assert_query_ready()
@@ -502,7 +527,7 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     @app.post("/api/chat")
     async def chat(request: Request, req: ChatRequest) -> StreamingResponse:
-        services = svc(request)
+        services = svc_billable(request)
         try:
             services.require_embedder()
             services.require_llm()
