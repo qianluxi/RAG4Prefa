@@ -44,9 +44,9 @@
 |---|---|
 | 代码目录 | `F:\project\课题\RAG4Prefa` |
 | 远端仓库 | https://github.com/qianluxi/RAG4Prefa （**public**，`main` 分支） |
-| 当前提交 | **`959a106`**（"真机跑通：323 块入库、三方一致，评估四行对照与结论一起写进文档"，第二十二轮），已推送 `origin/main`，本地与远端一致；往后以 `git log -1 --oneline` 为准 |
-| 上一轮基线 | `50547ac`（评估说明）→ `3a049b1`（重排开关）→ `7705f5f`（评估口径）→ `959a106`（真机） |
-| CI | `.github/workflows/ci.yml`：`959a106`、`7705f5f`、`3a049b1` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest 277 项） |
+| 当前提交 | **`3890610`**（"评估集在新语料上重建：删掉软件手册后，sparse 不再压过 hybrid"，第二十三轮），已推送 `origin/main`，本地与远端一致；往后以 `git log -1 --oneline` 为准 |
+| 上一轮基线 | `959a106`（真机）→ `4d79d4c`（目录导入/删项目）→ `7051fb5`（Key 回落开关）→ `3890610`（评估集重建） |
+| CI | `.github/workflows/ci.yml`：`3890610`、`7051fb5`、`4d79d4c` 上 Actions 均全绿（ubuntu-latest / Python 3.13，安装依赖 → ruff → pytest 287 项） |
 | Python | 3.13，**虚拟环境已建好**：`F:\project\课题\RAG4Prefa\.venv` |
 | 解释器路径 | `./.venv/Scripts/python.exe`（Windows；所有命令都在项目根目录执行） |
 | 依赖状态 | 已装齐（fastapi / uvicorn / python-docx / pymilvus 3.0.2 / milvus-lite 3.2.2 / openai / jieba / numpy / pytest / ruff） |
@@ -67,13 +67,13 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（7 199 行 Python + 691 行单页 HTML + 5 708 行测试，均按非空行计）
+## 3. 代码地图（7 309 行 Python + 697 行单页 HTML + 5 918 行测试，均按非空行计）
 
 行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
 ```
 rag4prefa/
-├── config.py      72    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读
+├── config.py      79    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读；含 `allow_server_key_fallback` 公网开关
 ├── domain.py      98    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
 ├── db.py         117    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
 ├── repo.py       851    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
@@ -86,14 +86,14 @@ rag4prefa/
 ├── filters.py     88    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     28    系统提示词与引用格式
 ├── admin.py       84    项目/文档的查询与级联删除
-├── services.py   561    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── services.py   564    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
 ├── credentials.py 304   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
-├── api.py        535    FastAPI 路由（只做协议转换，不含业务逻辑）
-├── cli.py        312    init / serve / doctor / ingest / reindex / rebuild / ask / projects / verify
+├── api.py        557    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度
+├── cli.py        369    init / serve / doctor / ingest / reindex / rebuild / ask / projects / delete / verify；目录导入逐文件报被跳过项
 └── adapters/    1721    embed / llm / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
 ```
 
-`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 7 199 行——`rag4prefa/` 本身是 6 685 行。
+`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 7 309 行——`rag4prefa/` 本身是 6 795 行。
 
 解析层三个文件的分工，改动前先看清：
 
@@ -1386,6 +1386,48 @@ YJK 手册（368 页）         → indexed  307 节 301 块  5.0s
 **验证**：`277 passed`（270 → 277）、`ruff check rag4prefa tests scripts` 干净、
 前端 script 块 `node --check` 通过。真机端到端问"双面叠合墙的修正系数是多少"，
 答案给出 0.75 并带 `[1][2]` 引用。
+
+---
+
+### 第二十三轮（2026-10-26 晚）：换语料 + 服务端 Key 回落开关
+
+**语料从"一份软件手册占 96%"换成 6 份分散的工程文档**（66 块、两个项目：
+`装配式规范` 21 块 + `装配式计算书` 45 块）。上一轮那条结论——"基础集 sparse > hybrid
+是因为语料太单一、专有名词密度过高导致融合稀释了 BM25 的精确命中"——在本轮得到验证：
+换语料后四行对照的反常消失了。
+
+| 数据集 | dense | sparse | hybrid | rerank |
+|---|---|---|---|---|
+| 基础 25 题 Recall@5 | 0.960 | 0.920 | 0.960 | 0.920 |
+| 改写 10 题 Recall@5 | 0.700 | 0.800 | 0.800 | 0.800 |
+
+hybrid 不再输给纯 sparse，说明之前吃亏确实是语料问题、不是融合实现问题。
+评估集 30 题里 17 题原本问软件手册的按钮/参数名，随语料作废，全部按新语料
+重写锚点、重算 `gold_chunk_id`，`corpus.json` 指纹同步重算。
+
+**服务端 Key 回落开关（回答"上线后两个 Key 不能放 .env 里"）**：
+
+架构上早就支持"Key 随请求走"（浏览器经 `X-R4P-*` 头带自己的 Key，服务端
+`for_credentials()` 换视图、不落库）。缺的是"没带 Key 的请求怎么办"——原来一律
+回落到 `.env` 公共 Key，公网部署下这是无底洞：匿名请求无限消耗额度、账单一个人付。
+
+新增 `R4P_ALLOW_SERVER_KEY_FALLBACK`（默认 true，单机演示/CLI/curl 行为不变）。
+关掉后，入库 / 检索 / 问答三个花钱入口对"没带 Key"的请求直接 401，并告诉用户去哪
+填自己的 Key——而不是等厂商报 "Token is invalid"（那时额度已烧掉一部分，用户还会
+去反复核对一把他根本没填过的 Key）。项目摘要页"顺手调一次 LLM"的侧门一并堵上。
+
+**顺手补的两个缺口**（都是"看起来成功、实际没发生"）：
+
+1. 目录导入以前只按 .docx/.pdf glob，其余文件既不入库也不出现在任何输出里——
+   用户以为都进去了，其实少了几份，语料缺文件是个安静的错误。现在逐文件分类，
+   跳过项逐个报"为什么 + 怎么办"。
+2. 删项目以前只有 HTTP 接口，命令行用户删掉磁盘文件后没法清库。现在
+   `rag4prefa delete --project` 默认只预览影响面，`--yes` 才真删。
+
+**验证**：`287 passed`（277 → 287）、ruff 干净、前端 `node --check` 通过。
+凭据回落 6 条新用例都做了反证：把 `svc_billable` 的拦截条件换成 `False`，两条
+"匿名应 401"的用例精确变红（200 ≠ 401），而"带用户 Key 仍放行""默认回落仍放行"
+不受影响。
 
 ---
 
