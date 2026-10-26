@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from . import admin, ask, concurrency, consistency, ingest, repo
-from .adapters.parsers import SUPPORTED_SUFFIXES
+from .adapters.parsers import SUPPORTED_SUFFIXES, explain_unsupported
 from .adapters.vectors import BackendUnavailable, RebuildError, StoreRef
 from .concurrency import MaintenanceBusy
 from .config import get_settings
@@ -50,16 +50,45 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         services.close()
 
 
-def cmd_ingest(args: argparse.Namespace) -> int:
-    files = []
-    for target in args.paths:
+def _collect_files(targets: list[str]) -> tuple[list[Path], list[tuple[Path, str]]]:
+    """分离「能处理」与「被跳过」，并给每个跳过项一个可执行的理由。
+
+    以前目录导入只按扩展名 glob 一遍，`.doc` / `.xlsx` 这些文件**不会出现在任何输出里**：
+    用户看到"入库成功"就以为都进去了，实际少了几份，而且没有任何提示。语料不全是个
+    安静的错误——检索效果变差，但没人知道是缺文件导致的。
+    """
+    files: list[Path] = []
+    skipped: list[tuple[Path, str]] = []
+    for target in targets:
         path = Path(target)
         if path.is_dir():
-            # 目录导入按扩展名收集：pdf 与 docx 混放在一个目录里是常态
-            for suffix in SUPPORTED_SUFFIXES:
-                files.extend(sorted(path.glob(f"*{suffix}")))
+            for entry in sorted(path.iterdir()):
+                if not entry.is_file() or entry.name.startswith("~$"):
+                    continue  # 子目录、Office 锁文件不算"被跳过"
+                if entry.suffix.lower() in SUPPORTED_SUFFIXES:
+                    files.append(entry)
+                else:
+                    skipped.append((entry, explain_unsupported(entry.suffix)))
         elif path.suffix.lower() in SUPPORTED_SUFFIXES:
             files.append(path)
+        elif path.exists():
+            skipped.append((path, explain_unsupported(path.suffix)))
+        else:
+            skipped.append((path, "文件不存在"))
+    return files, skipped
+
+
+def _report_skipped(skipped: list[tuple[Path, str]]) -> None:
+    if not skipped:
+        return
+    print(f"\n跳过 {len(skipped)} 个文件（未入库）：", file=sys.stderr)
+    for path, reason in skipped:
+        print(f"  - {path.name}：{reason}", file=sys.stderr)
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    files, skipped = _collect_files(args.paths)
+    _report_skipped(skipped)
     if not files:
         print(f"没有找到可处理的文件（{' / '.join(SUPPORTED_SUFFIXES)}）", file=sys.stderr)
         return 2
@@ -287,6 +316,39 @@ def cmd_projects(_: argparse.Namespace) -> int:
         services.close()
 
 
+def cmd_delete(args: argparse.Namespace) -> int:
+    """删项目。默认只预览，`--yes` 才真删。
+
+    这个命令以前只存在于 HTTP 接口（`DELETE /api/projects/{name}`）里，命令行用户删掉
+    磁盘上的文件之后没有办法把库里的记录一起删掉——只能看着一个"文件已经不在了"的项目
+    继续参与检索。而删项目是**事与索引一起删**，和入库同一类动作，必须走维护锁、
+    必须能核对影响面，所以它该有一个正经的命令行入口。
+
+    默认不删，是因为这个动作没有撤销：片段、向量、项目摘要一起没。
+    """
+    services = build_services()
+    try:
+        docs = admin.list_documents(services.conn, args.project)
+        if not docs:
+            print(f"项目「{args.project}」不存在", file=sys.stderr)
+            return 1
+        total = sum(d.chunk_count for d in docs)
+        print(f"项目「{args.project}」：{len(docs)} 份文档、{total} 个片段")
+        for d in docs:
+            print(f"  - {d.filename}（{d.chunk_count} 块）")
+        if not args.yes:
+            print("\n未删除。确认要删就加 --yes（片段、向量、项目摘要会一起没，没有撤销）")
+            return 0
+        result = admin.delete_project(services.conn, services.store, args.project)
+        _print(result)
+        return 0 if result.get("deleted") else 1
+    except MaintenanceBusy as exc:
+        print(f"删除未执行：{exc}", file=sys.stderr)
+        return 2
+    finally:
+        services.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rag4prefa", description="RAG4Prefa 课题文档知识库")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -333,6 +395,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("projects", help="列出项目")
     p.set_defaults(func=cmd_projects)
+
+    p = sub.add_parser("delete", help="删除项目（默认只预览，--yes 才真删）")
+    p.add_argument("--project", required=True, help="项目名")
+    p.add_argument("--yes", action="store_true", help="确认删除；不加只打印影响面")
+    p.set_defaults(func=cmd_delete)
 
     p = sub.add_parser("verify", help="逐 id 核对片段、归档与向量索引是否一致")
     p.set_defaults(func=cmd_verify)
