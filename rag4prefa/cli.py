@@ -375,7 +375,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--force",
         action="store_true",
-        help="强制重新解析并覆盖（重新调 embedding）。解析逻辑升级后补新字段（如 PDF 页码）时用",
+        help="强制重新解析并覆盖（重新调 embedding）。解析逻辑升级后补新字段（如 PDF 页码）时用；"
+        "不带 --year 时沿用该文档已有的年份，不会清空",
     )
     p.set_defaults(func=cmd_ingest)
 

@@ -156,6 +156,13 @@ def _ingest_locked(
         content_sha = _sha_file(path)
         existing = repo.get_document(conn, project_name, filename)
         doc_row_exists = existing is not None
+        # 年份按"沿用"解释，不按"清空"解释（2026-10-27 复审 P1-3）。
+        # `--force` 的典型用途是给老 PDF 补新提取的字段（例如页码），那时用户不会
+        # 再敲一次 `--year`。若把 None 当"删除原年份"，一次补页码就把 2024 抹成 NULL，
+        # 而年份是**过滤条件**：`vectors` 归档与后端标量列会一起变空，按年份查询
+        # 从此漏掉整份文档，而界面上还显示入库成功。
+        # 目前没有"清空年份"的入口，所以 None 只能读成"没指定"。
+        doc_year = _resolve_year(doc_year, existing)
         # 只有"上一版确实建成功了"才允许跳过；失败过的文档必须能重试，
         # 否则一次限流就把这份文件永久钉在 failed 上。
         if (
@@ -337,6 +344,18 @@ def _restore_vectors(
         "索引可能与归档不一致——条数相同也可能内容不同，"
         f"{blocked}。执行 `python -m rag4prefa rebuild` 从归档恢复后再重试同一文件）"
     )
+
+
+def _resolve_year(requested: int | None, existing) -> int | None:
+    """本次入库该用哪一年：显式给了就用它，没给就沿用库里已有的。
+
+    这条规则只影响"已有文档"：新文档没有旧年份可沿用，None 仍然是"未标注年份"。
+    反过来，把 None 当"清空"就等于让 `--force` 顺手改坏一份原本正确的元数据——
+    而它最常见的用途恰恰是"内容没变、只想补个新字段"，用户根本不会想到要重申年份。
+    """
+    if requested is not None:
+        return requested
+    return existing.doc_year if existing is not None else None
 
 
 def _update_doc_year(

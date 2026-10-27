@@ -92,6 +92,28 @@ def kind_for(level: int) -> SectionKind:
     return SectionKind.subsection
 
 
+def join_lines(rows: list[tuple[str, int | None]]) -> tuple[str, list[int | None]]:
+    """把「(行文本, 页码)」拼成 `(正文, 每行页码)`，两者行数严格一致。
+
+    这里必须自己剥空白，不能直接对拼好的字符串 `.strip()`：那样首尾空白被吃掉几行，
+    页码数组就和 `text.split("\\n")` 错位，后面的分块会拿第 3 行的页码去标第 2 行。
+    而错位的页码比没有页码更糟——它看起来是可信的。
+    """
+    rows = list(rows)
+    while rows and not rows[0][0].strip():
+        rows.pop(0)
+    while rows and not rows[-1][0].strip():
+        rows.pop()
+    if not rows:
+        return "", []
+    texts = [text for text, _ in rows]
+    # 复现原来 `"...".strip()` 的语义：只削首行行首、末行行尾的空白，
+    # 行数不变，页码因此仍然对齐。
+    texts[0] = texts[0].lstrip()
+    texts[-1] = texts[-1].rstrip()
+    return "\n".join(texts), [page for _, page in rows]
+
+
 def build_sections(
     events: Iterable[tuple[int | None, str] | tuple[int | None, str, int | None]],
     *,
@@ -114,16 +136,16 @@ def build_sections(
     最常见的一段正文。
     """
     sections: list[Section] = []
-    preamble: list[str] = []
+    preamble: list[tuple[str, int | None]] = []
     stack: list[tuple[int, str]] = []  # (level, title)
     base_level = 0  # 最近一个"绝对级别"标题的层级，用于给相对级别标题定位
     current: Section | None = None
-    buffer: list[str] = []
+    buffer: list[tuple[str, int | None]] = []
 
     def flush() -> None:
         nonlocal current, buffer
         if current is not None:
-            current.text = "\n".join(buffer).strip()
+            current.text, current.line_pages = join_lines(buffer)
             sections.append(current)
         current, buffer = None, []
 
@@ -131,7 +153,9 @@ def build_sections(
         level, text = event[0], event[1]
         page = event[2] if len(event) > 2 else None
         if level is None:
-            (buffer if current is not None else preamble).append(text)
+            # 正文行的页码必须**逐行**留着：一节常常跨好几页，只有标题页的话，
+            # 第 4 页开始的节里第 7 页的片段也会被标成第 4 页（见 Section.line_pages）。
+            (buffer if current is not None else preamble).append((text, page))
             continue
         if level == 0:  # 相对级别：与「最近一个绝对级别标题的下一层」同级并列
             level = min(MAX_LEVEL, base_level + 1)
@@ -157,6 +181,7 @@ def build_sections(
     flush()
 
     if preamble:  # 封面/摘要等无标题内容单独成节，而不是被静默丢弃
+        text, line_pages = join_lines(preamble)
         sections.insert(
             0,
             Section(
@@ -164,8 +189,9 @@ def build_sections(
                 kind=SectionKind.body,
                 level=0,
                 path=[],
-                text="\n".join(preamble),
+                text=text,
                 page=None,
+                line_pages=line_pages,
             ),
         )
     return sections

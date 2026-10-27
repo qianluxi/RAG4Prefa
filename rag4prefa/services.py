@@ -65,6 +65,9 @@ class Services:
     # 多用户自带 Key：池子按指纹复用客户端，视图共享同一个池
     credentials: CredentialPool | None = None
     user_label: str | None = None
+    # 这个视图是按哪份凭据拍出来的快照。`user_label` 只记用户名（任何人都非空，
+    # 匿名也算 "anonymous"），判断"花谁的钱"必须看这里——见 `llm_billable`。
+    user_creds: UserCredentials | None = None
     # 视图不拥有连接：一次请求结束若能关掉全局 SQLite 连接，下一个请求就全崩
     owns_conn: bool = True
     # 请求级视图指回根服务。后端指针（store / fell_back）只能由根服务改：
@@ -97,8 +100,25 @@ class Services:
             llm=llm,
             notes=list(self.notes),
             user_label=creds.username,
+            user_creds=creds,
             owns_conn=False,
             root=self.owner,
+        )
+
+    @property
+    def llm_billable(self) -> bool:
+        """这次请求的 LLM 调用是不是"允许发生"的。
+
+        只有两种情况允许：用户自己带了 LLM Key，或者部署明确接受服务端代付
+        （`R4P_ALLOW_SERVER_KEY_FALLBACK=true`，单机演示的默认值）。
+
+        为什么不能用 `user_label` 判断（2026-10-27 复审 P1-1）：用户名对任何请求都非空
+        ——只传一个模型头也会解析成 `anonymous`。拿它当"已登录"用，项目详情那条
+        "生成摘要"的侧门就会替匿名请求调服务端 LLM；而这条路径不走 `svc_billable`，
+        主入口拦得再严也堵不住它。
+        """
+        return bool(self.user_creds is not None and self.user_creds.llm_key) or (
+            self.settings.allow_server_key_fallback
         )
 
     @property

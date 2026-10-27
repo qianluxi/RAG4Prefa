@@ -16,7 +16,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-from rag4prefa import credentials
+from rag4prefa import credentials, repo
 from rag4prefa.adapters.embed import Embedder
 from rag4prefa.adapters.llm import LLM
 from rag4prefa.adapters.rerank import NoopReranker
@@ -635,5 +635,214 @@ def test_health_reports_whether_fallback_is_on(
         with TestClient(create_app(services)) as client:
             data = client.get("/api/health").json()
         assert data["server_key_fallback"] is False
+    finally:
+        services.close()
+
+
+# ---------------------------------------------- 服务端 Key 回落：按角色逐个校验
+#
+# 2026-10-27 复审 P1-1：`svc_billable()` 原来只判 `creds is None`，而
+# `from_headers()` 只要带任意一个头就返回非空凭据，`settings_for()` 又会把缺的那把
+# Key 静默补成服务端那两把。下面四类请求因此在"关掉回落"的部署上照样花服务端的钱。
+# 每条都断言"厂商没收到请求 / 收到的是用户自己的 Key"，而不是只看状态码——
+# 只看状态码的话，一个把请求放行、再让厂商报错的实现也能通过。
+
+
+def _ingest_one(services: Services, settings: Settings, docx_file: Path) -> None:
+    ingest_file(
+        services.conn,
+        services.store,
+        services.require_embedder(),
+        settings,
+        path=docx_file,
+        project_name="甲项目",
+    )
+
+
+def test_model_header_only_cannot_chat_when_fallback_is_off(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """只传模型选择头（不传任何 Key）也是匿名请求，不能白嫖两把服务端 Key。"""
+    services, settings = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        _ingest_one(services, settings, docx_file)
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client, client.stream(
+            "POST",
+            "/api/chat",
+            json={"question": "要点", "top_k": 3},
+            headers={"X-R4P-LLM-Model": LLM_CHOICES[1].id},
+        ) as resp:
+            assert resp.status_code == 401
+            resp.read()  # 流式响应必须先读完才能取 body
+            detail = resp.json()["detail"]
+        assert "X-R4P-Embedding-Key" in detail
+        assert "X-R4P-LLM-Key" in detail
+        assert mock_openai.LAST_AUTH == {}, "被拒绝的请求不该打到厂商"
+    finally:
+        services.close()
+
+
+def test_embedding_key_alone_cannot_chat_when_fallback_is_off(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """只填 embedding Key 也能出答案，就等于用服务端 LLM Key 生成内容。
+
+    检索照旧该放行：那个接口只用 embedding 那一把，用户已经付了。
+    """
+    services, settings = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        _ingest_one(services, settings, docx_file)
+        headers = _user_headers("alice", embedding="sk-alice-embed")
+
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            ok = client.post("/api/search", json={"question": "要点", "top_k": 3}, headers=headers)
+            assert ok.status_code == 200
+            assert mock_openai.LAST_AUTH["/v1/embeddings"] == "Bearer sk-alice-embed"
+
+            mock_openai.reset()
+            with client.stream(
+                "POST", "/api/chat", json={"question": "要点", "top_k": 3}, headers=headers
+            ) as resp:
+                assert resp.status_code == 401
+                resp.read()
+                detail = resp.json()["detail"]
+        assert "X-R4P-LLM-Key" in detail
+        assert "X-R4P-Embedding-Key" not in detail, "embedding Key 已经提供了，不该再要"
+        assert "/v1/chat/completions" not in mock_openai.LAST_AUTH
+    finally:
+        services.close()
+
+
+def test_llm_key_alone_cannot_search_when_fallback_is_off(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """反过来也一样：只填 LLM Key 不能让检索引擎用服务端的 embedding Key 算向量。"""
+    services, settings = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        _ingest_one(services, settings, docx_file)
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            resp = client.post(
+                "/api/search",
+                json={"question": "要点", "top_k": 3},
+                headers=_user_headers("alice", llm="sk-alice-llm"),
+            )
+        assert resp.status_code == 401
+        assert "X-R4P-Embedding-Key" in resp.json()["detail"]
+        assert mock_openai.LAST_AUTH == {}, "被拒绝的检索不该算一次 embedding"
+    finally:
+        services.close()
+
+
+def test_upload_requires_the_users_own_embedding_key(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """入库同样只花 embedding 额度：只带 LLM Key 不能建项目、不能落盘。"""
+    services, _ = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            resp = client.post(
+                "/api/projects/甲项目/documents",
+                headers=_user_headers("alice", llm="sk-alice-llm"),
+                files={
+                    "files": (
+                        docx_file.name,
+                        docx_file.read_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+            )
+            assert resp.status_code == 401
+            assert "X-R4P-Embedding-Key" in resp.json()["detail"]
+            # 拒绝发生在落盘与建项目之前：一个字节都不该动
+            assert repo.get_project(services.conn, "甲项目") is None
+        assert mock_openai.LAST_AUTH == {}
+        assert not (services.settings.upload_dir / "甲项目").exists()
+    finally:
+        services.close()
+
+
+def test_verify_does_not_probe_with_server_key_when_fallback_is_off(
+    tmp_path: Path,
+) -> None:
+    """空字段不许回落到服务端 Key 真探测——否则这个接口就是一条免费探测通道。"""
+    services, _ = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            data = client.post("/api/credentials/verify", json={}).json()
+        assert mock_openai.LAST_AUTH == {}, "空凭据不该产生任何厂商调用"
+        assert data["embedding"]["ok"] is False
+        assert data["llm"]["ok"] is False
+        assert data["embedding"]["source"] == "missing"
+        assert data["llm"]["source"] == "missing"
+        assert "你自己的 Key" in data["embedding"]["error"]
+    finally:
+        services.close()
+
+
+def test_verify_still_probes_the_key_the_user_did_fill(
+    tmp_path: Path,
+) -> None:
+    """严格模式只是"不代付"，不是"什么都不验"：填了的那一把要真的验一遍。"""
+    services, _ = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            data = client.post(
+                "/api/credentials/verify",
+                json={"embedding_key": "sk-alice-embed", "llm_model": LLM_CHOICES[0].id},
+            ).json()
+        assert data["embedding"]["ok"] is True
+        assert data["embedding"]["source"] == "user"
+        assert mock_openai.LAST_AUTH["/v1/embeddings"] == "Bearer sk-alice-embed"
+        assert data["llm"]["ok"] is False
+        assert data["llm"]["source"] == "missing"
+        assert "/v1/chat/completions" not in mock_openai.LAST_AUTH
+    finally:
+        services.close()
+
+
+def test_project_summary_is_not_generated_on_the_server_budget(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """项目详情会顺手调一次大模型写摘要，这条路径不走 `svc_billable`。
+
+    判据不能是"用户名非空"：只传一个模型头也会被解析成 anonymous，那样这道侧门
+    从来没关上过。
+    """
+    services, settings = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        _ingest_one(services, settings, docx_file)
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            resp = client.get(
+                "/api/projects/甲项目", headers={"X-R4P-LLM-Model": LLM_CHOICES[1].id}
+            )
+        assert resp.status_code == 200
+        assert resp.json()["summary"] == ""
+        assert "/v1/chat/completions" not in mock_openai.LAST_AUTH
+    finally:
+        services.close()
+
+
+def test_project_summary_still_works_with_the_users_own_llm_key(
+    tmp_path: Path, docx_file: Path
+) -> None:
+    """带了自己的 LLM Key 就该照常生成摘要——严格模式只拦"代付"，不拦功能。"""
+    services, settings = _strict_env(tmp_path, allow_fallback=False)
+    try:
+        _ingest_one(services, settings, docx_file)
+        mock_openai.reset()
+        with TestClient(create_app(services)) as client:
+            resp = client.get(
+                "/api/projects/甲项目", headers=_user_headers("alice", llm="sk-alice-llm")
+            )
+        assert resp.status_code == 200
+        assert resp.json()["summary"] != ""
+        assert mock_openai.LAST_AUTH["/v1/chat/completions"] == "Bearer sk-alice-llm"
     finally:
         services.close()

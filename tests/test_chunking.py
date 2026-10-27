@@ -15,8 +15,11 @@ def _section(title: str, text: str, path: list[str], level: int = 2) -> Section:
     )
 
 
-def test_chunk_inherits_section_page() -> None:
-    """section.page 是展示字段，要原样继承到它名下的 chunk；但**不参与 chunk_id**。"""
+def test_chunk_falls_back_to_section_page_without_line_pages() -> None:
+    """没有逐行页码时退回节起始页——docx 与外部构造的 Section 走这条路。
+
+    **不参与 chunk_id**：页码是展示字段（见 test_page_is_not_part_of_chunk_identity）。
+    """
     section = Section(
         title="1.1 结构概况",
         kind=SectionKind.section,
@@ -27,6 +30,83 @@ def test_chunk_inherits_section_page() -> None:
     )
     (chunk,) = build_chunks([section], "doc", max_tokens=100, min_tokens=20)
     assert chunk.page == 7
+
+
+def test_chunk_reports_its_own_page_not_the_section_title_page() -> None:
+    """一节跨 4~7 页时，每个片段要报**自己**的起始页，不能全标成标题页。
+
+    这是 2026-10-27 复审 P1-2 的核心：`Section.page` 是标题所在页，而"4.2 悬挑构造"
+    从第 4 页开始、正文排到第 7 页。拿标题页给这一节所有片段做页码，用户按"第 4 页"
+    翻过去找不到那段话——工程文档知识库里这等于引用不可核。
+    """
+    lines = [f"第{i}条：本段用于把这一节撑到跨页。" for i in range(1, 13)]
+    # 每 3 行一页：4,4,4,5,5,5,6,6,6,7,7,7
+    pages = [page for page in (4, 5, 6, 7) for _ in range(3)]
+    section = Section(
+        title="4.2 悬挑构造",
+        kind=SectionKind.section,
+        level=2,
+        path=["第四章"],
+        text="\n".join(lines),
+        page=4,  # 标题在第 4 页
+        line_pages=pages,
+    )
+    chunks = build_chunks([section], "doc", max_tokens=40, min_tokens=1)
+
+    assert len(chunks) > 1, "样本必须真的被切成多块，否则断言恒真"
+    assert [c.page for c in chunks] == sorted(c.page for c in chunks), "页码应随正文单调不减"
+    assert {c.page for c in chunks} == {4, 5, 6, 7}, "每一页的片段都要出现，不能全被标成 4"
+    # 逐块核对：片段的页码 = 它起始那一行所在页。
+    # 片段里的换行已被切句丢弃，所以拿前缀去认行，而不是按 "\n" 取首行。
+    line_page = dict(zip(lines, pages, strict=True))
+    for chunk in chunks:
+        lead = chunk.text[:8]
+        first_line = next(line for line in lines if line.startswith(lead))
+        assert chunk.page == line_page[first_line], f"{lead} 的页码标错了"
+
+
+def test_page_lookup_survives_pieces_that_carry_inner_newlines() -> None:
+    """片段内部带着换行时页码仍然要对，游标不能按"带换行的长度"推进。
+
+    切句是按 `(?<=[。！？；\\n])` 做的，行尾没有句号的行会连换行一起成为一句，
+    拼回的片段里就留着换行。而定位是在**去掉换行**的扁平文本上做的——游标多走
+    那几个换行字符，后面几块就再也找不到，页码会静默退回节起始页：
+    看起来有页码，全是第一页（2026-10-27 真实语料上就是这样交错跳回去的）。
+    """
+    # 故意不带句号结尾：这样换行才会留在片段内部
+    lines = [f"第{i}段没有句号结尾的正文" for i in range(1, 13)]
+    pages = [page for page in (1, 2, 3, 4) for _ in range(3)]
+    section = Section(
+        title="1.1 甲",
+        kind=SectionKind.section,
+        level=2,
+        path=["第一章"],
+        text="\n".join(lines),
+        page=1,
+        line_pages=pages,
+    )
+    chunks = build_chunks([section], "doc", max_tokens=40, min_tokens=1)
+
+    assert any("\n" in c.text for c in chunks), "样本没造出带换行的片段，这条用例就白写了"
+    assert [c.page for c in chunks] == [1, 2, 3, 4]
+
+
+def test_mismatched_line_pages_fall_back_instead_of_guessing() -> None:
+    """行数与页码条数对不上时退回节起始页——错位的页码比没有页码更容易误导。
+
+    外部构造的 Section、或将来某个解析器改了换行处理，都可能让两者不同长；
+    这时按行号硬取会取到隔壁行的页码，而它看起来是可信的。
+    """
+    section = Section(
+        title="1.1 甲",
+        kind=SectionKind.section,
+        level=2,
+        text="第一行。\n第二行。\n第三行。",
+        page=9,
+        line_pages=[3, 4],  # 少一条
+    )
+    chunks = build_chunks([section], "doc", max_tokens=100, min_tokens=1)
+    assert [c.page for c in chunks] == [9]
 
 
 def test_page_is_not_part_of_chunk_identity() -> None:

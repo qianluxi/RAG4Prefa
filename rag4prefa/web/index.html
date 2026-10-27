@@ -715,7 +715,11 @@ function renderCitations(items, botMsg, srcToggle) {
     const head = el("div", "src",
       `[${item.n}] ${item.project}${item.project_code ? " / " + item.project_code : ""} · ${item.filename}`);
     if (item.page) {
-      head.appendChild(el("span", "page", `第 ${item.page} 页`));
+      // 这个页码是**片段自己**的起始页，不是章节标题页——一节跨页时两者不同，
+      // 标错误页码会让用户翻到那一页却找不到原文（后端 `chunking._line_starts`）。
+      const tag = el("span", "page", `第 ${item.page} 页`);
+      tag.title = "该片段起始处的物理页码";
+      head.appendChild(tag);
     }
     card.appendChild(head);
 

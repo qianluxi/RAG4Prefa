@@ -21,10 +21,12 @@ from .adapters.vectors import BackendUnavailable, StoreRef
 from .concurrency import MaintenanceBusy
 from .consistency import IndexMismatch
 from .credentials import (
+    KEY_ROLES,
     LLM_CHOICES,
     account_blocked_hint,
     auth_failure_hint,
     from_headers,
+    missing_roles,
     platform_mismatch,
     resolve_llm_model,
 )
@@ -152,26 +154,29 @@ def create_app(services: Services | None = None) -> FastAPI:
         """
         return request.app.state.services.for_credentials(from_headers(request.headers))
 
-    def svc_billable(request: Request) -> Services:
+    def svc_billable(request: Request, *, need: tuple[str, ...]) -> Services:
         """会花掉 Key 额度的入口（入库 / 检索 / 问答）用它，而不是 `svc()`。
 
-        `R4P_ALLOW_SERVER_KEY_FALLBACK=false` 时，**不带 Key 就直接拒绝**。这一条是给
-        公网部署用的：`.env` 里那份公共 Key 的额度对"任何能访问端口的人"开放，匿名
-        请求可以无限消耗它，而账单只有一个人付。单机演示保持默认 true，CLI 与 curl
-        的行为完全不变。
+        `R4P_ALLOW_SERVER_KEY_FALLBACK=false` 时，**用户没提供这个接口真正要用的
+        那把 Key 就直接拒绝**。这一条是给公网部署用的：`.env` 里那份公共 Key 的额度
+        对"任何能访问端口的人"开放，匿名请求可以无限消耗它，而账单只有一个人付。
+        单机演示保持默认 true，CLI 与 curl 的行为完全不变。
+
+        为什么按 `need` 逐个判、而不是判"凭据为空"（2026-10-27 复审 P1-1）：
+        `from_headers()` 只要带任意一个头就返回非空凭据（只传模型选择头也算），
+        而 `settings_for()` 会把没提供的 Key 静默补成服务端那两把。于是
+        「只填 embedding Key 调 /api/chat」「只填 LLM Key 调 /api/search」
+        「只传模型头」全都能绕过配置——配置写着不代付，账单照付。
 
         为什么要在这里拦而不是让厂商报 401：那时候额度已经烧掉了一部分，而且用户看到
         的是厂商的 "Token is invalid"，会去反复核对那把**他根本没填过**的 Key。
         """
         creds = from_headers(request.headers)
         root = request.app.state.services
-        if creds is None and not root.settings.allow_server_key_fallback:
-            raise HTTPException(
-                401,
-                "这个部署不接受匿名请求：服务端不代付模型额度。"
-                "请在设置里填入自己的 API Key（请求头 X-R4P-Embedding-Key / X-R4P-LLM-Key），"
-                "只要 Key 属于服务端指定的那家服务商即可。",
-            )
+        if not root.settings.allow_server_key_fallback:
+            missing = missing_roles(creds, need)
+            if missing:
+                raise HTTPException(401, _missing_key_message(missing))
         return root.for_credentials(creds)
 
     @app.get("/api/health")
@@ -233,8 +238,14 @@ def create_app(services: Services | None = None) -> FastAPI:
         # Key，却被标成 source=server；B 保存后真正发请求走的是服务端 Key，直接失败。
         services = request.app.state.services
         base = services.settings
-        embedding_key = payload.embedding_key.strip() or base.embedding_api_key
-        llm_key = payload.llm_key.strip() or base.llm_api_key
+        # 关掉回落时，留空必须解释成"这一项我没配"，而不是"替我试一下服务端那把"。
+        # 否则这个接口本身就是一条免费探测通道：不填任何 Key 反复点"验证"，
+        # 每一次都真的打到厂商、花服务端的钱（2026-10-27 复审 P1-1）。
+        strict_keys = not base.allow_server_key_fallback
+        embedding_key = payload.embedding_key.strip() or (
+            "" if strict_keys else base.embedding_api_key
+        )
+        llm_key = payload.llm_key.strip() or ("" if strict_keys else base.llm_api_key)
         # 下拉里选了什么就验什么；不在白名单里就回落服务端默认，并如实回显用了哪个
         llm_model = resolve_llm_model(payload.llm_model, base.llm_model)
         local = base.model_copy(
@@ -251,6 +262,22 @@ def create_app(services: Services | None = None) -> FastAPI:
             base.llm_api_key,
         )
 
+        no_key_error = (
+            "这个部署不接受服务端代付额度，请填入你自己的 Key"
+            if strict_keys
+            else "未配置 Key"
+        )
+        # 留空的那一项来源必须如实写：`user` 是用户自己的 Key，`server` 是服务端
+        # 公共 Key 代付，`missing` 是"这个部署不代付、你也没填"。前端据 source
+        # 决定要不要把这一项标成"未配置"，混成一个值会让用户以为验过自己的 Key。
+        emb_source = (
+            "user"
+            if payload.embedding_key.strip()
+            else ("missing" if strict_keys else "server")
+        )
+        llm_source = (
+            "user" if payload.llm_key.strip() else ("missing" if strict_keys else "server")
+        )
         result: dict = {
             # 前端要拿它提示"你的 Key 必须属于同一家服务商"——embedding 模型由服务端统一决定
             "server": {
@@ -261,13 +288,12 @@ def create_app(services: Services | None = None) -> FastAPI:
                 "llm_model": local.llm_model,
             },
             "user": payload.username.strip() or "anonymous",
-            "embedding": {"ok": False, "error": "未配置 Key"},
-            "llm": {"ok": False, "error": "未配置 Key"},
+            "embedding": {"ok": False, "source": emb_source, "error": no_key_error},
+            "llm": {"ok": False, "source": llm_source, "error": no_key_error},
         }
 
         # 先做本地预检：明显填错平台的 Key 不必真发请求，也免得把厂商那句
         # "Token is invalid" 原样转给用户——那句话会把人引去检查令牌有没有复制错。
-        emb_source = "user" if payload.embedding_key.strip() else "server"
         emb_hint = platform_mismatch(
             payload.embedding_key.strip(), local.embedding_base_url, label="embedding"
         )
@@ -298,7 +324,6 @@ def create_app(services: Services | None = None) -> FastAPI:
                 if embedder is not None:
                     embedder.close()
 
-        llm_source = "user" if payload.llm_key.strip() else "server"
         llm_hint = platform_mismatch(
             payload.llm_key.strip(), local.llm_base_url, label="LLM"
         )
@@ -345,7 +370,7 @@ def create_app(services: Services | None = None) -> FastAPI:
         started_on: str = Form(default=""),
         year: int | None = Form(default=None),
     ) -> JSONResponse:
-        services = svc_billable(request)
+        services = svc_billable(request, need=("embedding",))
         # 没有可用 key 时在"创建项目/落盘"之前就拒绝，别留一个空项目让人以为导过了
         try:
             services.require_embedder()
@@ -471,7 +496,9 @@ def create_app(services: Services | None = None) -> FastAPI:
         summary = ""
         # 摘要会真调一次大模型。这一页的主体是项目信息，不值得为"没填 Key"整页 401；
         # 但也不能拿服务端公共额度去替匿名请求生成摘要——那是同一个漏洞的侧门。
-        may_generate = services.user_label or services.settings.allow_server_key_fallback
+        # 判据用 `llm_billable` 而不是 `user_label`：用户名对任何请求都非空（只传模型头
+        # 也会解析成 anonymous），拿它当"已登录"用等于这道侧门根本没关（2026-10-27 复审）。
+        may_generate = services.llm_billable
         if services.llm and may_generate:
             try:
                 summary = admin.summarize_project(services.conn, services.llm, project_name)
@@ -504,7 +531,7 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     @app.post("/api/search")
     async def search(request: Request, req: SearchRequest) -> dict:
-        services = svc_billable(request)
+        services = svc_billable(request, need=("embedding",))
         effective = ask.build_filter(req.question, req.filter, repo.project_names(services.conn))
         try:
             services.assert_query_ready()
@@ -527,7 +554,7 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     @app.post("/api/chat")
     async def chat(request: Request, req: ChatRequest) -> StreamingResponse:
-        services = svc_billable(request)
+        services = svc_billable(request, need=("embedding", "llm"))
         try:
             services.require_embedder()
             services.require_llm()
@@ -560,6 +587,20 @@ def create_app(services: Services | None = None) -> FastAPI:
         return FileResponse(WEB_DIR / "index.html")
 
     return app
+
+
+def _missing_key_message(roles: list[str]) -> str:
+    """把"缺哪把 Key、它用来做什么"一次说全。
+
+    只写"请填写自己的 API Key"是不够的：用户常常填了其中一把，看到 401 会以为
+    是填的那把无效，于是反复核对一把没问题的 Key。缺项逐个点名，指向才唯一。
+    """
+    parts = "；".join(f"{KEY_ROLES[role][0]}（{KEY_ROLES[role][1]}）" for role in roles)
+    return (
+        "这个部署不接受匿名请求：服务端不代付模型额度。"
+        f"缺少你自己的 Key：{parts}。"
+        "请在设置里填入自己的 API Key，只要它属于服务端指定的那家服务商即可。"
+    )
 
 
 def _redact(message: str, *secrets: str) -> str:

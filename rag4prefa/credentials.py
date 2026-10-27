@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from urllib.parse import unquote
@@ -125,6 +125,31 @@ class UserCredentials:
         """
         raw = f"{self.embedding_key}\x00{self.llm_key}\x00{self.llm_model}".encode()
         return hashlib.sha256(raw).hexdigest()[:32]
+
+
+# 每个花钱的环节各需要哪一把 Key。
+#
+# 为什么要按角色分开判（2026-10-27 复审 P1-1）：`from_headers()` 只要带**任意**一个
+# 头就返回非空凭据——只传 `X-R4P-LLM-Model` 也算。于是"凭据非空就放行"会把
+# 「只填了 embedding Key、却要出答案」的请求放过去，而 `CredentialPool.settings_for()`
+# 会把缺的那把静默补成服务端 Key：配置写着"不代付"，账单上却照付。
+# 判据必须落到"这个接口真正要用的那把 Key 是用户自己的吗"。
+KEY_ROLES: dict[str, tuple[str, str]] = {
+    "embedding": (HEADER_EMBEDDING_KEY, "检索与入库要把文本变成向量"),
+    "llm": (HEADER_LLM_KEY, "生成答案要调用对话模型"),
+}
+
+
+def user_key(creds: UserCredentials | None, role: str) -> str:
+    """取这次请求里用户自己提供的那把 Key，没提供就是空串。"""
+    if creds is None:
+        return ""
+    return creds.embedding_key if role == "embedding" else creds.llm_key
+
+
+def missing_roles(creds: UserCredentials | None, need: Sequence[str]) -> list[str]:
+    """在"服务端不代付"的前提下，`need` 里哪些角色的 Key 用户还没提供。"""
+    return [role for role in need if not user_key(creds, role)]
 
 
 def from_headers(headers: Mapping[str, str]) -> UserCredentials | None:

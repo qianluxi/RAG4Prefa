@@ -29,6 +29,13 @@ class Section(BaseModel):
     # 这是**展示字段**，不参与 chunk_id（内容寻址），排版微调导致的页码变化
     # 不会让同一段正文换 id。
     page: int | None = None
+    # 正文**每一行**各自的物理页码，与 `text.split("\n")` 一一对应；docx 恒为 None。
+    #
+    # 为什么不能只用 `page`（2026-10-27 复审 P1-2）：那是**标题**所在页。一节常常跨
+    # 好几页（"4.2 悬挑构造"从第 4 页开始、正文延续到第 8 页），拿它给这一节的所有
+    # 片段做页码，用户在引用卡片上看到"第 4 页"，翻过去却找不到那段话——工程文档
+    # 知识库里这等于引用不可核。分块时按行的页码定位，片段就能报自己真正的起始页。
+    line_pages: list[int | None] | None = None
 
     @property
     def full_path(self) -> list[str]:
@@ -44,7 +51,8 @@ class Chunk(BaseModel):
     text: str
     token_count: int
     content_sha: str
-    # 见 Section.page：展示用，不参与寻址。docx 为 None。
+    # 见 Section.page / line_pages：**片段自己**的起始物理页码（1-based），
+    # 不是所在章节标题页。展示用，不参与寻址。docx 为 None。
     page: int | None = None
 
 

@@ -26,6 +26,7 @@ from rag4prefa.adapters.parsers.headings import (  # noqa: E402
 )
 from rag4prefa.adapters.parsers.pdf import parse_pdf  # noqa: E402
 from rag4prefa.adapters.vectors import NumpyStore  # noqa: E402
+from rag4prefa.chunking import build_chunks  # noqa: E402
 from rag4prefa.config import Settings  # noqa: E402
 from rag4prefa.ingest import ingest_file  # noqa: E402
 from tests.conftest import FakeEmbedder  # noqa: E402
@@ -126,6 +127,37 @@ def test_pdf_section_carries_physical_page(tmp_path: Path) -> None:
 
     assert by_title["第一章 工程概况"].page == 1
     assert by_title["第二章 结构计算"].page == 2
+
+
+def test_pdf_chunks_of_a_cross_page_section_report_their_own_pages(tmp_path: Path) -> None:
+    """一节跨多页时，每个片段报**自己**的起始页，而不是章节标题页。
+
+    2026-10-27 复审 P1-2 的原始缺陷：解析器已经把每行的物理页透传下来了，但
+    `build_sections()` 在正文分支只存文本、把页码丢了，于是整节只剩"标题页"，
+    引用卡片一律显示第 1 页——用户翻过去找不到原文，引用不可核。
+    这条用例必须真的跨页并真的切出多块，否则"断言等于标题页"仍然成立。
+    """
+    body = [
+        "预制柱的纵向受力钢筋采用套筒灌浆连接，接缝处坐浆层厚度控制在二十毫米。",
+        "叠合梁后浇段混凝土强度等级比预制构件提高一级，浇筑前需清除浮浆。",
+        "外墙挂板的连接件需做防腐处理，安装完成后逐块检查螺栓扭矩。",
+    ]
+    # y=140 起：页面顶部 10%（约 84pt）是页眉区，正文落在那里会被当页眉丢掉
+    pages = [
+        [(80, "第一章 工程概况", 16, _CN), (140, body[0], _CN_BODY, _CN)],
+        [(140, body[1], _CN_BODY, _CN)],
+        [(140, body[2], _CN_BODY, _CN)],
+    ]
+    path = _make_pdf(tmp_path / "节跨三页.pdf", pages)
+
+    (section,) = [s for s in parse_pdf(path) if s.page == 1 and s.text]
+
+    assert section.text.count("\n") >= 2, "正文要分布在不同页，否则这条用例证明不了什么"
+    # max_tokens 要略大于单行 token 数：太小会把一行硬切成两块，
+    # 用例就变成在数碎片，而不是在验页码。
+    chunks = build_chunks([section], "doc", max_tokens=45, min_tokens=1)
+    assert len(chunks) == 3, f"应切出 3 块（每页一块），实际 {len(chunks)}"
+    assert [c.page for c in chunks] == [1, 2, 3], "片段页码必须是它自己所在的物理页"
 
 
 def test_pdf_paragraph_first_line_is_not_treated_as_heading(tmp_path: Path) -> None:

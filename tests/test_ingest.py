@@ -73,6 +73,71 @@ def test_force_reingest_does_not_duplicate(
     assert store.count() == first.chunks
 
 
+def test_force_reingest_keeps_the_existing_year(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """不传 `doc_year` 的强制度重新入库必须沿用原年份，不能把它清成 NULL。
+
+    这是 `--force` 最典型的使用路径：解析逻辑升级后补个新字段（例如 PDF 页码），
+    用户不会想到还要重申一遍年份。一旦被清空，`documents`、`vectors` 归档和后端标量列
+    三处同时变空，按年份过滤从此漏掉整份文档——而入库结果显示成功，没人会去查。
+    """
+    embedder = FakeEmbedder()
+    store = _store(conn)
+    ingest_file(
+        conn, store, embedder, settings, path=docx_file, project_name="测试项目", doc_year=2024
+    )
+
+    outcome = ingest_file(
+        conn, store, embedder, settings, path=docx_file, project_name="测试项目", force=True
+    )
+    assert outcome.status == "indexed", "内容没变也要真的重解析一遍（force 的语义）"
+
+    doc = repo.get_document(conn, "测试项目", docx_file.name)
+    assert doc is not None
+    assert doc.doc_year == 2024, "documents.doc_year 被清空了"
+    archived = conn.execute(
+        "SELECT DISTINCT doc_year FROM vectors v JOIN chunks c ON c.id = v.chunk_id"
+    ).fetchall()
+    assert [r[0] for r in archived] == [2024], "归档里的年份与事实表不一致"
+
+
+def test_force_reingest_applies_an_explicit_new_year(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """显式给了年份就得用新的——"沿用"只针对**没说**的情况，不能变成"永远不改"。"""
+    embedder = FakeEmbedder()
+    store = _store(conn)
+    ingest_file(
+        conn, store, embedder, settings, path=docx_file, project_name="测试项目", doc_year=2024
+    )
+    ingest_file(
+        conn,
+        store,
+        embedder,
+        settings,
+        path=docx_file,
+        project_name="测试项目",
+        doc_year=2025,
+        force=True,
+    )
+
+    doc = repo.get_document(conn, "测试项目", docx_file.name)
+    assert doc is not None and doc.doc_year == 2025
+
+
+def test_new_document_without_year_stays_unlabelled(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """"沿用"只对已有文档成立：新文档没给年份，就该是 None，不能变成 0 或今年。"""
+    embedder = FakeEmbedder()
+    store = _store(conn)
+    ingest_file(conn, store, embedder, settings, path=docx_file, project_name="测试项目")
+
+    doc = repo.get_document(conn, "测试项目", docx_file.name)
+    assert doc is not None and doc.doc_year is None
+
+
 def test_delete_project_removes_vectors_and_rows(
     conn: sqlite3.Connection, settings: Settings, docx_file: Path
 ) -> None:

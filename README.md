@@ -126,7 +126,8 @@ api.py        FastAPI 路由（只做协议转换）
 | POST | `/api/chat` | SSE 流式问答 |
 
 SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* → `citations` → `done`；异常走 `error`。
-`citations` 每项带 `page`（PDF 的物理页码，1-based；docx 为 `null`，用章节路径定位）。
+`citations` 每项带 `page`——**该片段自己**的起始物理页码（1-based，PDF 才有；docx 为 `null`，
+用章节路径定位）。它不是"本章节从第几页开始"：一节跨 4~29 页时，各片段按自己落在的页返回。
 
 前端交互：答案里的 `[n]` 角标可点击，会滑出右侧「引用来源」抽屉并高亮对应片段；
 抽屉默认收起，也可点气泡下的「查看来源」按钮打开。检索到生成期间气泡下方显示
@@ -135,7 +136,7 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 308 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
+pytest -q                                  # 322 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
 python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --top-k 5
 ```
