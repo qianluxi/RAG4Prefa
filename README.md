@@ -89,7 +89,15 @@ python -m rag4prefa ask "缓粘结预应力的张拉控制要点" --project 立�
 python -m rag4prefa reindex                  # 换 embedding 模型后全量重建
 python -m rag4prefa reindex --project 立体聚落  # 只重建一个项目（维度不变时可用）
 python -m rag4prefa verify                   # 逐 id 核对「片段 / 归档 / 索引」，出问题返回值非 0
+python -m rag4prefa delete-doc --project 装配式规范 --file 某份文件.pdf   # 只删这一份（预览）
+python -m rag4prefa delete-doc --doc-id 5d21ce18851caa8f --yes           # 按 id 删（真删）
+python -m rag4prefa clear                    # 清空整库（预览影响面）
+python -m rag4prefa clear --yes              # 真清空：项目/文档/片段/向量/任务
 ```
+
+`delete` / `delete-doc` / `clear` 默认都只**预览影响面**，加 `--yes` 才动手。`clear` 保留
+`embed_cache`（同一段文字算过向量的缓存，删了只是下次多花一次钱）与服务端配置
+（embedding 模型、后端身份）——后者描述"这个库怎么跑"，不是数据。
 
 `reindex` 的语义：**先算完整个范围的新向量，再写 SQLite 归档，最后整体替换向量索引**；
 中途失败不会留下半成品。只重建单个项目时不会清空其他项目的索引，但**必须沿用索引现有的模型**——
@@ -133,14 +141,20 @@ api.py        FastAPI 路由（只做协议转换）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 后端、索引维度、模型一致性、缺失的凭据（不再静默降级） |
-| POST | `/api/projects/{name}/documents` | 上传 docx / pdf（multipart）→ `job_id` |
+| GET | `/api/health` | 后端、索引维度、模型一致性、缺失的凭据（不再静默降级）；`app` 字段供 `stop` 认身份 |
+| POST | `/api/projects/{name}/documents` | 上传 docx / pdf（multipart）→ `job_id`；**不支持的格式逐个点名返回**，不静默丢弃 |
 | GET | `/api/jobs/{id}` | 入库进度与逐文件结果 |
 | GET | `/api/projects` | 项目列表（文档数/片段数为真实值） |
 | GET | `/api/projects/{name}` | 详情 + 章节分布 + LLM 摘要（带缓存） |
 | DELETE | `/api/projects/{name}` | 级联删除（SQLite + 向量） |
+| DELETE | `/api/projects/{name}/documents/{doc_id}` | 删单个文件及其片段与向量；`doc_id` 不属于该项目时 404 |
+| POST | `/api/admin/clear` | 清空整库；body 必须带 `{"confirm": "清空"}`，否则 400 |
 | POST | `/api/search` | 非流式检索（调试与评估用） |
 | POST | `/api/chat` | SSE 流式问答 |
+
+清空与删单个文件都**先清索引、后清事实**：反过来时若后端删不掉，归档已经没了、
+`rebuild` 失去恢复源，"清空失败"就变成"数据被悄悄扔掉"。删完还要验后端条数归零，
+不归零就报错且不动 SQLite——这条判据由 `tests/test_admin_clear.py` 钉住（含失败注入）。
 
 SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* → `citations` → `done`；异常走 `error`。
 `citations` 每项带 `page`——**该片段自己**的起始物理页码（1-based，PDF 才有；docx 为 `null`，
@@ -149,6 +163,11 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 前端交互：答案里的 `[n]` 角标可点击，会滑出右侧「引用来源」抽屉并高亮对应片段；
 抽屉默认收起，也可点气泡下的「查看来源」按钮打开。检索到生成期间气泡下方显示
 「正在检索回答中…」的动态提示。
+
+「项目管理」面板里三处入口：点项目行的「文件」展开该项目下每份文件（块数、年份、
+解析状态），可逐份删除；行末「删除」删整个项目；面板底部「清空数据库…」先报影响面，
+再要求手打「清空」两个字，服务端还要求同样的确认词——`curl` 也绕不过这道闸。
+上传结束后会逐份列出结果：成功的块数、失败的原文报错、以及**格式不支持而被挡下的那些**。
 
 ## 测试与评估
 
@@ -273,6 +292,9 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`r
 
 ## 已知局限
 
+- **只收 `.docx` 与 `.pdf`**。同名的 `.doc` 必须先用 Word「另存为」`.docx`：老式 `.doc` 是
+  OLE 二进制（不是 zip 包），解析要额外依赖。上传时这类文件不会被静默跳过——接口会逐个
+  返回文件名与"怎么办"，页面也会列出来（`skipped` 字段）。
 - 解析是基于排版结构的启发式：报表类文档正文在表格里，已支持；但图片、文本框内的文字不提取。
 - **PDF 有两种进不来的情况，都会明确报错、不静默入库**：
   一是扫描件（整页是图片、没有文字层），需要 OCR 服务，与"不引入本地模型"的约束冲突，暂不做；

@@ -67,7 +67,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（7 767 行 Python + 952 行单页 HTML + 6 766 行测试，均按非空行计）
+## 3. 代码地图（7 487 行 Python + 1096 行单页 HTML + 7 005 行测试，均按非空行计）
 
 行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
@@ -76,7 +76,7 @@ rag4prefa/
 ├── config.py      79    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读；含 `allow_server_key_fallback` 公网开关
 ├── domain.py      98    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
 ├── db.py         117    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
-├── repo.py       851    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
+├── repo.py       919    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
 ├── consistency.py 427   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
 ├── concurrency.py 291   **写入协调**：维护锁、写事务串行、工作租约（判断别的进程还活着吗）
 ├── ingest.py     845    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex；入库批次整体占锁
@@ -85,16 +85,16 @@ rag4prefa/
 ├── ask.py        216    混合召回 → RRF 融合 → 可选重排 → 流式生成；含索引代次确认
 ├── filters.py     88    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     28    系统提示词与引用格式
-├── admin.py       84    项目/文档的查询与级联删除
+├── admin.py      159    项目/文档的查询与级联删除；含清空整库（先清索引后清事实）
 ├── services.py   584    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
 ├── credentials.py 304   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
-├── api.py        557    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度
+├── api.py        657    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度；含逐文件删除与清空
 ├── processcontrol.py 168 **停服**：netstat 认 PID + `/api/health` 认身份，认不出就不杀
-├── cli.py        394    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / verify
+├── cli.py        468    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / delete-doc / clear / verify
 └── adapters/    1721    embed / llm / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
 ```
 
-`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 7 767 行——`rag4prefa/` 本身是 7 253 行。
+`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 7 487 行（含 scripts 514）——`rag4prefa/` 本身是 6 973 行。
 
 解析层三个文件的分工，改动前先看清：
 
@@ -106,8 +106,8 @@ rag4prefa/
   → 编号定级」，另含页眉页脚剔除、跨块段落拼接、表格按 `|` 保留。
 - `parsers/__init__.py`：`parse_document(path)` 按扩展名分派，未知格式明确报错。
 
-前端只有一个文件 `rag4prefa/web/index.html`（952 行，原生 JS，无构建步骤）。
-`tests/` 344 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+前端只有一个文件 `rag4prefa/web/index.html`（1096 行，原生 JS，无构建步骤）。
+`tests/` 356 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -552,6 +552,12 @@ API 一览（实现见 `api.py`，说明见 README）：
       （旧版本）算 None 而不是 False，否则升级到一半时停不掉旧进程。
     - "答了"和"没答"的区别不是学院派：`taskkill` 不可回滚，误杀别人家的服务比停不掉更糟。
 
+19. **"跳过"必须是一个能被看见的动作**（2026-10-27）。上传路由当年写的是
+    `if suffix not in SUPPORTED_SUFFIXES: continue`——用户选了 9 个文件、页面只多出 6 份，
+    剩下 3 份**不出现在任何地方**：不是失败、不是跳过，是消失。他只能猜"是不是按类型分了类"。
+    现在逐个返回 `{filename, reason}`，任务汇总逐份列出结果。判断标准很简单：
+    凡是不入库的文件，都要有一条能被用户看到的原因，否则等于系统悄悄改了用户的选择。
+
 ---
 
 ## 7. 待办清单（按优先级，每条都有验收标准）
@@ -571,7 +577,7 @@ API 一览（实现见 `api.py`，说明见 README）：
 
 | 问题 | 影响 | 下一步 |
 |---|---|---|
-| 单文档删除没有公开入口 | `repo.delete_document` / `admin.delete_document` 已实现，但 CLI 与 API 都没有对应命令/路由 | 补 `delete-doc` 与 `DELETE /api/projects/{p}/documents/{id}`，并覆盖"后端删除失败 → 置 `unsynced` → 恢复" |
+| 单文档删除没有公开入口 | 已解决（2026-10-27） | `delete-doc` 命令 + `DELETE /api/projects/{p}/documents/{id}` + 项目管理里逐份删除，见第 10 节第二十五轮 |
 | DOCX 嵌套表格可能重复产出 | `_walk()` 已递归遍历单元格子表格，随后又显式遍历 `cell.tables` | 造一份含嵌套表格的真实 docx，断言每段只入库一次 |
 | 多轮对话里旧回答的引用角标可能定位到新来源 | 引用抽屉是全局单例，新回答会覆盖内容，旧回答的 `[n]` 处理器仍指向旧卡片 | 每条回答各自保存引用数据，点旧角标时加载该回答自己的来源 |
 | "正在检索回答中"在 `meta` 事件就消失 | `meta` 在 LLM 首 token 之前发出，提示会提前闪掉 | 改到第一个 `token` 事件再移除 |
@@ -1555,6 +1561,56 @@ PID 21352  F:\...\.venv\Scripts\python.exe -m rag4prefa serve ...   （1 线程�
 `344 passed`（323 → 344）、ruff 干净。六条变异全部精确变红：去掉 LISTENING 判据、
 端口用 `in` 代替 `endswith`、缺 `app` 字段判成 False、`--force` 不生效、refused 报 0、
 杀完不复查端口。
+
+---
+
+### 第二十五轮（2026-10-27 上午）：清空整库 + 逐文件删除 + 让"少掉的文件"看得见
+
+用户提出两件事：要一个清空数据库的入口、要在项目管理里删掉某个具体文件（连向量一起）。
+顺带问了第三个问题，答案比功能本身更值得记：他往 `F:\project\课题\工程文档` 放了 9 个文件，
+项目管理里只有 6 份（两个项目各 3 份），其余 3 份去哪了。
+
+**先查事实，再写代码**。逐个文件试解析（只解析、不入库、不花钱）得到三种不同的原因：
+
+| 文件 | 原因 |
+|---|---|
+| `南湖…装配式表格.doc` | 老式 OLE 二进制，不是 zip；同目录已有同名 `.docx` 且已入库，这份本来就是重复的 |
+| `《关于进一步明确…》沪建建材【2025】250号.pdf` | 可提取字符 **0 个** → 扫描件，不做 OCR |
+| `《装配式建筑评价标准》DBJ33T 1165-2024.pdf` | 10899 个字符里汉字占 **0.0%** → 字体缺 ToUnicode，取出来是字形编号 |
+
+**项目不是按文件类型分类的**：`装配式规范` / `装配式计算书` 是导入时 `--project` 指定的
+项目名，检索范围里的两个标签就是这两个项目名。所以"9 个文件两个项目"之间没有对应关系，
+缺的 3 份与分类无关，纯粹是没进去。
+
+这一轮发现的两个真问题：
+
+1. **上传路由对不支持的后缀直接 `continue`**，连任务消息都不留痕。用户选了 9 个文件、
+   页面只多出 6 份，剩下的从结果里消失——不是失败、不是跳过，是**不存在**。现在逐个
+   返回 `{filename, reason}`（`explain_unsupported` 给"为什么 + 怎么办"），202 响应与任务
+   payload 都带上；任务结束的汇总也改成逐份列出成功/失败/被挡下，不再贴一段 JSON。
+2. **清空没有入口，而它是唯一的修复出口**：索引卡在 `unsynced` 或半途重建时，别的破坏性
+   动作都会被 `assert_write_ready` 拦住，这时需要的正是"从头来过"。所以 `clear` 刻意
+   **不要求"索引自证一致"**，但要求后端身份对得上（认不出手里这个索引是不是库里的那个，
+   就可能把别人家的数据擦掉）。
+
+**顺序与判据**（新的不变量，值得记住）：
+
+- 清空走「先清索引、后清事实」，与入库相反。反过来先删归档时，若后端删不掉，归档已经没了、
+  `rebuild` 失去恢复源——结果同样是空，但那不叫"清干净了"，叫"数据被悄悄扔掉"。
+- 三条完成判据缺一不可：后端条数确认为 0（`clear()` 返回不等于清干净，**读不到也不算 0**）
+  + 五张业务表归 0 + `meta` 的模型/维度声明清掉、状态回 ready。删完还核一遍 `data_counts`。
+- `meta` 里留下的 `vector_backend` / `vector_backend_id` **不清**：它描述"这个库怎么跑"，
+  不是数据；`embed_cache` 也保留（省下次入库的钱）。
+- 删单个文件沿用 `delete_document` 已有的锁 + `unsynced:project:doc:<id>` 留痕；
+  新加的只是入口与**项目归属校验**：路径里带项目名不是冗余，`doc_id` 属于别的项目时直接
+  404，而不是照着 id 把另一边的数据删掉。
+- 清空接口要求 body 里 `confirm` 与 `"清空"` 完全一致（400 否则）。前端弹窗保护不了 curl，
+  真正的闸在服务端。
+
+**验证**：356 passed（344 → 356）、ruff 干净、前端 `node --check` 通过；四条变异精确变红
+（不校验后端条数 / 顺序反了 / 删文档不校验项目归属 / 清空不校验确认词）。真机在 `data/app.db`
+的副本上跑通：`delete-doc` 删 13 块 → 66/66 变 53/53、`verify` 三方一致；`clear` 报
+`before 2/6/66/66`、`after 全 0`，清完 `health.ok=True`、`issues=[]`。真库 6 份 / 66 块未被触碰。
 
 ---
 

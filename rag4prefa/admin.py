@@ -129,3 +129,61 @@ def delete_document(conn: sqlite3.Connection, store: VectorStore, doc_id: str) -
             ) from exc
         repo.set_index_state(conn, previous)
         return {"deleted": True, "chunks": len(chunk_ids)}
+
+
+def clear_all(conn: sqlite3.Connection, store: VectorStore) -> dict:
+    """清空整个库：项目、文档、片段、全文索引、向量（索引与归档）、任务记录。
+
+    **这是修复入口，所以不要求"索引自证一致"**。别的破坏性动作都在 `assert_write_ready`
+    之后才动手，理由是不能往一个说不清状态的地方继续写；清空的终点是"什么都没有"，
+    那个约束在这里没有意义，而卡在 `resynced`/`unsynced`/半途劫持状态里的库恰恰最需要
+    一个从头来过的出口。仍然要求**后端身份对得上**：认不出手里这个索是不是库里的那个，
+    就可能把别人家的数据当自己的擦掉。
+
+    顺序是「先清索引、后清事实」，与入库相反：
+    - 反过来先删归档时，若后端删不掉，归档已经没了、索引里还留着向量，`rebuild` 失去
+      恢复源，只剩 `reindex` 出一条空索引——结果同样是空，但那不叫"清干净了"，叫
+      "数据被悄悄扔掉"。
+    - 先清索引则失败时 SQLite 一个字节都没动，可以直接重试。
+
+    完成判据（缺一条都不算清空）：后端条数确认为 0（读不到不算 0）+ 五张业务表归 0 +
+    `meta` 里的模型/维度声明清掉、状态回到 ready。
+    """
+    with maintenance_lock(conn, purpose="清空数据库", timeout=0.0):
+        # 排在所有删除之前：被拦住时一个字节都不许改。
+        consistency.ensure_backend_current(conn, store)
+
+        before = repo.data_counts(conn)
+        try:
+            store.clear()
+        except Exception as exc:
+            raise consistency.IndexMismatch(
+                f"向量索引没能清空（{type(exc).__name__}: {exc}）。数据库没有任何改动，"
+                "可以重试；持续失败就先看 /api/health 的索引状态，或重启服务后再试"
+            ) from exc
+
+        # 「读不到 ≠ 空」：后端条数读不出来时不能当 0 继续往下删。
+        try:
+            left = store.count()
+        except Exception as exc:
+            raise consistency.IndexMismatch(
+                f"清空了向量索引，但读不到它的实际条数（{type(exc).__name__}: {exc}），"
+                "无法确认是否清干净。数据库没有任何改动，请先排除后端问题再重试"
+            ) from exc
+        if left:
+            raise consistency.IndexMismatch(
+                f"向量索引里还剩 {left} 条没删掉（`clear()` 返回了，但条数没归零）。"
+                "数据库没有任何改动。请重启服务后重试，或先重建索引"
+            )
+
+        repo.clear_all_data(conn)
+        repo.clear_index_meta(conn)
+        after = repo.data_counts(conn)
+        # 完成判据的最后一条。删除语句失败会抛异常，但"执行了却没删干净"不会——
+        # 而一份"显示已清空、实际还有片段"的库会一直参与检索，且没人会想到去查。
+        if any(after.values()):
+            raise consistency.IndexMismatch(
+                f"业务表没有清干净（剩余 {after}）。索引已清空，数据库还剩这些记录，"
+                "请重跑 `python -m rag4prefa clear --yes`"
+            )
+        return {"cleared": True, "before": before, "after": after}

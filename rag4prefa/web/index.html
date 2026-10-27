@@ -211,6 +211,10 @@
       <thead><tr><th>项目</th><th>编号</th><th>文档</th><th>片段</th><th></th></tr></thead>
       <tbody id="project-rows"></tbody>
     </table>
+    <div class="row" style="margin-top:8px;align-items:center;gap:10px">
+      <button class="ghost" id="clear-all" style="padding:2px 8px;color:#b42318">清空数据库…</button>
+      <span class="kbd">删掉全部项目、文档与向量；embedding 缓存与配置保留</span>
+    </div>
 
     <h2 style="margin-top:18px;font-size:12px;color:var(--muted)">上传文档</h2>
     <label>项目名称</label><input id="up-name" placeholder="如：立体聚落大悬挑" />
@@ -276,7 +280,9 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { projects: [], selected: new Set(), busy: false };
+// `expanded` 记的是"哪些项目展开了文件列表"：refresh 会重建整张表，
+// 靠 DOM 状态记不住，会被一次 loadProjects 清掉。
+const state = { projects: [], selected: new Set(), expanded: new Set(), busy: false };
 
 /* ── 用户凭据（只存本机浏览器，服务端不落库）────────────── */
 const CRED_KEY = "r4p.credentials";
@@ -388,11 +394,21 @@ async function loadProjects() {
   rows.innerHTML = "";
   for (const p of state.projects) {
     const tr = el("tr");
+    tr.dataset.name = p.name;
     tr.appendChild(el("td", "", p.name));
     tr.appendChild(el("td", "", p.code || "—"));
     tr.appendChild(el("td", "", String(p.document_count)));
     tr.appendChild(el("td", "", String(p.chunk_count)));
     const td = el("td");
+    td.style.whiteSpace = "nowrap";
+    const docs = el("button", "ghost", state.expanded.has(p.name) ? "收起" : "文件");
+    docs.style.padding = "2px 8px";
+    docs.style.marginRight = "6px";
+    docs.onclick = () => {
+      // 展开状态记在 state 里：删除后要 refresh 整张表，DOM 上的行会重建
+      state.expanded.has(p.name) ? state.expanded.delete(p.name) : state.expanded.add(p.name);
+      loadProjects();
+    };
     const del = el("button", "ghost", "删除");
     del.style.padding = "2px 8px";
     del.onclick = async () => {
@@ -400,13 +416,116 @@ async function loadProjects() {
       try {
         await api(`/api/projects/${encodeURIComponent(p.name)}`, { method: "DELETE" });
         state.selected.delete(p.name);
+        state.expanded.delete(p.name);
         await loadProjects();
         await loadHealth();
       } catch (err) { alert(err.message); }
     };
+    td.appendChild(docs);
     td.appendChild(del);
     tr.appendChild(td);
     rows.appendChild(tr);
+    if (state.expanded.has(p.name)) rows.appendChild(await documentsRow(p));
+  }
+}
+
+/* 项目下挂一行文件列表：点开才请求详情，列表页不必为每个项目各打一次接口。
+   删单个文件走的是"项目 + doc_id"两级路径：id 属于别的项目时后端直接 404，
+   这样"从这个项目里删掉这一份"才是一次能校验的意图。 */
+async function documentsRow(p) {
+  const tr = el("tr");
+  const td = document.createElement("td");
+  td.colSpan = 5;
+  td.style.background = "var(--panel)";
+  td.appendChild(el("div", "kbd", "读取文件列表…"));
+  tr.appendChild(td);
+  let detail;
+  try {
+    detail = await api(`/api/projects/${encodeURIComponent(p.name)}`);
+  } catch (err) {
+    td.textContent = `文件列表读取失败：${err.message}`;
+    return tr;
+  }
+  td.innerHTML = "";
+  if (!detail.documents.length) {
+    td.appendChild(el("div", "kbd", "这个项目里没有文档"));
+    return tr;
+  }
+  for (const d of detail.documents) {
+    const line = document.createElement("div");
+    line.style.cssText =
+      "display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid var(--line)";
+    const name = el("span", "", d.filename);
+    name.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+    name.title = d.filename;
+    line.appendChild(name);
+    const status = el(
+      "span",
+      "kbd",
+      d.status === "indexed" ? `${d.chunk_count} 块` : `${d.status}`
+    );
+    if (d.error) status.title = d.error;
+    line.appendChild(status);
+    // 年份是检索筛选条件之一，删之前要能看清自己在删哪一年入库的那份
+    if (d.doc_year) line.appendChild(el("span", "kbd", `${d.doc_year} 年`));
+    const rm = el("button", "ghost", "删除");
+    rm.style.padding = "1px 8px";
+    rm.onclick = async () => {
+      if (!confirm(`删除「${d.filename}」及其 ${d.chunk_count} 个片段与向量？\n这一步不能撤销。`)) return;
+      rm.disabled = true;
+      try {
+        await api(
+          `/api/projects/${encodeURIComponent(p.name)}/documents/${encodeURIComponent(d.id)}`,
+          { method: "DELETE" }
+        );
+        await loadProjects();
+        await loadHealth();
+        $("status").textContent = `已删除「${d.filename}」及其 ${d.chunk_count} 个片段`;
+      } catch (err) {
+        rm.disabled = false;
+        alert(err.message);
+      }
+    };
+    line.appendChild(rm);
+    td.appendChild(line);
+  }
+  return tr;
+}
+
+/* 清空整个库：破坏性且不可撤销，所以两道确认——先看影响面，再手打「清空」。
+   注意真正的闸门在服务端（/api/admin/clear 要求 confirm 字段），前端这两步只是
+   防误点，不是安全边界。 */
+async function clearAll() {
+  const sum = state.projects.reduce(
+    (acc, p) => ({ docs: acc.docs + p.document_count, chunks: acc.chunks + p.chunk_count }),
+    { docs: 0, chunks: 0 }
+  );
+  const ok = confirm(
+    `将删除全部项目、文档、片段与向量。\n` +
+    `当前：${state.projects.length} 个项目、${sum.docs} 份文档、${sum.chunks} 个片段。\n\n` +
+    `这一步不能撤销。继续？`
+  );
+  if (!ok) return;
+  const typed = prompt("确认请手打「清空」两个字：");
+  if (typed === null) return;
+  if (typed.trim() !== "清空") {
+    alert("输入不一致，已取消。");
+    return;
+  }
+  try {
+    const r = await api("/api/admin/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "清空" }),
+    });
+    state.selected.clear();
+    state.expanded.clear();
+    await loadProjects();
+    await loadHealth();
+    $("status").textContent =
+      `已清空：${r.before.projects} 个项目、${r.before.documents} 份文档、${r.before.chunks} 个片段`;
+  } catch (err) {
+    alert(err.message);
   }
 }
 
@@ -781,11 +900,12 @@ async function upload() {
   $("upload").disabled = true;
   $("job").textContent = "上传中…";
   try {
-    const { job_id } = await api(`/api/projects/${encodeURIComponent(name)}/documents`, {
+    const { job_id, skipped } = await api(`/api/projects/${encodeURIComponent(name)}/documents`, {
       method: "POST",
       body: form,
     });
-    await pollJob(job_id);
+    const job = await pollJob(job_id);
+    renderJobSummary(job, skipped || []);
   } catch (err) {
     $("job").textContent = `失败：${err.message}`;
   } finally {
@@ -803,6 +923,32 @@ async function pollJob(jobId) {
     if (job.state === "done" || job.state === "failed") return job;
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
+}
+
+/* 入库结束的汇总。以前直接把任务消息（一段 JSON）贴出来，用户看不出"少了几份、
+   为什么少"；现在逐份列出来，并把格式不支持、根本没进队列的那些也点名。 */
+function renderJobSummary(job, skipped) {
+  let text = "";
+  let summary = null;
+  try { summary = JSON.parse(job.message); } catch { summary = null; }
+  if (summary && Array.isArray(summary.outcomes)) {
+    const ok = summary.outcomes.filter((o) => o.status === "indexed");
+    const bad = summary.outcomes.filter((o) => o.status !== "indexed");
+    text = `入库结束：${ok.length} 份成功`;
+    if (bad.length) text += `，${bad.length} 份没成`;
+    text += "\n";
+    for (const o of ok) text += `✓ ${o.filename}（${o.chunks} 块）\n`;
+    for (const o of bad) {
+      text += `✗ ${o.filename}：${o.status === "skipped" ? "内容未变，已跳过" : (o.error || o.status)}\n`;
+    }
+  } else {
+    text = `[${job.state}] ${job.message || ""}\n`;
+  }
+  if (skipped.length) {
+    text += `\n这 ${skipped.length} 份没有入库（格式不支持，需要先转换）：\n`;
+    for (const s of skipped) text += `· ${s.filename}\n  ${s.reason}\n`;
+  }
+  $("job").textContent = text;
 }
 
 /* ── API 设置 ─────────────────────────────── */
@@ -1015,6 +1161,7 @@ $("toggle-admin").onclick = () => {
 };
 $("close-admin").onclick = () => $("drawer").classList.remove("open");
 $("upload").onclick = upload;
+$("clear-all").onclick = clearAll;
 
 $("toggle-settings").onclick = openSettings;
 $("who").onclick = openSettings;

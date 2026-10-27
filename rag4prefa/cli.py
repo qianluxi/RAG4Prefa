@@ -362,6 +362,75 @@ def cmd_delete(args: argparse.Namespace) -> int:
         services.close()
 
 
+def cmd_delete_doc(args: argparse.Namespace) -> int:
+    """删单个文件（连同片段、全文索引与向量）。默认只预览。
+
+    定位方式二选一：`--doc-id`（接口/前端给的是这个），或 `--project` + `--file`
+    （命令行用户手里有的是文件名）。后者要求文件名与入库时**完全一致**，所以没找到时
+    会明确说"文件名要对上"，而不是含糊地说"不存在"。
+    """
+    services = build_services()
+    try:
+        if args.doc_id:
+            doc = repo.get_document_by_id(services.conn, args.doc_id)
+        elif args.project and args.file:
+            doc = repo.get_document(services.conn, args.project, args.file)
+        else:
+            print("要删哪一份？给 --doc-id，或者 --project 加 --file", file=sys.stderr)
+            return 1
+        if not doc:
+            print(
+                "没找到这份文档。--file 要与入库时的文件名完全一致（含扩展名），"
+                "用 `python -m rag4prefa delete-doc --help` 看用法；"
+                "项目里有哪些文件可以看 `python -m rag4prefa projects` 之后的项目详情。",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"{doc.project_name} / {doc.filename}：{doc.chunk_count} 个片段")
+        if not args.yes:
+            print("\n未删除。确认要删就加 --yes（片段与向量会一起没，没有撤销）")
+            return 0
+        result = admin.delete_document(services.conn, services.store, doc.id)
+        _print(result)
+        return 0 if result.get("deleted") else 1
+    except MaintenanceBusy as exc:
+        print(f"删除未执行：{exc}", file=sys.stderr)
+        return 2
+    finally:
+        services.close()
+
+
+def cmd_clear(args: argparse.Namespace) -> int:
+    """清空整个库：项目、文档、片段、向量、任务记录。默认只预览。
+
+    embedding 缓存与配置（模型、后端身份）刻意保留：前者只是"这段文字算过向量"的
+    缓存，删了要多花一次钱；后者描述"这个库怎么跑"，清数据不该顺手把它一起清掉。
+    """
+    services = build_services()
+    try:
+        counts = repo.data_counts(services.conn)
+        print("将删除：")
+        for key, label in (
+            ("projects", "项目"),
+            ("documents", "文档"),
+            ("chunks", "片段"),
+            ("vectors", "向量（索引与归档）"),
+            ("jobs", "任务记录"),
+        ):
+            print(f"  {label}　{counts[key]}")
+        if not args.yes:
+            print("\n未清空。确认要清空就加 --yes（不可撤销；embedding 缓存与配置会保留）")
+            return 0
+        result = admin.clear_all(services.conn, services.store)
+        _print(result)
+        return 0
+    except MaintenanceBusy as exc:
+        print(f"清空未执行：{exc}", file=sys.stderr)
+        return 2
+    finally:
+        services.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rag4prefa", description="RAG4Prefa 课题文档知识库")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -429,6 +498,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True, help="项目名")
     p.add_argument("--yes", action="store_true", help="确认删除；不加只打印影响面")
     p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser(
+        "delete-doc", help="删除单个文件及其片段/向量（默认只预览，--yes 才真删）"
+    )
+    p.add_argument("--doc-id", default="", help="文档 id（接口与前端用的是这个）")
+    p.add_argument("--project", default="", help="项目名（与 --file 一起用）")
+    p.add_argument("--file", default="", help="文件名，要与入库时完全一致")
+    p.add_argument("--yes", action="store_true", help="确认删除；不加只打印影响面")
+    p.set_defaults(func=cmd_delete_doc)
+
+    p = sub.add_parser("clear", help="清空整个库（默认只预览，--yes 才真清）")
+    p.add_argument("--yes", action="store_true", help="确认清空；不加只打印影响面")
+    p.set_defaults(func=cmd_clear)
 
     p = sub.add_parser("verify", help="逐 id 核对片段、归档与向量索引是否一致")
     p.set_defaults(func=cmd_verify)

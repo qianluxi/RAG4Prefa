@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from . import admin, ask, concurrency, consistency, ingest, repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
-from .adapters.parsers import SUPPORTED_SUFFIXES
+from .adapters.parsers import SUPPORTED_SUFFIXES, explain_unsupported
 from .adapters.vectors import BackendUnavailable, StoreRef
 from .concurrency import MaintenanceBusy
 from .consistency import IndexMismatch
@@ -61,6 +61,21 @@ class CredentialCheck(BaseModel):
     llm_key: str = Field(default="", max_length=4096)
     # 只影响这一项的探测目标；embedding 模型不接受外部指定（见 credentials 模块头）
     llm_model: str = Field(default="", max_length=128)
+
+
+CLEAR_CONFIRM = "清空"
+
+
+class ClearRequest(BaseModel):
+    """清空数据的确认词。
+
+    前端弹窗保护不了 curl，也保护不了误点的脚本：真正的闸门在服务端，要求调用方打出
+    与 `CLEAR_CONFIRM` 完全一致的词。这个词刻意选成中文——它会出现在日志与命令历史里，
+    一眼能认出"这是那次删除"。
+    """
+
+    confirm: str = Field(default="", max_length=16)
+
 
 
 # ── SSE ────────────────────────────────────────────────────
@@ -399,17 +414,27 @@ def create_app(services: Services | None = None) -> FastAPI:
         # 不会越积越多。代价是这里比锁早了一步：`is_busy()` 只是预检查（上面），
         # 真正的准入仍是 `ingest_batch` 里的维护锁，被拒时任务消息会说明文件已保存。
         saved: list[Path] = []
+        skipped: list[dict] = []
         for upload in files:
             if not upload.filename:
                 continue
-            if Path(upload.filename).suffix.lower() not in SUPPORTED_SUFFIXES:
+            suffix = Path(upload.filename).suffix.lower()
+            # 不支持的格式不能静默丢掉：用户选了 9 个文件、页面上只多出 6 份，
+            # 剩下 3 份在任何地方都不出现，看起来就是"系统吃掉了"。
+            if suffix not in SUPPORTED_SUFFIXES:
+                skipped.append(
+                    {"filename": upload.filename, "reason": explain_unsupported(suffix)}
+                )
                 continue
             path = target / _safe_name(upload.filename)
             path.write_bytes(await upload.read())
             saved.append(path)
         if not saved:
+            detail = "；".join(f"{s['filename']}：{s['reason']}" for s in skipped)
             raise HTTPException(
-                400, f"没有可处理的文件（只接受 {' / '.join(SUPPORTED_SUFFIXES)}）"
+                400,
+                f"没有可处理的文件（只接受 {' / '.join(SUPPORTED_SUFFIXES)}）。"
+                + (f"你选的这些都不行——{detail}" if detail else ""),
             )
 
         job_id = uuid.uuid4().hex[:12]
@@ -420,7 +445,11 @@ def create_app(services: Services | None = None) -> FastAPI:
             services.conn,
             job_id,
             "ingest",
-            {"project": project_name, "files": [p.name for p in saved]},
+            {
+                "project": project_name,
+                "files": [p.name for p in saved],
+                "skipped": skipped,
+            },
         )
         doc_year = year or (int(started_on[:4]) if started_on[:4].isdigit() else None)
 
@@ -472,7 +501,15 @@ def create_app(services: Services | None = None) -> FastAPI:
             root.maybe_promote()
 
         asyncio.create_task(run())
-        return JSONResponse({"job_id": job_id, "files": [p.name for p in saved]}, status_code=202)
+        return JSONResponse(
+            {
+                "job_id": job_id,
+                "files": [p.name for p in saved],
+                # 逐个点名"为什么不收"，而不是让它们从结果里安静消失
+                "skipped": skipped,
+            },
+            status_code=202,
+        )
 
     @app.get("/api/jobs/{job_id}")
     def get_job(request: Request, job_id: str) -> dict:
@@ -526,6 +563,43 @@ def create_app(services: Services | None = None) -> FastAPI:
         if not result["deleted"]:
             raise HTTPException(404, result["reason"])
         return result
+
+    @app.delete("/api/projects/{project_name}/documents/{doc_id}")
+    def delete_document(request: Request, project_name: str, doc_id: str) -> dict:
+        """删单个文件，连同它的片段、全文索引与向量。
+
+        路径里带项目名不是为了定位（`doc_id` 已经唯一），而是为了让"从我看到的这个项目里
+        删掉这一份"变成一次可校验的意图：`doc_id` 属于别的项目时直接 404，而不是照着 id
+        把另一边的数据删掉——那是最难在事后解释的一类事故。
+        """
+        services = svc(request)
+        # 与删除项目同源：后端没确认、索引不自证一致时一个字节都不动。
+        try:
+            services.assert_write_ready()
+        except (IndexMismatch, BackendUnavailable) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        doc = repo.get_document_by_id(services.conn, doc_id)
+        if not doc or doc.project_name != project_name:
+            raise HTTPException(404, "这个项目下没有该文档")
+        result = admin.delete_document(services.conn, services.store, doc_id)
+        if not result["deleted"]:
+            raise HTTPException(404, result["reason"])
+        return {**result, "filename": doc.filename}
+
+    @app.post("/api/admin/clear")
+    def clear_all(request: Request, req: ClearRequest) -> dict:
+        """清空整个库。不可撤销，所以要求 `confirm` 与 `CLEAR_CONFIRM` 完全一致。
+
+        这条路由**不做** `assert_write_ready`：它是修复入口，索引卡在半途（`unsynced`、
+        重建没走完）时恰恰最需要它。安全性由 `admin.clear_all` 里那三条保证——后端身份
+        对得上、索引确实归零、业务表确实清空。
+        """
+        if req.confirm.strip() != CLEAR_CONFIRM:
+            raise HTTPException(
+                400, f'要清空必须显式确认：{{"confirm": "{CLEAR_CONFIRM}"}}'
+            )
+        services = svc(request)
+        return admin.clear_all(services.conn, services.store)
 
     # ── 检索与问答 ───────────────────────────────────────
 

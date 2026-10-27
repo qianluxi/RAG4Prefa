@@ -69,6 +69,63 @@ def get_project(conn: sqlite3.Connection, name: str) -> ProjectInfo | None:
     return next((p for p in list_projects(conn) if p.name == name), None)
 
 
+def data_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """业务数据的条数快照，用于清空前的"影响面"提示。
+
+    `vectors` 在 numpy 后端是向量索引本身、在 milvus 后端是归档副本，两种情况下
+    这张表的条数都该跟着片段走，所以可以一视同仁地报出来。
+    """
+    return {
+        "projects": conn.execute("SELECT count(*) FROM projects").fetchone()[0],
+        "documents": conn.execute("SELECT count(*) FROM documents").fetchone()[0],
+        "chunks": conn.execute("SELECT count(*) FROM chunks").fetchone()[0],
+        "vectors": conn.execute("SELECT count(*) FROM vectors").fetchone()[0],
+        "jobs": conn.execute("SELECT count(*) FROM jobs").fetchone()[0],
+    }
+
+
+def clear_all_data(conn: sqlite3.Connection) -> dict[str, int]:
+    """清空全部业务数据，返回清空前的条数（供调用方报告影响面）。
+
+    **刻意保留两类东西**，它们都不是业务事实：
+    - `meta`：决定"这个库怎么跑"（embedding 模型与维度、后端身份）。模型与维度那两条
+      由 `clear_index_meta()` 单独处理，因为它和索引状态在同一个事务里；
+    - `embed_cache`：同一段文字算过向量的缓存。删了只会让下次入库重新花一次钱，
+      留着也不会让清空后的库看起来有数据。
+    """
+    before = data_counts(conn)
+    with transaction(conn):
+        # 先子表后父表：虽然有 ON DELETE CASCADE，但显式删一遍才能报准条数，
+        # 也避免外键开关被别处关掉时留下孤儿。
+        conn.execute("DELETE FROM chunks_fts")
+        conn.execute("DELETE FROM chunks")
+        conn.execute("DELETE FROM vectors")
+        conn.execute("DELETE FROM documents")
+        conn.execute("DELETE FROM jobs")
+        conn.execute("DELETE FROM projects")
+        _bump(conn, DATA_REVISION_KEY)
+    return before
+
+
+def clear_index_meta(conn: sqlite3.Connection) -> None:
+    """清掉"上一次建索引时声明的模型与维度"，并把状态复位成 ready。
+
+    数据都清空了，这两条声明已经没有对应的东西：留着会让 `/api/health` 报出一个不存在
+    的坐标系（"索引模型 Qwen、66 块"却一条向量都没有），也会让下次换模型时的提示指向
+    一份不存在的历史。
+
+    状态复位成 ready 的前提由调用方保证（后端条数已经确认归 0、五张表已经清空）——
+    "清空完成"和"索引就绪"在这里是同一件事，分两次写会留下一个没人解释得清的中间态。
+    代次一起 +1：向量空间消失了，任何读过旧索引的进程（包括在途查询）都必须重新判断。
+    """
+    with transaction(conn):
+        conn.execute(
+            "DELETE FROM meta WHERE key IN ('embedding_model', 'embedding_dim')"
+        )
+        _write_index_state(conn, INDEX_READY)
+        _bump_generation(conn)
+
+
 def project_names(conn: sqlite3.Connection) -> list[str]:
     return [r["name"] for r in conn.execute("SELECT name FROM projects ORDER BY name")]
 
