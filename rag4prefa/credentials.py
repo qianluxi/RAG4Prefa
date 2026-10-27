@@ -321,15 +321,26 @@ def account_blocked_hint(message: str, base_url: str) -> str:
 
 
 def settings_for_ocr(settings: Settings, key: str) -> Settings:
-    """把用户填的 OCR Key 落到 `Settings` 上。留空就沿用服务端那把。
+    """把用户填的 OCR Key 落到 `Settings` 上。三条规则，缺一条就会把钱记错人。
 
-    `CredentialPool.settings_for()` 与 `/api/credentials/verify` 共用这一处，
-    免得两边的回落规则长歪：一处漏了回落，就会出现"验证用服务端 Key 通过、
-    入库却说没配 Key"。
+    - 用户填了 → 用他的，覆盖服务端那把；
+    - 没填、且**接受服务端代付** → 沿用服务端那把（单机演示的默认行为）；
+    - 没填、且**不代付** → **清空**，让下游 `effective().ready` 变成假。
+
+    第三条是 2026-10-27 补的，也是这条链上唯一真正花钱的缺口：`KEY_ROLES` 里早就
+    有 `ocr` 这个角色，但上传接口的 `need` 只列了 embedding——上传时还不知道这批
+    文件里有没有扫描件，硬加进去会让只传 docx 的人也被要求填视觉模型 Key。
+    所以闸门必须落在"这次到底允不允许用服务端那把"，而 `Settings` 是唯一会一路
+    传到 `parse_document_report` 的载体。
+
+    清空而不是抛错：抛出点在上传入口，那时还分不清文件类型；清空之后
+    `VlmOcr` 会在**真要识别某一页时**才报错，docx 与有文字层的 pdf 完全不受影响。
     """
-    if not key:
+    if key:
+        return settings.model_copy(update={"ocr_api_key": key})
+    if settings.allow_server_key_fallback:
         return settings
-    return settings.model_copy(update={"ocr_api_key": key})
+    return settings.model_copy(update={"ocr_api_key": ""})
 
 
 class CredentialPool:

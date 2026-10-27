@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ from fastapi.testclient import TestClient
 
 pymupdf = pytest.importorskip("pymupdf", reason="pdf 解析需要 pymupdf")
 
+from rag4prefa import ingest, repo  # noqa: E402
 from rag4prefa.adapters.ocr import (  # noqa: E402
     OCR_SETUP_HINT,
     OcrError,
@@ -31,6 +34,7 @@ from rag4prefa.adapters.rerank import NoopReranker  # noqa: E402
 from rag4prefa.adapters.vectors import NumpyStore  # noqa: E402
 from rag4prefa.api import create_app  # noqa: E402
 from rag4prefa.config import Settings  # noqa: E402
+from rag4prefa.credentials import UserCredentials, settings_for_ocr  # noqa: E402
 from rag4prefa.db import connect, init_db  # noqa: E402
 from rag4prefa.ocr_setup import effective  # noqa: E402
 from rag4prefa.services import Services  # noqa: E402
@@ -141,7 +145,7 @@ def test_missing_key_refuses_before_any_page(tmp_path: Path) -> None:
     msg = str(err.value)
     assert msg.startswith(OCR_SETUP_HINT), "前端靠这个前缀决定要不要弹配置引导"
     assert "R4P_OCR_API_KEY" in msg
-    assert "不会被入库" in msg, "必须说清文件与索引都没被动过"
+    assert "扫描件无法入库" in msg, "必须说清文件与索引都没被动过"
 
 
 def test_scanned_pdf_without_ocr_says_where_to_configure(tmp_path: Path) -> None:
@@ -242,6 +246,178 @@ def test_profile_list_route_is_gone(tmp_path: Path) -> None:
             assert client.get("/api/ocr-profiles").status_code == 404
     finally:
         services.close()
+
+
+# ── 各付各的：不代付时扫描件必须进不来 ──────────────────
+
+
+def _strict(tmp_path: Path, **over: object) -> Services:
+    """`.env` 里明明有服务端 Key，但这个部署不接受代付。
+
+    这才是"给别人用"的配置：`.env` 那把只对服务端主人有意义，别人的请求一律
+    不许拿它去花。判据不能只看"配置里有没有 Key"——有，不等于这次能用。
+    """
+    base: dict[str, object] = {
+        "allow_server_key_fallback": False,
+        "ocr_mode": "auto",
+        "ocr_base_url": "https://api.example.com/v1",
+        "ocr_api_key": "sk-server",
+        "ocr_model": "Qwen/Qwen3-VL-8B-Instruct",
+    }
+    base.update(over)
+    return _services(tmp_path, **base)
+
+
+def test_strict_mode_refuses_scanned_pdf_without_own_key(tmp_path: Path) -> None:
+    """访客不填自己的视觉模型 Key，扫描件必须进不来，而且一个字节都不留。
+
+    这条守的是账单：视觉模型按页计费，`KEY_ROLES` 里早有 `ocr` 这个角色，但上传
+    接口的 `need` 只有 embedding——上传时并不知道这批文件里有没有扫描件，硬加进去
+    会让只传 docx 的人也被要求填视觉 Key。所以闸门落在"派生视图里的 key 被清空"，
+    再由 `VlmOcr` 在真要识别某一页时拒绝。
+    """
+    services = _strict(tmp_path)
+    pdf = _blank_pdf(tmp_path / "扫描件.pdf")
+    viewer = services.for_credentials(UserCredentials(username="访客"))
+    try:
+        assert viewer.settings.ocr_api_key == "", "不代付时不能把服务端那把带下去"
+
+        outcome = ingest.ingest_file(
+            services.conn,
+            services.store,
+            services.embedder,  # type: ignore[arg-type]
+            viewer.settings,
+            path=pdf,
+            project_name="上海文件",
+        )
+
+        assert outcome.status == "failed"
+        msg = outcome.error or ""
+        assert msg.startswith(OCR_SETUP_HINT), "前端按这个前缀决定弹不弹配置引导"
+        assert "扫描件无法入库" in msg, "要直接说结果，不能只说'缺少配置'"
+        assert "你自己的视觉模型 Key" in msg, "得告诉他去填自己的，不是去找管理员"
+        for table in ("documents", "chunks"):
+            got = services.conn.execute(f"select count(*) from {table}").fetchone()[0]
+            assert got == 0, f"{table} 不该留下任何东西"
+    finally:
+        services.close()
+
+
+def test_strict_mode_still_accepts_docx(tmp_path: Path, docx_file: Path) -> None:
+    """判据是"这一页要不要识别"，不是"有没有 Key"。
+
+    docx 与带文字层的 pdf 从不调用视觉模型。原来在 `_build_ocr` 里构造识别器，
+    缺 Key 会让整批文件（包括 docx）一起失败——那是把"扫描件进不来"扩大成了
+    "什么都进不来"。
+    """
+    services = _strict(tmp_path)
+    viewer = services.for_credentials(UserCredentials(username="访客"))
+    try:
+        outcome = ingest.ingest_file(
+            services.conn,
+            services.store,
+            services.embedder,  # type: ignore[arg-type]
+            viewer.settings,
+            path=docx_file,
+            project_name="方案",
+        )
+        assert outcome.status == "indexed", outcome.error
+        assert outcome.chunks > 0
+    finally:
+        services.close()
+
+
+def test_strict_mode_uses_the_users_own_ocr_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """填了自己的 Key 就必须用他那把，而不是"服务端有就用服务端的"。"""
+    seen: list[str] = []
+
+    class FakeVlm:
+        def __init__(self, settings: Settings) -> None:
+            seen.append(settings.ocr_api_key)
+
+        @property
+        def model(self) -> str:
+            return "fake-vlm#v1"
+
+        def __call__(self, png: bytes, page: int) -> str:
+            return f"# 第1章 总则\n\n第 {page} 页的正文，由用户自己的 Key 识别。"
+
+    monkeypatch.setattr(ingest, "VlmOcr", FakeVlm)
+    services = _strict(tmp_path)
+    viewer = services.for_credentials(UserCredentials(username="张三", ocr_key="sk-mine"))
+    try:
+        outcome = ingest.ingest_file(
+            services.conn,
+            services.store,
+            services.embedder,  # type: ignore[arg-type]
+            viewer.settings,
+            path=_blank_pdf(tmp_path / "扫描件.pdf"),
+            project_name="上海文件",
+        )
+        assert outcome.status == "indexed", outcome.error
+        assert seen and set(seen) == {"sk-mine"}, "必须全程用用户自己的 Key"
+    finally:
+        services.close()
+
+
+def test_cache_hit_needs_no_key_at_all(conn: sqlite3.Connection) -> None:
+    """整页都命中缓存时，不该要求任何付费能力。
+
+    结果是库里现成的文本，重新识别只会得到"另一版"正文、换一批 chunk_id。
+    构造器在这里直接抛错，就是要把"有没有构造过识别器"变成可断言的事实。
+    """
+
+    def never() -> VlmOcr:
+        raise OcrError("这一页已经有结果了，不该构造识别器")
+
+    call, close = ingest._cached_ocr(conn, "m#v1", never)
+    repo.put_ocr_cache(conn, hashlib.sha256(b"page-1").hexdigest(), "m#v1", "已经识别过的正文")
+
+    assert call(b"page-1", 1) == "已经识别过的正文"
+    close()
+
+
+def test_settings_for_ocr_follows_the_billing_mode(tmp_path: Path) -> None:
+    """三条规则，少一条就会把钱记错人。"""
+    loose = _settings(tmp_path, ocr_api_key="sk-server")
+    strict = _settings(tmp_path, ocr_api_key="sk-server", allow_server_key_fallback=False)
+
+    assert settings_for_ocr(loose, "").ocr_api_key == "sk-server", "单机演示沿用服务端那把"
+    assert settings_for_ocr(strict, "").ocr_api_key == "", "不代付就必须清空"
+    assert settings_for_ocr(strict, "sk-mine").ocr_api_key == "sk-mine", "用户填的优先"
+
+
+def test_health_says_missing_when_strict_and_no_own_key(tmp_path: Path) -> None:
+    """页头不能显示「OCR 就绪」：`.env` 里有 Key 不代表访客能用。
+
+    这条与 `test_health_reports_ready_with_server_key` 是一对：同一个 `.env` 配置，
+    只差 `allow_server_key_fallback`，结论必须相反。
+    """
+    services = _strict(tmp_path)
+    try:
+        with TestClient(create_app(services)) as client:
+            ocr = client.get("/api/health").json()["ocr"]
+    finally:
+        services.close()
+
+    assert ocr["ready"] is False
+    assert ocr["key_source"] == "missing"
+
+
+def test_health_sees_the_users_own_key(tmp_path: Path) -> None:
+    services = _strict(tmp_path)
+    try:
+        with TestClient(create_app(services)) as client:
+            ocr = client.get(
+                "/api/health", headers={"X-R4P-OCR-Key": "sk-mine"}
+            ).json()["ocr"]
+    finally:
+        services.close()
+
+    assert ocr["ready"] is True
+    assert ocr["key_source"] == "user"
 
 
 # ── 前后端约定 ──────────────────────────────────────────

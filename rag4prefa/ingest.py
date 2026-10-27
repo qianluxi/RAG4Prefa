@@ -6,12 +6,13 @@ import contextlib
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import consistency, repo
 from .adapters.embed import Embedder
-from .adapters.ocr import OcrOptions, VlmOcr
+from .adapters.ocr import OcrError, OcrFn, OcrOptions, VlmOcr, cache_key
 from .adapters.parsers import parse_document_report
 from .adapters.vectors import (
     VectorItem,
@@ -62,8 +63,14 @@ def _doc_id(project_name: str, filename: str) -> str:
     return hashlib.sha1(f"{project_name}|{filename}".encode()).hexdigest()[:16]
 
 
-def _cached_ocr(conn: sqlite3.Connection, provider: VlmOcr):
-    """给识别器套一层按页图哈希的缓存。
+def _cached_ocr(
+    conn: sqlite3.Connection, key: str, make: Callable[[], VlmOcr]
+) -> tuple[OcrFn, Callable[[], None]]:
+    """给识别器套一层按页图哈希的缓存。返回（识别函数，关闭函数）。
+
+    `key` 是写进 `ocr_cache` 的模型标识（`cache_key(settings)`），`make` 是"真要
+    识别时才调用"的构造器。两者分开传，是为了让这一层能被单独测：给一个假构造器
+    就能验证"命中不调用、未命中只调用一次"，不必造一份完整配置。
 
     这不是提速优化，是**这一步可重入的前提**：视觉模型的输出不确定，同一页两次
     识别会差几个字；而 `chunk_id` 是内容寻址的，差一个字就是另一批 id。没有缓存，
@@ -71,7 +78,32 @@ def _cached_ocr(conn: sqlite3.Connection, provider: VlmOcr):
     （它只比 id 集合是否自洽，不比"这份是不是上次那份"）。
 
     顺带的好处是失败重试很便宜：100 页里第 87 页失败，重跑只补那一页。
+
+    识别器**延迟到"缓存没命中、真要把这一页送出去"时才构造**。两个后果都是想要的：
+
+    * 有文字层的 pdf 与 docx 从不调用它，于是不需要视觉模型 Key 也能入库——
+      原来在 `_build_ocr` 里构造，缺 Key 会让整批文件（包括 docx）一起失败；
+    * 全部页都命中缓存时，一次请求都不发、一分钱都不花，也就不需要 Key。
+      这符合直觉：结果是库里现成的，凭什么还要求付费能力。
     """
+    hold: list[VlmOcr] = []
+
+    def provider() -> VlmOcr:
+        # 识别是多线程并发的（workers=4）。这里只构造纯数据对象、不建连接，
+        # 两个线程同时进来最多各算一次字段值，所以不加锁——加锁反而会在
+        # 首次调用的路径上串行化。
+        if not hold:
+            hold.append(make())
+        return hold[0]
+
+    def close() -> None:
+        for item in hold:
+            # 假后端只需要实现 `__call__`（`OcrFn` 的契约就这一个）。收尾时它没有
+            # `close` 也不能抛错：那时解析已经结束，抛出去只会盖掉真正的原因。
+            closer = getattr(item, "close", None)
+            if closer is not None:
+                closer()
+        hold.clear()
 
     def call(png: bytes, page: int) -> str:
         page_sha = hashlib.sha256(png).hexdigest()
@@ -81,7 +113,7 @@ def _cached_ocr(conn: sqlite3.Connection, provider: VlmOcr):
         # 锁只包住两次访问（微秒级），网络调用留在锁外，并发照旧。
         with sqlite_write():
             try:
-                hit = repo.get_ocr_cache(conn, page_sha, provider.model)
+                hit = repo.get_ocr_cache(conn, page_sha, key)
             except sqlite3.OperationalError as exc:
                 # 缓存行坏了就当没识别过，重算一次并覆盖。
                 # 缓存不是事实——但它也不能变成"这份文件再也导不进来"的原因。
@@ -90,27 +122,29 @@ def _cached_ocr(conn: sqlite3.Connection, provider: VlmOcr):
                 hit = None
         if hit is not None:
             return hit
-        text = provider(png, page)
+        text = provider()(png, page)
         # 空结果也存。空白页、整页插图很常见，不存的话每次重跑都要为同一张空白
         # 图片再付一次费，而它永远不会有内容。
         with sqlite_write():
-            repo.put_ocr_cache(conn, page_sha, provider.model, text)
+            repo.put_ocr_cache(conn, page_sha, key, text)
         return text
 
-    return call
+    return call, close
 
 
 def _build_ocr(settings: Settings, conn: sqlite3.Connection) -> OcrOptions | None:
     """按配置造一个 OCR 入口；`off` 时返回 None（整条路径不加载）。
 
-    缺 Key 时 `VlmOcr` 会在这里直接抛错，而不是等到第 1 页要识别时才发现——
-    那时已经写了一半的库没有，但用户会以为"文件有问题"。
+    **不在构造期校验 Key。** 本函数对每一份文件都会调用（`_ingest_locked` 里是
+    `parse_document_report` 的实参），包括 docx 和带文字层的 pdf——它们从来不调用
+    `fn`，却会因为构造时的缺 Key 检查跟着整份失败。判据要落在"这一页真的需要识别"，
+    也就是 `_cached_ocr` 里第一次未命中缓存的调用。
     """
     if settings.ocr_mode == "off":
         return None
-    provider = VlmOcr(settings)
+    fn, close = _cached_ocr(conn, cache_key(settings), lambda: VlmOcr(settings))
     return OcrOptions(
-        fn=_cached_ocr(conn, provider),
+        fn=fn,
         mode="all" if settings.ocr_mode == "all" else "auto",
         dpi=settings.ocr_dpi,
         max_pages=settings.ocr_max_pages,
@@ -118,6 +152,7 @@ def _build_ocr(settings: Settings, conn: sqlite3.Connection) -> OcrOptions | Non
         # 让并发也挂到 provider 上，等于要求每个假后端都实现一遍配置解析
         # ——测试里就撞到过 `'_CountingVlm' object has no attribute 'eff'`。
         workers=effective(settings).concurrency,
+        close=close,
     )
 
 
@@ -241,7 +276,14 @@ def _ingest_locked(
             return _update_doc_year(conn, store, doc_id, filename, doc_year, existing)
 
         stage = "解析与分块"
-        sections, report = parse_document_report(path, ocr=_build_ocr(settings, conn))
+        ocr = _build_ocr(settings, conn)
+        try:
+            sections, report = parse_document_report(path, ocr=ocr)
+        finally:
+            # 成功与失败都要还连接。失败时更容易忘，而那条路径上可能已经为几十页
+            # 建过连接池；识别器现在延迟构造，除了这里没有第二个收口。
+            if ocr is not None:
+                ocr.close()
         note = report.note()
         chunks = build_chunks(
             sections,
@@ -338,7 +380,11 @@ def _ingest_locked(
             )
         return FileOutcome(filename, "indexed", len(sections), len(chunks), note=note)
     except Exception as exc:  # 单文件失败不该拖垮整批
-        detail = f"{type(exc).__name__}: {exc}"
+        # `OcrError` 的正文是写给普通用户的（带配置引导与"文件没入库"的说明）。
+        # 给它加 `OcrError: ` 前缀只有噪音，而且会破坏前端的判据——那里按
+        # `startsWith(OCR_SETUP_HINT)` 决定要不要弹配置引导。其他异常反过来：
+        # 类型名是唯一的线索，必须留着。
+        detail = str(exc) if isinstance(exc, OcrError) else f"{type(exc).__name__}: {exc}"
         if not facts_committed and (planned or overwritten):
             detail += _restore_vectors(conn, store, planned, overwritten, stage, doc_id)
         elif facts_committed:

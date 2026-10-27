@@ -394,11 +394,12 @@ def test_empty_ocr_result_is_cached_not_re_requested(
             calls.append(page)
             return ""
 
-    ocr = ingest._cached_ocr(conn, Blank())
+    ocr, close = ingest._cached_ocr(conn, "m#v1", Blank)
 
     assert ocr(b"same-bytes", 5) == ""
     assert ocr(b"same-bytes", 5) == ""
     assert calls == [5]
+    close()
 
 
 def test_cache_key_includes_the_model(conn: sqlite3.Connection) -> None:

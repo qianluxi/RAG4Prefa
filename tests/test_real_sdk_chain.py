@@ -31,6 +31,8 @@ def services(tmp_path: Path) -> Iterator[tuple[Services, Path]]:
     server = mock_openai.serve()
     base = mock_openai.base_url(server)
     settings = Settings(
+        # 不读本机 .env：这些用例自带全套参数，读了就"本机改配置、测试变红"
+        _env_file=None,
         data_dir=tmp_path,
         embedding_base_url=base,
         embedding_api_key="sk-mock",

@@ -98,9 +98,23 @@ _TINY_PNG = base64.b64decode(
 OCR_SETUP_HINT = "【需要配置视觉模型】"
 
 
+def cache_key(settings: Settings) -> str:
+    """写进 `ocr_cache` 的模型标识：`模型名#提示词版本`。
+
+    独立成函数，是因为**查缓存不该先过一遍 Key 校验**。同一页图识别过一次，
+    结果对谁都是同一份文本，直接命中就不再产生费用——而 `ingest._cached_ocr`
+    要先算出这个键去查表，命中才谈得上"需不需要 Key"。把它绑在 `VlmOcr` 上，
+    等于让"查缓存"先构造识别器，缺 Key 时连缓存都查不成。
+    """
+    return f"{(getattr(settings, 'ocr_model', '') or '').strip()}#{PROMPT_VERSION}"
+
 
 class OcrError(RuntimeError):
     pass
+
+
+def _noop() -> None:
+    """`OcrOptions.close` 的默认值：假后端与 `off` 模式没有任何资源要还。"""
 
 
 @dataclass(frozen=True)
@@ -117,6 +131,12 @@ class OcrOptions:
     # 账单闸门，见 config.ocr_max_pages
     max_pages: int = 200
     workers: int = 4
+    # 释放 `fn` 背后可能建起来的连接池，默认什么都不做。
+    #
+    # 必须有这个出口（2026-10-27）：识别器改成**延迟构造**了——它的构造点从
+    # `_build_ocr` 挪进了闭包，外面再也拿不到那个对象。不给一个收口，`VlmOcr`
+    # 里那个 httpx 连接池只能等垃圾回收，而它不会自己还给系统。
+    close: Callable[[], None] = _noop
 
 
 @dataclass
@@ -153,14 +173,35 @@ class VlmOcr:
             #
             # 前缀必须带上：这句话的读者是"拖了一个扫描件进来的普通用户"，
             # 他要的是"我去哪配"，不是"哪个环境变量没填"。
-            raise OcrError(
-                f"{OCR_SETUP_HINT}这份文件需要视觉模型才能读，但服务端还没配好"
-                f"（缺少 {' / '.join(missing)}）。"
-                "视觉模型是独立的第三方接口，和 embedding、对话模型都不通用："
-                "在 .env 里补上 R4P_OCR_BASE_URL / R4P_OCR_API_KEY / R4P_OCR_MODEL，"
-                "或在界面「API 设置」里填自己的 OCR Key。"
-                "不配置就无法处理扫描件——文件不会被入库，索引与归档没有任何改动。"
+            raise OcrError(self._missing_message(missing))
+
+    def _missing_message(self, missing: list[str]) -> str:
+        """缺配置时的说明。**要分两种人写两套话。**
+
+        判据是 `allow_server_key_fallback`，而不是"这把 Key 是谁的"——后者在
+        `Settings` 上根本没有痕迹（`settings_for_ocr` 不代付时已经把它清空了）。
+
+        为什么必须分开：不代付的部署里，缺的那把 Key 本该由用户自己填，
+        对他说"服务端还没配好"会让他去找管理员，而正确的动作是打开设置填自己的
+        Key。反过来，单机演示场景下对用户说"该你自己填"，他会以为系统坏了。
+        """
+        if not getattr(self.settings, "allow_server_key_fallback", True):
+            return (
+                f"{OCR_SETUP_HINT}这份文件是扫描件（没有文字层），只能一页一页送去"
+                "视觉模型识别，按页计费。这个部署不接受服务端代付，而当前请求里没有"
+                "你自己的视觉模型 Key，所以**扫描件无法入库**："
+                "文件不会被写入索引，索引与归档没有任何改动。"
+                "请在「API 设置」里填入你自己的视觉模型 Key 后重新上传"
+                "（同一个站点的 Key 可以同时用于 embedding 与视觉模型）。"
             )
+        return (
+            f"{OCR_SETUP_HINT}这份文件需要视觉模型才能读，但服务端还没配好"
+            f"（缺少 {' / '.join(missing)}）。"
+            "视觉模型是独立的第三方接口，和 embedding、对话模型都不通用："
+            "在 .env 里补上 R4P_OCR_BASE_URL / R4P_OCR_API_KEY / R4P_OCR_MODEL，"
+            "或在界面「API 设置」里填自己的 OCR Key。"
+            "不配置就无法处理扫描件——扫描件无法入库，索引与归档没有任何改动。"
+        )
 
     @property
     def eff(self) -> EffectiveOcr:
@@ -176,7 +217,7 @@ class VlmOcr:
         格式不能动：`ocr_cache` 里已有记录全是这个键，换写法等于让全部文档
         重新付费识别一遍，而提示词一个字都没改。
         """
-        return f"{self.eff.model}#{PROMPT_VERSION}"
+        return cache_key(self.settings)
 
     def _open(self) -> OpenAI:
         if self._client is None:

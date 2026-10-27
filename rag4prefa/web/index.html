@@ -364,6 +364,9 @@ async function loadHealth() {
   try {
     const h = await api("/api/health");
     renderServerModels(h.models, h.server_key_fallback);
+    // 页头那行"公共密钥"要跟着这个开关走：严格模式下它不成立。
+    serverKeyFallback = h.server_key_fallback !== false;
+    syncWho();
     const backend = `${h.backend.name} · ${h.backend.vectors} 片段`;
     const issues = (h.index && h.index.issues) || [];
     // 重排开关跟随服务端实配：没配重排服务时勾上也不会有效果，就置灰并说明原因，
@@ -381,7 +384,7 @@ async function loadHealth() {
       ? `就绪 · ${backend}`
       : `${issues.length ? "索引异常" : "配置缺失"} · ${backend}`;
     badge.classList.toggle("err", !h.ok);
-    renderOcrBadge(h.ocr);
+    renderOcrBadge(h.ocr, h.server_key_fallback);
     if (issues.length) $("status").textContent = issues.join("；");
     else if (h.notes && h.notes.length) $("status").textContent = h.notes.join("；");
   } catch (err) {
@@ -993,23 +996,37 @@ function showOcrGuide(show, summary) {
     .filter((o) => `${o.error || ""}${o.note || ""}`.includes(OCR_HINT))
     .map((o) => o.filename);
   $("ocr-guide-text").textContent =
-    `${files.length ? files.join("、") : "这份文件"} 是扫描件，需要视觉模型才能读。` +
-    "当前没有可用的视觉模型配置，所以它没有被入库（索引与归档没有任何改动）。" +
-    "配一份视觉模型的 Key 后重新上传即可；不配置就无法处理扫描件。";
+    `${files.length ? files.join("、") : "这份文件"} 是扫描件（没有文字层），` +
+    "只能一页一页送去视觉模型识别，按页计费。" +
+    "当前没有可用的视觉模型 Key，所以扫描件无法入库（索引与归档没有任何改动）。" +
+    "填入你自己的视觉模型 Key 后重新上传即可；不配置就无法处理扫描件。";
 }
 
 /* ── API 设置 ─────────────────────────────── */
+/* 服务端接不接受代付。严格模式下"公共密钥"是个假话：不填 Key 什么都用不了，
+   页头必须如实显示"未填 Key"，否则用户会以为已经能用了。 */
+let serverKeyFallback = true;
+
 function syncWho() {
   const creds = currentCreds();
   const who = $("who");
-  who.textContent = creds ? `当前：${creds.name}` : "公共密钥";
+  who.textContent = creds
+    ? `当前：${creds.name}`
+    : serverKeyFallback
+      ? "公共密钥"
+      : "未填 Key";
   who.classList.toggle("on", !!creds);
+  who.title = creds
+    ? "点击切换或修改自己的 API Key"
+    : serverKeyFallback
+      ? "当前使用服务端公共 Key（本部署接受代付）"
+      : "本部署各付各的：请填入自己的 API Key，否则入库与问答都会被拒绝";
 }
 
 /* 页头的扫描件识别状态。
    扫描件能不能进，取决于这里；放页头而不是藏进抽屉，是因为没配的人拖一个扫描件
    进去只会得到一条失败记录，先看见状态就能少白跑一趟。 */
-function renderOcrBadge(ocr) {
+function renderOcrBadge(ocr, fallback) {
   const node = $("ocr-badge");
   if (!node) return;
   if (!ocr || ocr.mode === "off") {
@@ -1020,10 +1037,14 @@ function renderOcrBadge(ocr) {
     return;
   }
   if (!ocr.ready) {
-    node.textContent = "OCR 未配置";
+    // 「服务端没配」与「该你填」是两件事：这个部署各付各的，`.env` 里那把 Key
+    // 只属于服务端主人。对访客说"未配置"他会以为系统坏了，或者去找管理员。
+    const mine = fallback === false && ocr.key_source === "missing";
+    node.textContent = mine ? "OCR 待配置" : "OCR 未配置";
     node.classList.remove("on");
-    node.title =
-      "扫描件需要视觉模型，但当前没有可用的 Key：上传扫描件会被拒。点这里去配置。";
+    node.title = mine
+      ? "扫描件按页计费，本部署不代付：填入你自己的视觉模型 Key 后才能入库，否则扫描件无法入库。点这里配置。"
+      : "扫描件需要视觉模型，但当前没有可用的 Key：上传扫描件会被拒。点这里去配置。";
     return;
   }
   const short = (ocr.model || "").split("/").pop();

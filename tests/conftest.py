@@ -21,9 +21,19 @@ _ENV_BEFORE_COLLECTION = dict(os.environ)
 _ENV_PREFIX = "R4P_"
 
 
+def _restore_environ() -> None:
+    """把 `R4P_*` 恢复到收集测试之前的快照。"""
+    for key in list(os.environ):
+        if key.startswith(_ENV_PREFIX) and key not in _ENV_BEFORE_COLLECTION:
+            del os.environ[key]
+    for key, value in _ENV_BEFORE_COLLECTION.items():
+        if key.startswith(_ENV_PREFIX) and os.environ.get(key) != value:
+            os.environ[key] = value
+
+
 @pytest.fixture(autouse=True)
 def _isolate_environ() -> Iterator[None]:
-    """每个用例结束后恢复 `os.environ`。
+    """每个用例**前后**都把 `R4P_*` 恢复成收集前的快照。
 
     **pymilvus 在 import 时用 environs 把仓库根目录的 `.env` 读进 `os.environ`**
     （2026-10-27 实测）。这不是"某个用例改了配置"，而是"导入一个包就改了全局状态"，
@@ -32,19 +42,19 @@ def _isolate_environ() -> Iterator[None]:
 
     这次就是这么翻车的：打开 OCR 之后，排在 `test_milvus_store` 之后的用例读到
     `R4P_OCR_MODE=auto`，"默认关闭"那条断言变红，而单独跑又是绿的。
-    离线、确定、互不影响是这套测试的底线。
+
+    只在收尾恢复是不够的（第二十九轮）：那只保证"用例之间不互相串"，而**每个用例
+    都还带着本机 `.env` 在跑**。把 `.env` 的 `R4P_ALLOW_SERVER_KEY_FALLBACK` 改成
+    false 之后，7 条断言"匿名请求应该能过"的用例集体变红——它们与这个开关毫无关系，
+    只是读了开发机上的真实配置。开始前也恢复一次，用例看到的配置才只由它自己决定。
 
     只动 `R4P_*`：那是本项目的全部配置面，而**清空整个 os.environ 会踩到 pytest
     自己**——它在用例收尾时还要 pop `PYTEST_CURRENT_TEST`，被我们删掉就是每个用例
     一条 KeyError。
     """
+    _restore_environ()
     yield
-    for key in list(os.environ):
-        if key.startswith(_ENV_PREFIX) and key not in _ENV_BEFORE_COLLECTION:
-            del os.environ[key]
-    for key, value in _ENV_BEFORE_COLLECTION.items():
-        if key.startswith(_ENV_PREFIX) and os.environ.get(key) != value:
-            os.environ[key] = value
+    _restore_environ()
 
 
 class FakeEmbedder:

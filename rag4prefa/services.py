@@ -423,15 +423,25 @@ class Services:
         """
         eff = effective(self.settings)
         mode = self.settings.ocr_mode
-        user_key = bool(self.user_creds and self.user_creds.ocr_key)
+        owned = bool(self.user_creds and self.user_creds.ocr_key)
+        # "服务端那把 Key 存在"与"这次可以用"是两件事。不代付的部署里，`.env`
+        # 那把只属于服务端主人：别的用户不填自己的 Key 就用不了扫描件。
+        #
+        # 为什么这里必须自己判一次，而不是靠 `settings_for_ocr` 清空：没带任何
+        # `X-R4P-*` 头的根视图就是服务端主人自己，`for_credentials(None)` 返回的
+        # settings 原样带着 `.env` 那把。只判 `eff.api_key` 会让页头显示
+        # 「OCR 就绪」，而同一台机器上的访客上传扫描件其实会失败。
+        payable = owned or self.settings.allow_server_key_fallback
         return {
             "mode": mode,
             "model": eff.model if mode != "off" else None,
             # 关掉与"开了但缺 Key"都会让扫描件进不来，但对用户是两件事：
             # 一个是没开，一个是开不了。前端据此说不同的话。
-            "ready": bool(eff.ready and mode != "off"),
+            "ready": bool(eff.ready and mode != "off" and payable),
             "key_source": (
-                "user" if user_key else ("server" if eff.api_key else "missing")
+                "user"
+                if owned
+                else ("server" if payable and eff.api_key else "missing")
             ),
         }
 
