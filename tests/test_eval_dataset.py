@@ -42,12 +42,17 @@ def corpus(tmp_path_factory: pytest.TempPathFactory) -> sqlite3.Connection:
     spec = json.loads(MANIFEST.read_text(encoding="utf-8"))
     tmp = tmp_path_factory.mktemp("eval-corpus")
     settings = Settings(
+        # 不读本机的 .env：这份用例要的是"按标注时分块参数重新入库"，而 .env 里的
+        # 任何开关（最典型的是 OCR）都会改变入库结果，让指纹对不上——
+        # 更糟的是它会真的调付费接口，测试就不再是离线的了（2026-10-27 实际踩到）。
+        _env_file=None,
         data_dir=tmp,
         embedding_api_key="test",
         llm_api_key="test",
         chunk_max_tokens=spec["chunk_max_tokens"],
         chunk_min_tokens=spec["chunk_min_tokens"],
         vector_backend="numpy",
+        ocr_mode="off",
     )
     settings.ensure_dirs()
     init_db(settings.db_path)

@@ -42,6 +42,34 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.2
     llm_max_tokens: int = 2048
 
+    # ── OCR（可选，默认关闭）──────────────────────────────
+    #
+    # 扫描件没有文字层，只能从像素认字。项目约束是不引入本地模型，所以走**视觉模型**
+    # 的 OpenAI 兼容接口：一次调用同时拿到文字、标题层级和表格结构，正好是切块需要的
+    # 三样东西；而传统 OCR（Tesseract / PaddleOCR）只给文字，还要往磁盘落一个模型。
+    #
+    # 实测（2026-10-27，同一页 150dpi）：
+    #   · 硅基流动国际站 Qwen/Qwen3-VL-8B-Instruct  18s，内容准确；
+    #   · 同站 Qwen/Qwen3-VL-32B-Instruct           42s，且**层级判得更差**
+    #     （把正文续行标成了 #）。所以默认用 8B，不是越大越好。
+    #   · 魔搭当前列出的两个视觉模型都调不通：ERNIE-4.5-VL 报 invalid_model、
+    #     InternVL3_5 报 user token expired——和 LLM 那边一样，`/v1/models` 里
+    #     列出来不等于这个账号能调，只有真发一次请求才算数。
+    #
+    # 与 embedding / LLM 是三次独立的三方调用，Key 不通用，所以单独一组配置。
+    # `off` 时整条 OCR 路径不加载，解析行为与之前完全一致。
+    ocr_mode: Literal["off", "auto", "all"] = "off"
+    ocr_base_url: str = ""
+    ocr_api_key: str = ""
+    ocr_model: str = "Qwen/Qwen3-VL-8B-Instruct"
+    ocr_dpi: int = 150
+    # 单份文档最多识别这么多页。不是性能限制，是**账单闸门**：一份 300 页的扫描件
+    # 按 18s/页 要跑一个半小时、付三百次调用，而用户很可能只是拖错了文件。
+    # 超了直接拒绝并说清怎么放开，不做"先跑一半"。
+    ocr_max_pages: int = 200
+    # 页与页之间互相独立，并发只影响等待时间：24 页串行要七分钟。
+    ocr_concurrency: int = 4
+
     # 检索
     recall_k: int = 50
     top_k: int = 8

@@ -475,6 +475,12 @@ class Services:
                 "issues": issues,
             },
             "credentials_missing": self.settings.missing_credentials(),
+            # 扫描件能不能入库，取决于这一组开没开。不报出来的话，用户只会看到
+            # "这个 pdf 几乎取不到文字"，然后自己去翻 .env。
+            "ocr": {
+                "mode": self.settings.ocr_mode,
+                "model": self.settings.ocr_model if self.settings.ocr_mode != "off" else None,
+            },
             # 前端要拿它提示"你自己的 Key 必须属于同一家服务商"——模型由服务端统一决定
             "models": {
                 "embedding_model": self.settings.embedding_model,

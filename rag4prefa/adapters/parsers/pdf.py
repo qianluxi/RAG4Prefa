@@ -18,25 +18,39 @@ pdf 没有样式表，能用的线索只有三样：**字号、加粗、位置**
 漏掉它们的代价比想象中大——一份 60 页的 pdf 会多出 120 条"第 3 页"，
 既污染正文，又让 BM25 的文档频率失真。
 
-**不做 OCR**：没有文字层的扫描件直接报错并说明原因。这条路要么依赖本地模型，
-要么依赖外部服务，两条都超出当前部署约束；静默返回空正文会让用户以为文件有问题。
+**没有文字层的页**有两种来源，两种都走同一条门：扫描件（整页是图）、字体缺
+ToUnicode 映射（有字符但全是字形编号）。关掉 OCR 时只能拒绝并说明原因——静默
+返回空正文会让用户以为文件有问题。开启 OCR 时（见 `adapters/ocr.py`）这两类页面
+改由视觉模型还原，其余页面仍走字号判据。
+
+判"这一页要不要 OCR"必须**逐页**做，不能按整份文档：真实资料大量是混合型——
+红头文件的封面是扫描图、正文有文字层，或者中间插了几页扫描的审批表。整份判断
+的结果是扫描那几页一个字都进不来，而且没有任何提示（2026-10-27 修）。
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ...domain import Section
+from ..ocr import EMPTY_MARK, OcrOptions
 from .headings import (
+    MAX_LEVEL,
     MAX_SIZE_LEVELS,
     build_sections,
     clean_text,
     looks_like_title,
     text_heading_level,
 )
+
+if TYPE_CHECKING:  # 只在类型注解里用到；运行期由 parse_pdf_report 内部延迟导入
+    from . import ParseReport
 
 try:  # pymupdf 1.24 起同时提供 pymupdf 与 fitz 两个名字，早于它的只有 fitz
     import pymupdf
@@ -58,6 +72,10 @@ _FURNITURE_MAX_GROW = 0.8  # 页边区域里字号不超过"正文 + 0.8"才可�
 _FURNITURE_BUDGET = 0.30  # 被判定为页眉页脚的行超过这个比例，说明判据失效，整体放行
 
 _MIN_TEXT_CHARS = 50  # 全文可提取字符少于这个数，视为没有文字层
+# 单页判据。比整份的 50 低得多：一页里 12 个字的图注（"图 4-1 悬挑节点大样"）
+# 就是"有文字层"的证据，送去 OCR 反而只会得到一张图里本来就没有的字。
+# 真正的扫描页是整页 0 个字；留 5 个字的余量挡住水印残留与孤零零的页码。
+_MIN_PAGE_CHARS = 5
 _FURNITURE_RATIO_MIN = 20  # 少于这么多段时不用比例保护：短文档里页眉本来占比就高
 _CONTINUATION_GAP = 1.0  # 行间空隙不超过一个字号，就认为是同一段内的换行
 
@@ -483,6 +501,30 @@ def _events(
     return out
 
 
+def _readable_stats(text: str) -> tuple[float, float]:
+    """`(汉字占比, 每千字的英文词数)`。判据的原始数字，整份与逐页都从这里取。"""
+    cjk = len(_CJK.findall(text)) / len(text)
+    words = len(_LATIN_WORD.findall(text)) / len(text) * 1000
+    return cjk, words
+
+
+def _page_needs_ocr(text: str) -> bool:
+    """这一页有没有**可用的**文字层。
+
+    两条都算"没有"：字符太少（扫描件、纯图片导出），或者字符够多但读不出内容
+    （字体缺 ToUnicode 映射，取到的是一串字形编号）。后者看上去字符数很健康，
+    只查字符数的判据对它完全失效——那正是它最危险的地方。
+    """
+    stripped = text.strip()
+    if len(stripped) < _MIN_PAGE_CHARS:
+        return True
+    if len(stripped) < _MIN_CHARS_FOR_READABILITY:
+        # 样本太短不判：一页只有"图 4-1"和几个标注，占比算出来没有意义。
+        return False
+    cjk, words = _readable_stats(stripped)
+    return cjk < _MIN_CJK_RATIO and words < _MIN_WORD_DENSITY
+
+
 def _ensure_readable(text: str) -> None:
     """拦下"取得到字符、但取到的不是文字"的 pdf。
 
@@ -496,12 +538,14 @@ def _ensure_readable(text: str) -> None:
     两者都不满足说明既不像中文也不像英文，那它就不是能直接检索的文本。
     正常的纯数字表格会被这条拦下——这是有意的：这类页面作为检索语料价值本来就低，
     而且拦下来能看见原因，比悄悄入库一堆 `1.20 | 0.35` 好。
+
+    这条**只在关闭 OCR 时**用作整份文档的准入闸门。开了 OCR 之后改由
+    `_page_needs_ocr()` 逐页判断：读不出内容的页交给视觉模型，其余页照常解析。
     """
     stripped = text.strip()
     if len(stripped) < _MIN_CHARS_FOR_READABILITY:
         return
-    cjk = len(_CJK.findall(stripped)) / len(stripped)
-    words = len(_LATIN_WORD.findall(stripped)) / len(stripped) * 1000
+    cjk, words = _readable_stats(stripped)
     if cjk >= _MIN_CJK_RATIO or words >= _MIN_WORD_DENSITY:
         return
     raise ValueError(
@@ -510,35 +554,221 @@ def _ensure_readable(text: str) -> None:
         "常见原因是导出的字体缺少 ToUnicode 映射——方正书版等排版软件很常见，"
         "文字层里存的是字形编号而不是汉字编码，任何工具都无法还原。"
         "请换一份可复制、可搜索的版本（在阅读器里能选中文字并复制出来的那种）；"
-        "只有图片的扫描件则需要先做 OCR。"
+        "或者把 R4P_OCR_MODE 设成 auto，让视觉模型直接读页面图像。"
         "文件未被入库，索引与归档没有任何改动。"
     )
 
 
-def parse_pdf(path: str | Path) -> list[Section]:
-    """解析为 Section 列表。认不出标题的文档退化成一节，不报错。"""
+# ── OCR 页：Markdown → 事件流 ─────────────────────────────
+
+_MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+_MD_RULE = re.compile(r"^\|?[\s:|-]+\|[\s:|-]*$")  # 表格的 |---|---| 分隔行
+_MD_BULLET = re.compile(r"^[-*+]\s+")
+_MD_EMPHASIS = re.compile(r"\*\*|__|`")
+
+# 没有 `#` 的行被判成标题时的长度上限，比 `looks_like_title` 的 60 更严。
+#
+# 只有编号、没有视觉证据时长句多半是**被排版截断的正文**：实测一份公文里
+# 「4. 施工图审查机构应按照《计算细则》核对项目装配式建筑指标，并将核对后的指标
+# 填写在施工图设计文件审查合」跨页断在半句，因为开头是 "4. " 且没有句末标点，
+# 被当成了一个 55 字的章节标题。中文标题极少超过 40 字，超了就按正文算——
+# 少认一个标题只影响章节路径，多认一个会让后面整段正文挂到一句废话下面。
+_OCR_TITLE_MAX_LEN = 40
+
+
+def _markdown_events(markdown: str, page: int) -> list[tuple[int | None, str, int]]:
+    """把一页 Markdown 折成 `(级别, 文本, 页码)`，与文字层那条路的形状一致。
+
+    两条路的判据**互补**，不是各写一套：
+
+    * 视觉模型回答"这一行像不像标题"——它看得见字号与位置，这是它擅长的；
+    * `text_heading_level()` 回答"是第几级"——编号（一、/ 第X章 / 4.2.1）是文档
+      自带的，比模型数 `#` 可靠。
+
+    标题过了 `#` 之后还要过 `looks_like_title()`。实测 32B 把
+    「独立建筑单体可不实施装配式建筑；」标成了一级标题——那是上一段的续行，以分号
+    结尾。不拦的话会凭空长出一棵和正文无关的树，而且每个假章节都只有一行。
+
+    **没标 `#` 的行也要判一次**：视觉模型会漏标（实测一份 24 页公文有三页一条 `#`
+    都没有），而编号是文档自带的证据。文字层那条路本来就"编号比字号可信"，OCR 页
+    连字号都没有，编号就是唯一能证明"这是标题"的文字线索。判据仍是共享的那一套，
+    所以两种来源的层级不会走偏。
+    """
+    out: list[tuple[int | None, str, int]] = []
+    if EMPTY_MARK in markdown:
+        # "这一页没字"是协议的一部分，放在这里判而不是只放在 VlmOcr 里：
+        # `OcrFn` 谁都可以实现（测试里的假识别器、以后换的别家模型），
+        # 只要它按协议回 <EMPTY>，就必须被认成空页——否则这个标记会变成
+        # 一条正文、一条向量、一个点开是空白的引用角标。
+        return out
+    for raw in markdown.splitlines():
+        line = _MD_EMPHASIS.sub("", raw).strip()
+        if not line or _MD_RULE.match(line):
+            continue
+        # 提示词已经要求不出页眉页脚页码，这里再挡一次：模型偶尔会把页脚拼进正文，
+        # 而一条"第 3 页"进来就是一条向量、一个引用角标。
+        if _PAGE_NO.match(line) or _PAGE_NO_CN.match(line):
+            continue
+
+        marked = _MD_HEADING.match(line)
+        if marked:
+            title = clean_text(marked.group(2))
+            if title and looks_like_title(title):
+                level = text_heading_level(title)
+                hint = max(1, min(MAX_LEVEL, len(marked.group(1))))
+                out.append((level if level is not None else hint, title, page))
+            elif title:
+                # 模型标了 # 但文字是句子：降格成正文，别丢内容。
+                out.append((None, title, page))
+            continue
+
+        line = _MD_BULLET.sub("", line)
+        if line.startswith("|") and line.rstrip().endswith("|"):
+            cells = [clean_text(c) for c in line.strip("|").split("|")]
+            cells = [c for c in cells if c]
+            if cells:
+                # 与 `_table_rows` 同一种拼法，两条路产出的表格行长得一样
+                out.append((None, " | ".join(cells), page))
+            continue
+
+        line = clean_text(line)
+        if (
+            len(line) <= _OCR_TITLE_MAX_LEN
+            and looks_like_title(line)
+            and (level := text_heading_level(line)) is not None
+        ):
+            out.append((level, line, page))
+            continue
+        out.append((None, line, page))
+    return out
+
+
+def _merge_by_page(
+    text_events: list[tuple[int | None, str, int]],
+    ocr_events: list[tuple[int | None, str, int]],
+) -> list[tuple[int | None, str, int]]:
+    """按页码把两条流归并回文档顺序。
+
+    两条流各自已按页升序（`_collect` 逐页遍历，`_ocr_events` 按 targets 顺序），
+    而且页集合互不相交，所以按页号归并就够了，不需要再排一次。
+    """
+    if not ocr_events:
+        return text_events
+    if not text_events:
+        return ocr_events
+    out: list[tuple[int | None, str, int]] = []
+    i = j = 0
+    while i < len(text_events) and j < len(ocr_events):
+        if (text_events[i][2] or 0) <= (ocr_events[j][2] or 0):
+            out.append(text_events[i])
+            i += 1
+        else:
+            out.append(ocr_events[j])
+            j += 1
+    out.extend(text_events[i:])
+    out.extend(ocr_events[j:])
+    return out
+
+
+def _ocr_events(
+    doc, targets: tuple[int, ...], ocr: OcrOptions | None
+) -> tuple[list[tuple[int | None, str, int]], tuple[int, ...]]:
+    """逐页识别，返回 `(事件流, 识别后仍没有文字的页)`。"""
+    if not targets or ocr is None:
+        return [], ()
+    events: list[tuple[int | None, str, int]] = []
+    empty: list[int] = []
+    workers = max(1, min(ocr.workers, len(targets)))
+    # 分批：一页 150dpi 的 PNG 约 0.8 MB，两百页一次性渲染就是 160 MB 常驻。
+    # 渲染必须在主线程做——pymupdf 的 Page 不是线程安全的，并发只包住网络调用。
+    batch = workers * 2
+    for start in range(0, len(targets), batch):
+        pages = targets[start : start + batch]
+        rendered = [(pno, doc[pno].get_pixmap(dpi=ocr.dpi).tobytes("png")) for pno in pages]
+        # 同一批里页图逐字节相同的只问一次：空白页、重复的模板页渲染出来完全一样。
+        # 不合并的话几个线程会同时"查缓存未命中"，同一张图付几次钱。
+        unique: dict[str, tuple[int, bytes]] = {}
+        for pno, png in rendered:
+            unique.setdefault(hashlib.sha256(png).hexdigest(), (pno + 1, png))
+        keys = list(unique)
+        jobs = [(unique[key][0], unique[key][1]) for key in keys]
+        with ThreadPoolExecutor(max_workers=min(workers, len(keys))) as pool:
+            answers = list(pool.map(lambda job: ocr.fn(job[1], job[0]), jobs))
+        markdown = dict(zip(keys, answers, strict=True))
+
+        for pno, png in rendered:
+            page_events = _markdown_events(markdown[hashlib.sha256(png).hexdigest()], pno + 1)
+            if page_events:
+                events.extend(page_events)
+            else:
+                # 空白页、整页插图：模型按约定回 <EMPTY>。记下来，别让它变成
+                # "这一页解析成功了但什么都没有"的沉默缺口。
+                empty.append(pno + 1)
+    return events, tuple(empty)
+
+
+def _scanned_message(pages: int, blank: tuple[int, ...], visible: int) -> str:
+    where = ""
+    if blank and len(blank) < pages:
+        sample = "、".join(str(i + 1) for i in blank[:6])
+        more = f" 等共 {len(blank)}" if len(blank) > 6 else ""
+        where = f"，其中第 {sample}{more} 页取不到文字"
+    return (
+        f"这个 pdf 几乎取不到文字（可提取字符 {visible} 个，共 {pages} 页{where}），"
+        "大概率是扫描件或图片导出的。当前未开启 OCR——把 R4P_OCR_MODE 设成 auto "
+        "就能让视觉模型逐页识别（还要配 R4P_OCR_BASE_URL / R4P_OCR_API_KEY / "
+        "R4P_OCR_MODEL，示例见 .env.example）；也可以换一份带文字层的版本。"
+        "文件未被入库，索引与归档没有任何改动。"
+    )
+
+
+def parse_pdf_report(
+    path: str | Path, *, ocr: OcrOptions | None = None
+) -> tuple[list[Section], ParseReport]:
+    """解析成 Section 列表，并报告"哪些页没进来"。
+
+    `ocr=None` 时行为与旧版一致（整份闸门 + 报错），只是错误消息里多了页数；
+    给了 `ocr` 就逐页判断，没有文字层的页交给它。
+    """
+    from . import ParseReport  # 延迟导入：本模块由 __init__ 延迟导入，反过来会绕圈
+
     with pymupdf.open(str(path)) as doc:
         if doc.page_count == 0:
             raise ValueError("这个 pdf 没有任何页面，无法解析")
 
-        # 两道准入闸门都在**跳目录之前**、并且看**全文**：
-        # "有没有文字层""取出来的字读不读得懂"是整份文档的属性。
-        # 先跳目录再判断会把"目录 5 页 + 正文 1 页"这种文档误判成扫描件——
-        # 剩下的正文字符可能确实不足 50 个，但它不是扫描件。
+        pages = doc.page_count
         texts = [page.get_text("text") for page in doc]
         raw = "\n".join(texts)
         visible = len(raw.strip())
-        if visible < _MIN_TEXT_CHARS:
-            raise ValueError(
-                f"这个 pdf 几乎取不到文字（可提取字符 {visible} 个），"
-                "大概率是扫描件或图片导出的。当前管线不做 OCR，请提供带文字层的版本，"
-                "或先用外部工具（如 Acrobat、abbyy）做一次文字识别。"
-                "文件未被入库，索引与归档没有任何改动。"
-            )
-        _ensure_readable(raw)
 
+        # 逐页判"有没有可用文字层"。整份判断漏掉的正是混合型文档（见模块头）：
+        # 封面扫描、正文有文字层的公文，整份闸门能过，扫描那几页却一个字都进不来。
+        blank = tuple(i for i, text in enumerate(texts) if _page_needs_ocr(text))
+        # 目录页不参与任何一条路：目录条目本身是「编号一行、标题一行」，无论从字号
+        # 还是从模型眼里看都像标题，进来就会凭空长出一棵树（见 _looks_like_toc）。
         skip = set(_toc_pages(texts))
-        items = _collect(doc, skip_pages=skip)
+
+        missing: tuple[int, ...] = ()
+        if ocr is None:
+            if visible < _MIN_TEXT_CHARS:
+                raise ValueError(_scanned_message(pages, blank, visible))
+            _ensure_readable(raw)
+            ocr_targets: tuple[int, ...] = ()
+            missing = tuple(i + 1 for i in blank if i not in skip)
+        else:
+            if ocr.mode == "all":
+                ocr_targets = tuple(i for i in range(pages) if i not in skip)
+            else:
+                ocr_targets = tuple(i for i in blank if i not in skip)
+            if len(ocr_targets) > ocr.max_pages:
+                raise ValueError(
+                    f"这份 pdf 需要识别 {len(ocr_targets)} 页，超过上限 {ocr.max_pages}。"
+                    "按每页十几秒算，这要跑几个小时，多半是拖错了文件。"
+                    "确实要识别就调大 R4P_OCR_MAX_PAGES，或者先把文件拆开。"
+                    "文件未被入库，索引与归档没有任何改动。"
+                )
+
+        items = _collect(doc, skip_pages=skip | set(ocr_targets))
 
         body = _body_size(doc)
         items = _drop_furniture(items, doc, body)
@@ -552,4 +782,20 @@ def parse_pdf(path: str | Path) -> list[Section]:
             events = _events(items, body, ranks, trust_numbers=True)
         events = _merge_number_only_heads(events)
 
-    return build_sections(events)
+        ocr_events, empty = _ocr_events(doc, ocr_targets, ocr)
+        events = _merge_by_page(events, ocr_events)
+
+    report = ParseReport(
+        pages=pages,
+        # 报"真读出来的"页：识别后仍为空的那些分开报，否则"第 5 页经 OCR 识别"
+        # 会让用户以为第 5 页的内容进了库。
+        ocr_pages=tuple(i + 1 for i in ocr_targets if (i + 1) not in empty),
+        missing_pages=missing,
+        empty_pages=empty,
+    )
+    return build_sections(events), report
+
+
+def parse_pdf(path: str | Path) -> list[Section]:
+    """只要章节，不要报告，也不做 OCR。"""
+    return parse_pdf_report(path)[0]

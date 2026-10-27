@@ -937,9 +937,15 @@ function renderJobSummary(job, skipped) {
     text = `入库结束：${ok.length} 份成功`;
     if (bad.length) text += `，${bad.length} 份没成`;
     text += "\n";
-    for (const o of ok) text += `✓ ${o.filename}（${o.chunks} 块）\n`;
+    for (const o of ok) {
+      text += `✓ ${o.filename}（${o.chunks} 块）\n`;
+      // 解析报告：哪几页走了 OCR、哪几页没文字层。缺页不报出来，用户会以为
+      // 整份都进来了，问到那几页的内容时只会觉得"检索不行"。
+      if (o.note) text += `  ${o.note}\n`;
+    }
     for (const o of bad) {
       text += `✗ ${o.filename}：${o.status === "skipped" ? "内容未变，已跳过" : (o.error || o.status)}\n`;
+      if (o.note) text += `  ${o.note}\n`;
     }
   } else {
     text = `[${job.state}] ${job.message || ""}\n`;

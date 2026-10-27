@@ -88,6 +88,22 @@ CREATE TABLE IF NOT EXISTS embed_cache (
     PRIMARY KEY (model, sha)
 );
 
+-- OCR 结果缓存：同一张页图（同哈希、同模型）只识别一次。
+--
+-- 这张表不只是省钱。视觉模型的输出**不确定**：同一页识别两次，标点、断行甚至
+-- 标题层级都可能差一点。而 `chunk_id` 是内容寻址的，正文差一个字就是另一批 id，
+-- `--force` 重入库会得到"内容相同、id 全变"的一份新文档——旧向量原地成孤儿，
+-- `verify` 却一切正常，因为两侧都自洽。有缓存才谈得上"同一份文件重跑结果一致"。
+--
+-- 与 `embed_cache` 一样属于加速层，不是业务事实：清空数据库时保留。
+CREATE TABLE IF NOT EXISTS ocr_cache (
+    page_sha   TEXT NOT NULL,
+    model      TEXT NOT NULL,   -- 含提示词版本，改提示词等于换模型
+    text       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (page_sha, model)
+);
+
 -- numpy 向量后端使用；milvus 后端不使用
 CREATE TABLE IF NOT EXISTS vectors (
     chunk_id     TEXT PRIMARY KEY,

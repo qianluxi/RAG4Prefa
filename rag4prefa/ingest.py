@@ -11,7 +11,8 @@ from pathlib import Path
 
 from . import consistency, repo
 from .adapters.embed import Embedder
-from .adapters.parsers import parse_document
+from .adapters.ocr import OcrOptions, VlmOcr
+from .adapters.parsers import parse_document_report
 from .adapters.vectors import (
     VectorItem,
     VectorStore,
@@ -19,7 +20,7 @@ from .adapters.vectors import (
     to_archive_row,
 )
 from .chunking import build_chunks, contextual_text
-from .concurrency import MaintenanceBusy, maintenance_lock
+from .concurrency import MaintenanceBusy, maintenance_lock, sqlite_write
 from .config import Settings
 from .consistency import IndexMismatch
 from .domain import Chunk, JobState
@@ -58,6 +59,62 @@ def _sha_file(path: Path) -> str:
 
 def _doc_id(project_name: str, filename: str) -> str:
     return hashlib.sha1(f"{project_name}|{filename}".encode()).hexdigest()[:16]
+
+
+def _cached_ocr(conn: sqlite3.Connection, provider: VlmOcr):
+    """给识别器套一层按页图哈希的缓存。
+
+    这不是提速优化，是**这一步可重入的前提**：视觉模型的输出不确定，同一页两次
+    识别会差几个字；而 `chunk_id` 是内容寻址的，差一个字就是另一批 id。没有缓存，
+    同一份扫描件每次重入库都会变成"另一份文档"，旧向量原地成孤儿，`verify` 还查不出
+    （它只比 id 集合是否自洽，不比"这份是不是上次那份"）。
+
+    顺带的好处是失败重试很便宜：100 页里第 87 页失败，重跑只补那一页。
+    """
+
+    def call(png: bytes, page: int) -> str:
+        page_sha = hashlib.sha256(png).hexdigest()
+        # 读写都要拿写锁。识别是多线程并发的，而整进程共用一条 sqlite 连接：
+        # 线程 A 在 INSERT 时线程 B 的 SELECT 会**同一条连接内**看见未提交的、
+        # 正在写的页，实测报 `Could not decode to UTF-8 column 'text'`。
+        # 锁只包住两次访问（微秒级），网络调用留在锁外，并发照旧。
+        with sqlite_write():
+            try:
+                hit = repo.get_ocr_cache(conn, page_sha, provider.model)
+            except sqlite3.OperationalError as exc:
+                # 缓存行坏了就当没识别过，重算一次并覆盖。
+                # 缓存不是事实——但它也不能变成"这份文件再也导不进来"的原因。
+                if "decode" not in str(exc).lower():
+                    raise
+                hit = None
+        if hit is not None:
+            return hit
+        text = provider(png, page)
+        # 空结果也存。空白页、整页插图很常见，不存的话每次重跑都要为同一张空白
+        # 图片再付一次费，而它永远不会有内容。
+        with sqlite_write():
+            repo.put_ocr_cache(conn, page_sha, provider.model, text)
+        return text
+
+    return call
+
+
+def _build_ocr(settings: Settings, conn: sqlite3.Connection) -> OcrOptions | None:
+    """按配置造一个 OCR 入口；`off` 时返回 None（整条路径不加载）。
+
+    缺 Key 时 `VlmOcr` 会在这里直接抛错，而不是等到第 1 页要识别时才发现——
+    那时已经写了一半的库没有，但用户会以为"文件有问题"。
+    """
+    if settings.ocr_mode == "off":
+        return None
+    provider = VlmOcr(settings)
+    return OcrOptions(
+        fn=_cached_ocr(conn, provider),
+        mode="all" if settings.ocr_mode == "all" else "auto",
+        dpi=settings.ocr_dpi,
+        max_pages=settings.ocr_max_pages,
+        workers=settings.ocr_concurrency,
+    )
 
 
 def ingest_file(
@@ -180,7 +237,8 @@ def _ingest_locked(
             return _update_doc_year(conn, store, doc_id, filename, doc_year, existing)
 
         stage = "解析与分块"
-        sections = parse_document(path)
+        sections, report = parse_document_report(path, ocr=_build_ocr(settings, conn))
+        note = report.note()
         chunks = build_chunks(
             sections,
             doc_id,
@@ -199,7 +257,11 @@ def _ingest_locked(
                     status="empty",
                     error="未能从文档中提取到正文",
                 )
-            return FileOutcome(filename, "failed", len(sections), 0, "文档没有可用正文")
+            # 带上解析报告：整份都是扫描件、OCR 又没开时，"没有可用正文"这句话
+            # 本身没给出原因，用户只会想"这份 pdf 明明有内容"。
+            return FileOutcome(
+                filename, "failed", len(sections), 0, "文档没有可用正文", note=note
+            )
 
         repo.mark_document_indexing(
             conn, doc_id=doc_id, project_name=project_name, filename=filename, doc_year=doc_year
@@ -270,7 +332,7 @@ def _ingest_locked(
             repo.set_vector_backend(
                 conn, store.name, identity=getattr(store, "identity", None)
             )
-        return FileOutcome(filename, "indexed", len(sections), len(chunks))
+        return FileOutcome(filename, "indexed", len(sections), len(chunks), note=note)
     except Exception as exc:  # 单文件失败不该拖垮整批
         detail = f"{type(exc).__name__}: {exc}"
         if not facts_committed and (planned or overwritten):

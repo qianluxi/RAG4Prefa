@@ -91,7 +91,10 @@ def clear_all_data(conn: sqlite3.Connection) -> dict[str, int]:
     - `meta`：决定"这个库怎么跑"（embedding 模型与维度、后端身份）。模型与维度那两条
       由 `clear_index_meta()` 单独处理，因为它和索引状态在同一个事务里；
     - `embed_cache`：同一段文字算过向量的缓存。删了只会让下次入库重新花一次钱，
-      留着也不会让清空后的库看起来有数据。
+      留着也不会让清空后的库看起来有数据；
+    - `ocr_cache`：同一张页图的识别结果。理由同上，而且它还有一层作用——留着它，
+      "清空后重新导入同一批扫描件"才不会再付一遍 OCR 的钱、也不会得到另一批
+      chunk_id（视觉模型的输出不确定，见 `adapters/ocr.py`）。
     """
     before = data_counts(conn)
     with transaction(conn):
@@ -105,6 +108,30 @@ def clear_all_data(conn: sqlite3.Connection) -> dict[str, int]:
         conn.execute("DELETE FROM projects")
         _bump(conn, DATA_REVISION_KEY)
     return before
+
+
+def get_ocr_cache(conn: sqlite3.Connection, page_sha: str, model: str) -> str | None:
+    """取某张页图在某个识别模型下的缓存结果。None 表示没识别过。
+
+    注意**读不到和空字符串是两件事**：空字符串是"识别过，这一页确实没有文字"，
+    None 是"没识别过"。上层据此决定要不要发请求——把空当没识别，空白页会每次重跑
+    都再付一次费；把没识别当空，扫描件会整份变成一个字都不剩的空文档，
+    而任务是"成功"的。
+    """
+    row = conn.execute(
+        "SELECT text FROM ocr_cache WHERE page_sha = ? AND model = ?", (page_sha, model)
+    ).fetchone()
+    return None if row is None else row[0]
+
+
+def put_ocr_cache(conn: sqlite3.Connection, page_sha: str, model: str, text: str) -> None:
+    """记下识别结果。空字符串也照存，理由见 `get_ocr_cache`。"""
+    with transaction(conn):
+        conn.execute(
+            "INSERT OR REPLACE INTO ocr_cache (page_sha, model, text, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (page_sha, model, text, now_iso()),
+        )
 
 
 def clear_index_meta(conn: sqlite3.Connection) -> None:

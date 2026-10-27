@@ -106,6 +106,11 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 2
 
     services = build_services()
+    # `--ocr` 只是一次性的运行期覆盖，不回写配置：operator 试一次整份重识别，
+    # 不该顺手把下次的默认行为也改掉。放在 assert_write_ready 之前——
+    # 缺 Key 要在建任务之前就报出来，别留下一条"看起来导过了"的失败记录。
+    if getattr(args, "ocr", None):
+        services.settings.ocr_mode = args.ocr
     # 与 API 上传同一条准入：后端没确认时不许动事实与索引。放在建任务之前，
     # 被拒绝时库里连一条"看起来导过了"的记录都不会留下。
     try:
@@ -468,6 +473,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="强制重新解析并覆盖（重新调 embedding）。解析逻辑升级后补新字段（如 PDF 页码）时用；"
         "不带 --year 时沿用该文档已有的年份，不会清空",
+    )
+    p.add_argument(
+        "--ocr",
+        choices=("off", "auto", "all"),
+        default=None,
+        help="临时覆盖 R4P_OCR_MODE：auto 只识别没有文字层的页；all 整份重做；"
+        "off 关掉。给扫描件补内容时用，改完的结论不会写回 .env",
     )
     p.set_defaults(func=cmd_ingest)
 

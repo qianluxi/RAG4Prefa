@@ -67,7 +67,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（7 487 行 Python + 1096 行单页 HTML + 7 005 行测试，均按非空行计）
+## 3. 代码地图（8 037 行 Python + 1102 行单页 HTML + 7 332 行测试，均按非空行计）
 
 行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
@@ -75,11 +75,11 @@ cd "F:/project/课题/RAG4Prefa"
 rag4prefa/
 ├── config.py      79    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读；含 `allow_server_key_fallback` 公网开关
 ├── domain.py      98    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
-├── db.py         117    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache）
-├── repo.py       919    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
+├── db.py         130    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache / ocr_cache）
+├── repo.py       941    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
 ├── consistency.py 427   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
 ├── concurrency.py 291   **写入协调**：维护锁、写事务串行、工作租约（判断别的进程还活着吗）
-├── ingest.py     845    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex；入库批次整体占锁
+├── ingest.py     920    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex；OCR 装配与缓存也在这层
 ├── chunking.py    93    按标题树切块；chunk_id 内容寻址（同 id 必同正文）
 ├── tokens.py      40    中英混排的 token 估算（非真实 tokenizer）
 ├── ask.py        216    混合召回 → RRF 融合 → 可选重排 → 流式生成；含索引代次确认
@@ -90,11 +90,11 @@ rag4prefa/
 ├── credentials.py 304   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
 ├── api.py        657    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度；含逐文件删除与清空
 ├── processcontrol.py 168 **停服**：netstat 认 PID + `/api/health` 认身份，认不出就不杀
-├── cli.py        468    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / delete-doc / clear / verify
-└── adapters/    1721    embed / llm / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
+├── cli.py        476    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / delete-doc / clear / verify
+└── adapters/    1882    embed / llm / ocr / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
 ```
 
-`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 7 487 行（含 scripts 514）——`rag4prefa/` 本身是 6 973 行。
+`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 8 037 行（含 scripts 514）——`rag4prefa/` 本身是 7 523 行。
 
 解析层三个文件的分工，改动前先看清：
 
@@ -104,9 +104,12 @@ rag4prefa/
 - `parsers/docx.py`：Word 有结构，判级顺序是「大纲级别 → 标题样式 → 编号正则」。
 - `parsers/pdf.py`：pdf 没有结构，只有字号/加粗/坐标，走「统计正文字号 → 按字号与加粗判标题
   → 编号定级」，另含页眉页脚剔除、跨块段落拼接、表格按 `|` 保留。
-- `parsers/__init__.py`：`parse_document(path)` 按扩展名分派，未知格式明确报错。
+- `parsers/__init__.py`：`parse_document(path)` 按扩展名分派，未知格式明确报错；
+  `parse_document_report()` 额外返回 `ParseReport`（哪些页走了 OCR、哪些页没有文字层）。
+- `adapters/ocr.py`：视觉模型识别单页（远端 OpenAI 兼容接口，不装本地模型）+ 提示词版本。
+  它只负责「这一页的图 → Markdown」；「哪几页要识别」「Markdown 怎么折成事件流」都在 `pdf.py`。
 
-前端只有一个文件 `rag4prefa/web/index.html`（1096 行，原生 JS，无构建步骤）。
+前端只有一个文件 `rag4prefa/web/index.html`（1102 行，原生 JS，无构建步骤）。
 `tests/` 356 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
@@ -582,6 +585,10 @@ API 一览（实现见 `api.py`，说明见 README）：
 | 多轮对话里旧回答的引用角标可能定位到新来源 | 引用抽屉是全局单例，新回答会覆盖内容，旧回答的 `[n]` 处理器仍指向旧卡片 | 每条回答各自保存引用数据，点旧角标时加载该回答自己的来源 |
 | "正在检索回答中"在 `meta` 事件就消失 | `meta` 在 LLM 首 token 之前发出，提示会提前闪掉 | 改到第一个 `token` 事件再移除 |
 | 公开入口缺"重新解析但不重算 embedding"的能力 | 补展示字段（如页码）也必须 `--force` 重算全部向量，白花钱 | 加 `refresh-metadata`：只重解析并更新 `page` / `section_count`，`chunk_id` 不变时跳过 embedding |
+| OCR 没有页级进度 | 24 页要跑 3.5 分钟，期间任务只显示"解析与分块"，看着像卡死 | 把 `_ocr_events` 的完成页数经 `repo.update_job` 写进 `message`（每页一次，别每批一次） |
+| OCR 页里"红头文件标题被拆成多行"会长出几个空章节 | 视觉模型把每个物理行都标成标题（实测 250 号文封面变成 3 个 0 字章节）。片段层面无害（空节不出块），但下一块的 `chapter_path` 会挂到"标题的第一行"下 | 连续两个标题之间没有任何正文时合并成一个（要区分"父标题 + 子标题"这种合法情形，别硬合） |
+| OCR 页里表格单元格可能被当成标题 | 评分表这类宽表格，模型会把加粗的单元格标成 `#`，于是"建筑形体规则性 a（15分）"成了章节 | 无法只靠文本判据区分；先记为已知局限，等遇到具体影响检索的案例再处理 |
+| OCR 结果无法逐页人工复核 | 识别错了只能在库里看到结果，没有"第 N 页原文 vs 识别文本"的对照出口 | 缓存里本来就有页图哈希，可加 `rag4prefa ocr-dump --doc-id X --page N` 导出对照 |
 
 ### 已完成（2026-10-23 第四轮，按第三次外部复审意见修复）
 
@@ -738,8 +745,10 @@ LLM 返回带 `[1]` 引用的答案。embedding 与 LLM 分属硅基流动国际
   「一页表格 + 一个标题」这种页面把标题字号当正文，接着标题被当页边短行删掉。
 - **跨 block 的段落要拼回去**（判据是行距 ≤ 一个字号且上句没说完），否则
   "住房城乡 / 建设科技" 中间留换行，分词与向量都会被干扰。
-- **不做 OCR**：没有文字层直接报错说明原因。扫描件要么依赖本地模型要么依赖外部服务，
-  两条都超出当前部署约束；静默入库空文档会让用户去怀疑检索参数。
+- **"不做 OCR"已经过时（2026-10-27）**：没有文字层的页现在可以走 OCR（`R4P_OCR_MODE`，
+  默认 `off`）。但两条判据还成立——**默认关闭**时直接报错说明原因，绝不静默入库空文档；
+  而且**判"有没有文字层"必须逐页做**，整份判断会让混合型文档的扫描页静默丢失。
+  详见第二十六轮与 `adapters/ocr.py` 模块头。
 - `pymupdf` 必须锁 `<2`：2.x 会把 `onnxruntime` 与版面分析模型一起装进来。
 
 **P1-3 补充（2026-10-26 下午，拿真实工程文档跑出来的四条）**
@@ -1611,6 +1620,73 @@ PID 21352  F:\...\.venv\Scripts\python.exe -m rag4prefa serve ...   （1 线程�
 （不校验后端条数 / 顺序反了 / 删文档不校验项目归属 / 清空不校验确认词）。真机在 `data/app.db`
 的副本上跑通：`delete-doc` 删 13 块 → 66/66 变 53/53、`verify` 三方一致；`clear` 报
 `before 2/6/66/66`、`after 全 0`，清完 `health.ok=True`、`issues=[]`。真库 6 份 / 66 块未被触碰。
+
+### 第二十六轮（2026-10-27 下午）：OCR 模块（扫描件入库）
+
+**决定用远端视觉模型，不是本地 OCR**。Tesseract 要装系统二进制 + `chi_sim`，PaddleOCR /
+RapidOCR 要落 ONNX 模型，都算"引入本地模型"；更要紧的是它们**只给文字**，不给「这是一级
+标题」「这是一张表」——后者正是切块依赖的东西。视觉模型一次调用同时给出文字、层级与表格。
+
+实测（2026-10-27，硅基流动国际站）：
+
+| 模型 | 一页 150dpi | 层级判定 |
+| --- | --- | --- |
+| `Qwen/Qwen3-VL-8B-Instruct` | 18s | 内容准确，但**漏标 `#`**（见下） |
+| `Qwen/Qwen3-VL-32B-Instruct` | 42s | 更差：把正文续行标成了一级标题 |
+| 魔搭 `ERNIE-4.5-VL-28B-A3B-PT` | — | `invalid_model` |
+| 魔搭 `InternVL3_5-241B-A28B` | — | `user token expired` |
+
+「更大 ≠ 更适合」，与 embedding 那边（0.6B 优于 4B/8B）是同一个结论。默认锁 8B。
+
+**结构**：`adapters/ocr.py` 只做「页图 → Markdown」；「哪几页要识别」和「Markdown 怎么折成
+事件流」在 `parsers/pdf.py`；`ingest.py` 负责装配与缓存。`parse_document_report()` 返回
+`(sections, ParseReport)`，`parse_document()` 保留原签名（只要章节）。
+
+**四条不能动的判据**：
+
+1. **逐页判"有没有文字层"，不是整份。** 以前整份闸门看全文，混合型文档（封面扫描、
+   正文可复制）能过闸，扫描那几页在 `_collect` 里取不到任何东西 → **静默丢页**，任务里
+   一句提示都没有。与"不支持的格式静默 continue"是同一类问题，只是发生在页这一级。
+   现在 `ParseReport.missing_pages` 会把页码报进任务汇总，开 OCR 则自动补上。
+2. **编号定级，`#` 只证明"是不是标题"。** 视觉模型看得见字号与位置，但数 `#` 不可靠；
+   编号是文档自带的。判据仍是 `headings.text_heading_level()`，与 docx/pdf 文字层共用一套，
+   两种来源的层级才不会各走一套。
+3. **标题必须再过 `looks_like_title()`。** 32B 把「独立建筑单体可不实施装配式建筑；」
+   （上一段续行，以分号结尾）标成了一级标题；不拦就会长出一棵和正文无关的树。
+4. **没标 `#` 的行也要判一次，但只信编号、且长度 ≤ 40 字。** v1 提示词下 8B 在一份 24 页
+   公文的第 2、8、9 页**一条 `#` 都没给**，17 636 个字全落进同一节、章节路径全空。
+   反过来，一条跨页断在半句的正文（「4. 施工图审查机构应按照…」55 字）会因为"开头是编号
+   又没有句末标点"被当成标题——40 字的长度上限就是挡它的（中文标题极少超过 40 字）。
+
+**缓存是正确性前提，不是省钱优化**。视觉模型输出不确定；`chunk_id` 内容寻址，正文差一个字
+就是另一批 id。没有 `ocr_cache`（键 = 页图 sha256 + 模型名 + 提示词版本），`--force` 重入库
+会把同一份文件变成"另一批 id"的新文档，旧向量成孤儿，而 `verify` 只比 id 集合是否自洽，
+查不出来。顺带的好处：100 页里第 87 页失败，重跑只补那一页。
+
+**必须注意的两个实现细节**：
+
+- **同一批里逐字节相同的页图只识别一次**（`_ocr_events` 里按 sha 去重）。空白页、模板页
+  渲染出来完全一样，不去重时几个线程会同时"查缓存未命中"，同一张图付几次钱——
+  缓存救不了并发下的这一刻。
+- **缓存读写要拿 `sqlite_write()`**。识别是多线程的，整进程共用一条 sqlite 连接；
+  线程 A 在 INSERT 时线程 B 的 SELECT 会在**同一条连接内**看见未提交、正在写的页，
+  实测报 `sqlite3.OperationalError: Could not decode to UTF-8 column 'text'`。
+  锁只包两次访问（微秒级），网络调用留在锁外，并发照旧。
+
+**顺带修的一个测试隐患**：`tests/` 里的 `Settings(...)` 会读本机 `.env`。这次把 OCR 打开后，
+`test_eval_dataset` 的语料夹具直接调了付费接口，chunk 指纹也因此对不上。现在两份夹具都带
+`_env_file=None`（且显式 `ocr_mode="off"`）——"离线全绿"是这套测试的底线，
+开发者改 `.env` 不该改变用例行为。
+
+**验证**：24 页真扫描件（上海 250 号文）端到端跑通 —— 23 页 OCR、第 23 页（印章页）识别后
+仍无文字并被点名报出，48 节 / 57 块，章节路径到「一、实施范围 >（三）工业建筑类项目」，
+内容与原文逐条对上；`verify` 三方一致；检索能召回「（二）公共建筑类项目」那一段。
+381 passed、ruff 干净、前端 `node --check` 通过；**10 条变异全部精确变红**
+（逐页判据回到整份 / 不查乱码 / 不认 `<EMPTY>` / 标题不看是不是句子 / 层级用 `#` 个数 /
+页码恒为 1 / 同图不去重 / 去掉页数上限 / 缓存直通 / 把空结果当没识别过）。
+
+**代价要说清**：一页 16~18 秒、一次调用一份钱，`R4P_OCR_MAX_PAGES`（默认 200）是账单闸门，
+超了直接拒绝而不是先跑一半。默认 `off`，开启后缺 Key 会在装配阶段就报错（不是等到第 1 页）。
 
 ---
 
