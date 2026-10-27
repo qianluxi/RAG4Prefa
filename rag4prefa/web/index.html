@@ -258,8 +258,9 @@
     <input id="su-ocr" type="password" placeholder="sk-..." autocomplete="off" />
     <p class="kbd" style="margin-top:6px;line-height:1.7">
       只有<strong>扫描件</strong>（没有文字层的 PDF）才用到它，按页计费，一页约 15 秒。
-      留空 = 用服务端配好的那把；两处都没有，扫描件就会被拒并提示去配置。
-      它与 embedding 那栏的 Key 不通用（视觉模型是另一个接口）。
+      本部署不代付：留空就是"扫描件无法入库"，任务会失败并说明原因，文件不进索引。
+      扫描件入库还要上面的 Embedding Key——先切块写向量，再逐页识别，两把缺一不可。
+      它和 embedding 那栏可以填同一把（同站点），与 LLM 那栏不通用。
     </p>
 
     <div class="row" style="margin-top:12px">
@@ -274,7 +275,8 @@
     <p class="kbd" style="margin-top:16px;line-height:1.9">
       Key 只存在这台电脑的浏览器里，服务端不落库、不写日志。<br />
       换电脑、换浏览器或清掉站点数据后需要重填。<br />
-      两项 Key 都可以留空：那就完全使用服务端公共额度，这时这个面板只用来选对话模型。<br />
+      三栏都可以留空，但<b>留空不等于能用</b>：本部署不代付（各付各的），留空的那一项
+      就是一个 401 / 一句"扫描件无法入库"。<br />
       <strong>Embedding 模型由服务端统一决定</strong>，不能按用户切换——
       否则同一批文档会混进两套向量，检索结果看起来正常却不可信。
     </p>
@@ -330,8 +332,8 @@ function authHeaders() {
   };
   // 没选模型就不带这个头，服务端回落到默认模型——空串会被当成"指定了空模型"
   if (creds.llmModel) headers["X-R4P-LLM-Model"] = creds.llmModel;
-  // OCR 档位必须每次请求都带：它决定这次入库用免费模型还是付费模型。
-  // 只在设置面板里记着、请求时不带的话，界面显示"免费档"，实际仍按 .env 跑付费档。
+  // 视觉模型 Key 只在填了的时候带上：留空是一个明确的"我没配"，服务端据此决定
+  // 能不能用服务端那把（各付各的部署下就是不能），不能靠"不带这个头"去猜意图
   if (creds.ocrKey) headers["X-R4P-OCR-Key"] = creds.ocrKey;
   return headers;
 }
@@ -1188,8 +1190,13 @@ async function saveCreds() {
       }),
     });
     renderServerModels(result.server);
-    if (!result.embedding.ok && !result.llm.ok) {
-      // 两个都不通就不保存：存下来只会让之后每次提问都失败
+    // 三个角色**只要有一项**验通过就保存（2026-10-27 复审 P2）。
+    // 原来只判 embedding + LLM，于是"只填了视觉模型 Key、另两栏留空"的人会看到
+    // 「验证通过」却什么都没存下来——而扫描件需要的正是那一把。凭据是分角色的，
+    // 允许"先存能用的、再补缺的"，但"三项全不通"仍然不保存：存下来只会让之后
+    // 每次请求都失败，不如当场说清哪一栏错了。
+    const checks = [result.embedding, result.llm, result.ocr];
+    if (!checks.some((item) => item && item.ok)) {
       $("su-result").textContent = `验证未通过，未保存：\n${describeCheck(result)}`;
       return;
     }
@@ -1207,11 +1214,20 @@ async function saveCreds() {
     saveCredStore(store);
     syncWho();
     renderUserList();
+    // 保存成功也要把**还没通过的那几项**点出来。只说"已保存"会让人以为配全了，
+    // 然后在上传或提问时撞上 401，而那句话该在点保存的这一刻就说。
+    const lacks = [];
+    if (!result.embedding.ok) lacks.push("Embedding（入库、检索、提问都要它）");
+    if (!result.llm.ok) lacks.push("LLM（生成答案要它）");
+    if (!result.ocr || !result.ocr.ok) lacks.push("视觉模型（只影响扫描件）");
+    const lackNote = lacks.length
+      ? `\n还没通过、暂时用不了的：${lacks.join("；")}。补齐后重新点「保存并验证」即可。`
+      : "";
     const quotaNote = embeddingKey || llmKey || ocrKey
       ? ""
       : "\n（未填 Key：问答与入库都走服务端公共额度）";
     $("su-result").textContent =
-      `已保存并切换为「${name}」\n${describeCheck(result)}${quotaNote}`;
+      `已保存并切换为「${name}」\n${describeCheck(result)}${lackNote}${quotaNote}`;
     await loadHealth();
   } catch (err) {
     $("su-result").textContent = `验证请求失败：${err.message}`;
