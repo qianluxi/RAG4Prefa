@@ -43,7 +43,7 @@ from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..config import Settings
-from ..ocr_profiles import EffectiveOcr, effective
+from ..ocr_setup import EffectiveOcr, effective
 
 # (页面 PNG 字节, 1-based 页码) -> 该页的 Markdown
 OcrFn = Callable[[bytes, int], str]
@@ -92,63 +92,10 @@ _TINY_PNG = base64.b64decode(
 )
 
 
-@dataclass(frozen=True)
-class PromptPreset:
-    """一套提示词。换 preset 等于换了「怎么问」，缓存必须跟着失效。
-
-    `version` 单独记，是因为同一套规则也会被改：v1→v2 那次改动让 8B 从
-    「一整份 24 页公文一条 # 都不给」变成正常标层级，但缓存键没变的话，
-    重跑会拿到旧格式的结果，看起来像"改了提示词却没生效"。
-    """
-
-    name: str
-    version: str
-    system: str
-    user: str
-    max_tokens: int
-    # 由 `_ask` 决定要不要把页码塞进 user 消息。文档解析专用模型对额外文本敏感，
-    # 给它的消息越短越接近它的训练分布。
-    mention_page: bool = True
-
-
-# 通用视觉模型的提示词：本项目逐条实测调出来的，规则都对应一个具体踩坑。
-VLM_PRESET = PromptPreset(
-    name="vlm",
-    version=PROMPT_VERSION,
-    system=_SYSTEM,
-    user="这是第 {page} 页，请还原。",
-    # 一页密排 A4 的中文正文在 2000 字上下，表格再多一点。给足余量，
-    # 截断的表现是"后半页莫名消失"，比报错难查得多。
-    max_tokens=4096,
-)
-
-# 文档解析专用模型（PaddleOCR-PaddleOCR-VL / DeepSeek-OCR 这类）用的是它们的原生指令。
-#
-# 不套 VLM 那套 7 条规则，是因为分工不同：专用模型自带版面分析，标题层级与表格结构
-# 是它的输出格式本身；再叠一层"什么样的行才算标题"的文字规则，只会和它的版面判断
-# 打架——尤其"宁可多标"这一条，会把它本来正确识别的正文推广成标题。
-# 层级仍然不交给它一家说了算：`parsers/pdf.py` 拿到 markdown 后照样过
-# `looks_like_title()` 与编号定级，与付费档走同一条后处理。
-DOCUMENT_PRESET = PromptPreset(
-    name="document",
-    version="d1",
-    system="",
-    user="Convert the document to markdown.",
-    # 专用解析模型单页输出可能到 8K：密排页 + 多张表格，4096 会截断。
-    # 免费档不计费，给足余量没有代价。
-    max_tokens=8192,
-    mention_page=False,
-)
-
-PRESETS: dict[str, PromptPreset] = {
-    VLM_PRESET.name: VLM_PRESET,
-    DOCUMENT_PRESET.name: DOCUMENT_PRESET,
-}
-
-
-def preset_for(name: str) -> PromptPreset:
-    """未知名字一律回落到 `vlm`——它是与旧缓存键一致的那一档。"""
-    return PRESETS.get((name or "").strip().lower(), VLM_PRESET)
+# 「扫描件识别不出来」的统一前缀。后端把它放在消息最前面，前端据此判断
+# 该弹"去配置视觉模型"还是照常显示错误。改这个字符串要同步 `web/index.html`
+# 里的同名常量——它们是两个进程，没有共享代码的办法。
+OCR_SETUP_HINT = "【需要配置视觉模型】"
 
 
 
@@ -185,11 +132,10 @@ class VlmOcr:
     _eff: EffectiveOcr | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        # 档位决定端点、模型、提示词、并发与 Key 的来源，集中在一处算一次。
-        # 用户自己在界面上填的 OCR Key 已经由 `CredentialPool.settings_for()`
-        # 按档位写进对应的 `.env` 字段，所以这里不需要知道 Key 是谁的。
+        # 端点、模型、Key 的来源集中在一处算一次。用户自己在界面上填的 OCR Key
+        # 已经由 `CredentialPool.settings_for()` 写进 `ocr_api_key`，这里不必知道
+        # Key 是谁的。
         self._eff = effective(self.settings)
-        self._preset = preset_for(self._eff.preset)
         missing = [
             name
             for name, value in (
@@ -204,19 +150,16 @@ class VlmOcr:
             # 直接报错而不是偷偷回落到 LLM 那组配置：LLM 与 embedding 的 Key 是
             # 两个平台的两套账号，粘错了只会得到 401，而"为什么 OCR 一直失败"
             # 会变成一个要翻三个文件才能回答的问题。
-            profile = self._eff.profile
-            where = (
-                "免费档读的是 R4P_OCR_FREE_API_KEY——硅基流动国内站（siliconflow.cn）"
-                "与国际站是两套独立账号，国际站那把 Key 填进来会报 30014。"
-                if profile.free
-                else "付费档读的是 R4P_OCR_API_KEY。"
-            )
+            #
+            # 前缀必须带上：这句话的读者是"拖了一个扫描件进来的普通用户"，
+            # 他要的是"我去哪配"，不是"哪个环境变量没填"。
             raise OcrError(
-                f"扫描件识别已开启（{profile.label}），但缺少 {' / '.join(missing)}。"
-                f"{where}"
-                "OCR 走的是独立的视觉模型接口，和 embedding、LLM 的 Key 都不通用。"
-                "在 .env 里补上，或在界面「API 设置」里填自己的 OCR Key；"
-                "不想用 OCR 就把 R4P_OCR_MODE 设成 off。"
+                f"{OCR_SETUP_HINT}这份文件需要视觉模型才能读，但服务端还没配好"
+                f"（缺少 {' / '.join(missing)}）。"
+                "视觉模型是独立的第三方接口，和 embedding、对话模型都不通用："
+                "在 .env 里补上 R4P_OCR_BASE_URL / R4P_OCR_API_KEY / R4P_OCR_MODEL，"
+                "或在界面「API 设置」里填自己的 OCR Key。"
+                "不配置就无法处理扫描件——文件不会被入库，索引与归档没有任何改动。"
             )
 
     @property
@@ -228,18 +171,12 @@ class VlmOcr:
 
     @property
     def model(self) -> str:
-        """写进缓存的模型标识。
+        """写进缓存的模型标识。`模型名#提示词版本`，改提示词即失效。
 
-        通用视觉模型那一档**保持旧格式** `模型名#v2`：已有缓存按这个键存的，
-        一旦换了写法，全部文档重跑都要重新付费识别一遍，而提示词一个字都没改。
-
-        其他档位把 preset 名字与版本一起写进去——专用模型的输出格式与通用模型
-        完全不同，两者绝不能共用一份缓存，否则换了档位会拿到「格式对不上的旧文本」，
-        而且 `verify` 查不出来（它只比 id 自洽，不比内容是不是这一版）。
+        格式不能动：`ocr_cache` 里已有记录全是这个键，换写法等于让全部文档
+        重新付费识别一遍，而提示词一个字都没改。
         """
-        if self._preset is VLM_PRESET:
-            return f"{self.eff.model}#{PROMPT_VERSION}"
-        return f"{self.eff.model}#{self._preset.name}-{self._preset.version}"
+        return f"{self.eff.model}#{PROMPT_VERSION}"
 
     def _open(self) -> OpenAI:
         if self._client is None:
@@ -252,26 +189,19 @@ class VlmOcr:
 
     def _messages(self, png: bytes, page: int) -> list[dict]:
         b64 = base64.b64encode(png).decode()
-        preset = self._preset
-        messages: list[dict] = []
-        # 专用解析模型不带 system：它的行为由训练分布决定，多一段中文规则
-        # 只会引出"解释一下我为什么这么标"这类跑偏输出。
-        if preset.system:
-            messages.append({"role": "system", "content": preset.system})
-        text = preset.user.format(page=page) if preset.mention_page else preset.user
-        messages.append(
+        return [
+            {"role": "system", "content": _SYSTEM},
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": text},
+                    {"type": "text", "text": f"这是第 {page} 页，请还原。"},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:image/png;base64,{b64}"},
                     },
                 ],
-            }
-        )
-        return messages
+            },
+        ]
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=15), reraise=True)
     def _ask(self, png: bytes, page: int) -> str:
@@ -281,7 +211,7 @@ class VlmOcr:
             temperature=0,
             # 一页密排 A4 的中文正文在 2000 字上下，表格再多一点。给足余量，
             # 截断的表现是"后半页莫名消失"，比报错难查得多。
-            max_tokens=self._preset.max_tokens,
+            max_tokens=4096,
         )
         return resp.choices[0].message.content or ""
 

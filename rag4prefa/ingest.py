@@ -24,7 +24,7 @@ from .concurrency import MaintenanceBusy, maintenance_lock, sqlite_write
 from .config import Settings
 from .consistency import IndexMismatch
 from .domain import Chunk, JobState
-from .ocr_profiles import effective
+from .ocr_setup import effective
 from .tokens import estimate_tokens
 
 
@@ -114,11 +114,8 @@ def _build_ocr(settings: Settings, conn: sqlite3.Connection) -> OcrOptions | Non
         mode="all" if settings.ocr_mode == "all" else "auto",
         dpi=settings.ocr_dpi,
         max_pages=settings.ocr_max_pages,
-        # 并发按**档位**取，不是直接读 .env：免费池的并发上限远低于付费档，
-        # 用 4 并发打免费模型会持续 429。
-        #
-        # 从 settings 算而不是从 provider 上读：`OcrFn` 的契约只有一个 `__call__`，
-        # 让并发也挂到 provider 上，等于要求每个假后端都实现一遍档位解析
+        # 并发从配置算，不从 provider 上读：`OcrFn` 的契约只有一个 `__call__`，
+        # 让并发也挂到 provider 上，等于要求每个假后端都实现一遍配置解析
         # ——测试里就撞到过 `'_CountingVlm' object has no attribute 'eff'`。
         workers=effective(settings).concurrency,
     )

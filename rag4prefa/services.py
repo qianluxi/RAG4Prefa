@@ -30,7 +30,7 @@ from .consistency import (
 )
 from .credentials import CredentialPool, UserCredentials
 from .db import connect, init_db
-from .ocr_profiles import effective
+from .ocr_setup import effective
 from .repo import (
     get_meta,
     get_vector_backend,
@@ -412,25 +412,24 @@ class Services:
         ensure_backend_current(self.conn, self.store)
 
     def _ocr_status(self) -> dict:
-        """扫描件识别的当前状态：开没开、哪一档、花不花钱、Key 从哪来。
+        """扫描件识别的当前状态：开没开、用哪个模型、能不能用、Key 从哪来。
 
-        **不报 Key 本身**，只报来源。这一条和 `verify` 的 `source` 字段是同一套词：
-        `user` 是用户自己填的，`server` 是 `.env` 里那把，`missing` 是这个档位没配 Key
-        ——那时扫描件会在解析开始前就报错，前端据此把提示写在前面，而不是等用户
-        拖进一个 20MB 的扫描件才说"不行"。
+        `ready` 是给前端用的判据：为假就表示"扫描件现在一定进不来"，界面要在
+        用户拖文件之前就把配置入口摆出来，而不是让他等一个 20MB 的扫描件跑完
+        再收到一句"不行"。
+
+        **不报 Key 本身**，只报来源，与 `verify` 的 `source` 同一套词：
+        `user` 是用户自己填的，`server` 是 `.env` 里那把，`missing` 是一把都没有。
         """
         eff = effective(self.settings)
         mode = self.settings.ocr_mode
         user_key = bool(self.user_creds and self.user_creds.ocr_key)
         return {
             "mode": mode,
-            "profile": eff.profile.id,
-            "label": eff.profile.label,
-            "note": eff.profile.note,
-            # 免费与否**只由档位决定**，与 Key 是谁的无关：免费档换任何人的 Key 都不计费
-            "free": eff.profile.free,
             "model": eff.model if mode != "off" else None,
-            "preset": eff.preset,
+            # 关掉与"开了但缺 Key"都会让扫描件进不来，但对用户是两件事：
+            # 一个是没开，一个是开不了。前端据此说不同的话。
+            "ready": bool(eff.ready and mode != "off"),
             "key_source": (
                 "user" if user_key else ("server" if eff.api_key else "missing")
             ),

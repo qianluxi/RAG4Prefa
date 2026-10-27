@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...domain import Section
-from ..ocr import EMPTY_MARK, OcrOptions
+from ..ocr import EMPTY_MARK, OCR_SETUP_HINT, OcrOptions
 from .headings import (
     MAX_LEVEL,
     MAX_SIZE_LEVELS,
@@ -708,17 +708,23 @@ def _ocr_events(
 
 
 def _scanned_message(pages: int, blank: tuple[int, ...], visible: int) -> str:
+    """扫描件进不来时说的话。
+
+    前缀带 `OCR_SETUP_HINT`：这句话的读者是"拖了一个文件进来的普通用户"，
+    前端据此弹配置引导。所以先讲**怎么办**，再讲技术细节——反过来他会以为
+    是自己文件坏了。
+    """
     where = ""
     if blank and len(blank) < pages:
         sample = "、".join(str(i + 1) for i in blank[:6])
         more = f" 等共 {len(blank)}" if len(blank) > 6 else ""
-        where = f"，其中第 {sample}{more} 页取不到文字"
+        where = f"，其中第 {sample}{more} 页完全没有文字层"
     return (
-        f"这个 pdf 几乎取不到文字（可提取字符 {visible} 个，共 {pages} 页{where}），"
-        "大概率是扫描件或图片导出的。当前未开启 OCR——把 R4P_OCR_MODE 设成 auto "
-        "就能让视觉模型逐页识别（还要配 R4P_OCR_BASE_URL / R4P_OCR_API_KEY / "
-        "R4P_OCR_MODEL，示例见 .env.example）；也可以换一份带文字层的版本。"
-        "文件未被入库，索引与归档没有任何改动。"
+        f"{OCR_SETUP_HINT}这个 pdf 没有文字层，是扫描件或图片导出的"
+        f"（共 {pages} 页，可提取字符 {visible} 个{where}），需要视觉模型逐页识别。"
+        "在界面「API 设置」里填一份视觉模型的 Key（服务端配置项 R4P_OCR_API_KEY，"
+        "按页计费，一页约 15 秒、24 页约 1.4 角），或把 R4P_OCR_MODE 设成 auto。"
+        "不配置视觉模型就无法读扫描件——这份文件没有被入库，索引与归档没有任何改动。"
     )
 
 

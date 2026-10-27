@@ -67,7 +67,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（8 467 行 Python + 1210 行单页 HTML + 7 626 行测试，均按非空行计）
+## 3. 代码地图（8 268 行 Python + 1182 行单页 HTML + 7 571 行测试，均按非空行计）
 
 行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
@@ -86,10 +86,10 @@ rag4prefa/
 ├── filters.py     88    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     28    系统提示词与引用格式
 ├── admin.py      159    项目/文档的查询与级联删除；含清空整库（先清索引后清事实）
-├── services.py   614    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
-├── credentials.py 355   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
-├── api.py        768    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度；含逐文件删除与清空
-├── ocr_profiles.py 123  **OCR 档位**：free / paid 各自的端点·模型·提示词·并发，以及"该用哪把 Key"
+├── services.py   612    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── credentials.py 348   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
+├── api.py        725    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度；含逐文件删除与清空
+├── ocr_setup.py     51  **扫描件识别的实际参数**（端点/模型/Key/并发）与"现在能不能用"；免费档已实测否决
 ├── processcontrol.py 168 **停服**：netstat 认 PID + `/api/health` 认身份，认不出就不杀
 ├── cli.py        476    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / delete-doc / clear / verify
 └── adapters/    1958    embed / llm / ocr / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
@@ -110,10 +110,10 @@ rag4prefa/
 - `adapters/ocr.py`：视觉模型识别单页（远端 OpenAI 兼容接口，不装本地模型）+ 两套提示词。
   `vlm` 是给通用视觉模型的 7 条中文规则，`document` 是给文档解析专用模型的原生指令（不带
   system）。它只负责「这一页的图 → Markdown」；「哪几页要识别」「Markdown 怎么折成事件流」
-  都在 `pdf.py`；「用哪一档」在 `ocr_profiles.py`，两者不混。
+  都在 `pdf.py`；「用哪把 Key、能不能用」在 `ocr_setup.py`，两者不混。
 
-前端只有一个文件 `rag4prefa/web/index.html`（1210 行，原生 JS，无构建步骤）。
-`tests/` 411 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+前端只有一个文件 `rag4prefa/web/index.html`（1182 行，原生 JS，无构建步骤）。
+`tests/` 392 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -1749,9 +1749,49 @@ RapidOCR 要落 ONNX 模型，都算"引入本地模型"；更要紧的是它们
 **6 条变异全部精确变红**（免费档回落到付费 Key / 用户 Key 一律写付费字段 / 统一缓存键格式 /
 给专用模型也套 7 条规则 / 并发不按档位取 / 角色查表退化成二分）。
 
-**诚实标注**：**免费档尚未在本机跑通过一次真实识别**——手头只有国际站 Key，而免费模型只在
-国内站。README 与 `.env.example` 里那两段的措辞都是"官方定价页与模型目录这么说"，
-不是"我验证过"。首个启用的人要先跑一份小文档试。
+**当时的诚实标注（当天晚上就被推翻）**：免费档尚未在本机跑通过一次真实识别。拿到国内站 Key
+之后的第一件事就是拿真实扫描件试——结论见下一轮。
+
+### 第二十八轮（2026-10-27 夜）：免费档实测否决，改为"不配置就不处理扫描件"
+
+**实测对象**：同一份 24 页扫描件（上海 250 号文），同一条代码路径，只换模型。
+
+| | 付费 `Qwen3-VL-8B` | 免费 `PaddleOCR-VL-1.5` |
+|---|---|---|
+| 24 页 | 3 分 39 秒（4 并发） | 17 分钟只完成 **8/24**（2 并发） |
+| 单页 | 15~18 秒 | 普通页 55 秒；公式页 **250 秒** |
+| 结果 | 23 页识别 + 1 页空白，48 节 / 57 块 | 8 页里 **2 页伪造内容** |
+
+两页坏得可复现：第 3 页是**纯中文正文**（无表格无公式），整页被编成英文的
+"The area of a circle is given by A = πr²"，**150 / 120 / 100 dpi 全部复现**；第 8 页退化成
+`1. 1. 2. 3. 4. …` 的数字重复并顶到 `max_tokens`。换 `deepseek-ai/DeepSeek-OCR` 更糟：
+一页满屏 `}}}]`，一页 0.9 秒只回 3 个字符。
+
+**判据**：不是"准不准"，而是**伪造正文会被切块、写向量、被引用成答案，而且不报错**。
+RAG 里这是最坏的一类失败——不崩溃，只是胡说。降 dpi、改提示词、压 `max_tokens` 都无效
+（三档分辨率输出同一段伪造内容），没有"调一调还能用"的空间。
+
+**产品决策（用户拍板）**：扫描件只走付费视觉模型；没配置就**引导去配**，用户不配就明确
+"无法处理扫描件"，绝不静默跳过。
+
+**代码变更**：
+- `ocr_profiles.py` → `ocr_setup.py`，只剩一条路径（`effective()` 合并服务端 Key 与用户 Key，
+  给出 `ready`）。删掉 `OCR_PROFILES` / `resolve_profile` / `key_for` / `PromptPreset` /
+  `DOCUMENT_PRESET` / `ocr_preset` / `ocr_profile` / `ocr_free_api_key`。
+- 删 `GET /api/ocr-profiles`、请求头 `X-R4P-OCR-Profile`、CLI `--ocr-profile`；前端去掉档位
+  下拉，页头标签改为 `OCR 就绪 · 模型` / `OCR 未配置` / `OCR 关闭` 三态。
+- **`OCR_SETUP_HINT = "【需要配置视觉模型】"`**：缺 Key 与扫描件被拒的消息都以它开头；
+  `/api/health` 多一个 `ocr.ready`；任务输出命中该前缀时，页面弹出「配置视觉模型」按钮直通设置。
+- 缓存键**刻意保持** `模型名#v2`——已有 `ocr_cache` 全部有效，不重复付费（有用例守着）。
+
+**验证**：392 passed、ruff 干净、`node --check` 通过；`test_ocr_setup.py` 11 项，
+**6 条变异全部精确变红**（`ready` 不看 Key / 两处文案去掉前缀 / `health` 忽略 `mode=off` /
+缓存键加后缀 / 前端提示语改字）。最后一条是"两个进程共享常量"的守卫——改一头忘了另一头，
+表现是"扫描件被拒了但引导不弹"。
+
+**教训**：①"能调通"≠"能用"，免费/便宜档必须拿**真实文档**逐页看输出，不能只看 200 OK；
+②一次跑不完先别认定卡死，逐页取证才知道是 250 秒一页；③`}}}]`、数字递增、跳语种的英文公式
+是三类不同的退化，共用同一个判据拦不住，只能靠"不配就不用"。
 
 ---
 

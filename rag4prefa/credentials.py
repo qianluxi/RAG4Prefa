@@ -30,14 +30,12 @@ from urllib.parse import unquote
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
 from .config import Settings
-from .ocr_profiles import resolve_profile
 
 HEADER_USER = "X-R4P-User"
 HEADER_EMBEDDING_KEY = "X-R4P-Embedding-Key"
 HEADER_LLM_KEY = "X-R4P-LLM-Key"
 HEADER_LLM_MODEL = "X-R4P-LLM-Model"
 HEADER_OCR_KEY = "X-R4P-OCR-Key"
-HEADER_OCR_PROFILE = "X-R4P-OCR-Profile"
 
 _MAX_NAME = 64
 _MAX_KEY = 4096
@@ -115,10 +113,9 @@ class UserCredentials:
     llm_key: str = ""
     llm_model: str = ""
     # 扫描件识别是第三个独立的付费环节（视觉模型），Key 与上面两把都不通用。
+    # 只传 Key，不传"用哪个模型"——模型由服务端锁死，理由见 `ocr_setup` 模块头：
+    # 换模型会让同一份文件重新切块、换一套 chunk_id，代价远大于收益。
     ocr_key: str = ""
-    # 选哪一档（free / paid）。它不涉及密钥，但也只能由浏览器传——
-    # 同一台服务可能同时有"零成本演示"和"高精度验收"两种用法。
-    ocr_profile: str = ""
 
     @property
     def has_keys(self) -> bool:
@@ -172,9 +169,9 @@ def from_headers(headers: Mapping[str, str]) -> UserCredentials | None:
     只给其中一个也合法：例如只带自己的 embedding Key（入库花自己的额度），
     问答仍走服务端的 LLM Key。缺哪个就沿用哪个，不做「必须成对」的强校验。
 
-    只带模型头 / 只带 OCR 档位同样合法：用服务端公共额度跑自选配置。所以判空要把
-    **每个**识别字段都看一遍，少看一个就会把「只切了档位」的请求当成未登录——
-    那样账单走服务端，界面上却显示已切换到免费档。
+    只带模型头 / 只带 OCR Key 同样合法：用服务端公共额度跑自选配置。所以判空要把
+    **每个**识别字段都看一遍，少看一个就会把「只填了 OCR Key」的请求当成未登录——
+    那样入库时服务端拿不到那把 Key，用户以为在用自己的额度，其实在花公共额度。
 
     用户名按 `encodeURIComponent` 的约定解码：HTTP 头只能是 ASCII，中文用户名
     不编码前端会直接抛 TypeError。纯英文名解码后不变，不影响 curl 用法。
@@ -183,12 +180,11 @@ def from_headers(headers: Mapping[str, str]) -> UserCredentials | None:
     llm_key = (headers.get(HEADER_LLM_KEY) or "").strip()[:_MAX_KEY]
     llm_model = (headers.get(HEADER_LLM_MODEL) or "").strip()[:_MAX_MODEL]
     ocr_key = (headers.get(HEADER_OCR_KEY) or "").strip()[:_MAX_KEY]
-    ocr_profile = (headers.get(HEADER_OCR_PROFILE) or "").strip()[:_MAX_MODEL]
-    if not any((embedding_key, llm_key, llm_model, ocr_key, ocr_profile)):
+    if not any((embedding_key, llm_key, llm_model, ocr_key)):
         return None
     raw_name = (headers.get(HEADER_USER) or "").strip()
     name = unquote(raw_name)[:_MAX_NAME] or "anonymous"
-    return UserCredentials(name, embedding_key, llm_key, llm_model, ocr_key, ocr_profile)
+    return UserCredentials(name, embedding_key, llm_key, llm_model, ocr_key)
 
 
 # Key 的形态能认出平台。只收能确定的：认不出来就交给厂商判断，不要瞎猜。
@@ -324,19 +320,16 @@ def account_blocked_hint(message: str, base_url: str) -> str:
     return f"（这不是 Key 的问题：{reason}。该 Key 已通过鉴权，只是账号状态不允许调用。{tail}）"
 
 
-def settings_for_ocr(settings: Settings, profile_id: str, key: str) -> Settings:
-    """把「选哪一档」和「用谁的 Key」落到 `Settings` 上。
+def settings_for_ocr(settings: Settings, key: str) -> Settings:
+    """把用户填的 OCR Key 落到 `Settings` 上。留空就沿用服务端那把。
 
     `CredentialPool.settings_for()` 与 `/api/credentials/verify` 共用这一处，
-    因为它有个容易写错的分支：用户填的 Key 必须落到**这一档要读的那个字段**上。
-    统一写进 `ocr_api_key` 的话，免费档的 `effective()` 取的是 `ocr_free_api_key`，
-    用户填的 Key 就静默失效了——界面上显示已填、实际仍在用服务端那把。
+    免得两边的回落规则长歪：一处漏了回落，就会出现"验证用服务端 Key 通过、
+    入库却说没配 Key"。
     """
-    name = resolve_profile(profile_id, settings.ocr_profile)
-    patch: dict[str, object] = {"ocr_profile": name}
-    if key:
-        patch["ocr_free_api_key" if name == "free" else "ocr_api_key"] = key
-    return settings.model_copy(update=patch)
+    if not key:
+        return settings
+    return settings.model_copy(update={"ocr_api_key": key})
 
 
 class CredentialPool:
@@ -361,15 +354,14 @@ class CredentialPool:
         return len(self._items)
 
     def settings_for(self, creds: UserCredentials) -> Settings:
-        """替换 Key、LLM 模型与 OCR 档位，**embedding 模型和维度一律沿用服务端配置**。
+        """替换 Key 与 LLM 模型，**embedding 模型和维度一律沿用服务端配置**。
 
         边界由用途决定：LLM 只读已检索到的片段、不参与建索引，换它不影响库里
         任何向量；embedding 模型换一个就是换一套语义坐标，必须锁死（见模块头）。
-
-        OCR 档位可以换，理由与 LLM 同向但不同因：它也不产生向量，而且输出还会
-        经 `ocr_cache`（键含模型名与提示词版本）落到固定的 `chunk_id` 上。
+        OCR 只影响"这次进来的文本长什么样"，也不产生向量，所以它能换 Key，
+        但**不能换模型**——换模型会让同一份文件重新切块、换一套 chunk_id，
+        而 `ocr_cache` 的键里带着模型名，等于整份重新付费识别一遍。
         """
-        profile_id = resolve_profile(creds.ocr_profile, self._settings.ocr_profile)
         base = self._settings.model_copy(
             update={
                 "embedding_api_key": creds.embedding_key or self._settings.embedding_api_key,
@@ -377,7 +369,7 @@ class CredentialPool:
                 "llm_model": resolve_llm_model(creds.llm_model, self._settings.llm_model),
             }
         )
-        return settings_for_ocr(base, profile_id, creds.ocr_key)
+        return settings_for_ocr(base, creds.ocr_key)
 
     def acquire(self, creds: UserCredentials) -> tuple[Embedder | None, LLM | None]:
         """拿到（必要时创建）该凭据对应的客户端。
