@@ -67,13 +67,13 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（8 037 行 Python + 1102 行单页 HTML + 7 332 行测试，均按非空行计）
+## 3. 代码地图（8 467 行 Python + 1210 行单页 HTML + 7 626 行测试，均按非空行计）
 
 行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
 ```
 rag4prefa/
-├── config.py      79    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读；含 `allow_server_key_fallback` 公网开关
+├── config.py     115    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读；含 `allow_server_key_fallback` 公网开关
 ├── domain.py      98    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
 ├── db.py         130    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache / ocr_cache）
 ├── repo.py       941    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
@@ -86,15 +86,16 @@ rag4prefa/
 ├── filters.py     88    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     28    系统提示词与引用格式
 ├── admin.py      159    项目/文档的查询与级联删除；含清空整库（先清索引后清事实）
-├── services.py   584    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
-├── credentials.py 304   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
-├── api.py        657    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度；含逐文件删除与清空
+├── services.py   614    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── credentials.py 355   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
+├── api.py        768    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度；含逐文件删除与清空
+├── ocr_profiles.py 123  **OCR 档位**：free / paid 各自的端点·模型·提示词·并发，以及"该用哪把 Key"
 ├── processcontrol.py 168 **停服**：netstat 认 PID + `/api/health` 认身份，认不出就不杀
 ├── cli.py        476    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / delete-doc / clear / verify
-└── adapters/    1882    embed / llm / ocr / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
+└── adapters/    1958    embed / llm / ocr / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
 ```
 
-`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 8 037 行（含 scripts 514）——`rag4prefa/` 本身是 7 523 行。
+`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 8 467 行（含 scripts 514）——`rag4prefa/` 本身是 7 953 行。
 
 解析层三个文件的分工，改动前先看清：
 
@@ -106,11 +107,13 @@ rag4prefa/
   → 编号定级」，另含页眉页脚剔除、跨块段落拼接、表格按 `|` 保留。
 - `parsers/__init__.py`：`parse_document(path)` 按扩展名分派，未知格式明确报错；
   `parse_document_report()` 额外返回 `ParseReport`（哪些页走了 OCR、哪些页没有文字层）。
-- `adapters/ocr.py`：视觉模型识别单页（远端 OpenAI 兼容接口，不装本地模型）+ 提示词版本。
-  它只负责「这一页的图 → Markdown」；「哪几页要识别」「Markdown 怎么折成事件流」都在 `pdf.py`。
+- `adapters/ocr.py`：视觉模型识别单页（远端 OpenAI 兼容接口，不装本地模型）+ 两套提示词。
+  `vlm` 是给通用视觉模型的 7 条中文规则，`document` 是给文档解析专用模型的原生指令（不带
+  system）。它只负责「这一页的图 → Markdown」；「哪几页要识别」「Markdown 怎么折成事件流」
+  都在 `pdf.py`；「用哪一档」在 `ocr_profiles.py`，两者不混。
 
-前端只有一个文件 `rag4prefa/web/index.html`（1102 行，原生 JS，无构建步骤）。
-`tests/` 356 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+前端只有一个文件 `rag4prefa/web/index.html`（1210 行，原生 JS，无构建步骤）。
+`tests/` 411 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -1687,6 +1690,68 @@ RapidOCR 要落 ONNX 模型，都算"引入本地模型"；更要紧的是它们
 
 **代价要说清**：一页 16~18 秒、一次调用一份钱，`R4P_OCR_MAX_PAGES`（默认 200）是账单闸门，
 超了直接拒绝而不是先跑一半。默认 `off`，开启后缺 Key 会在装配阶段就报错（不是等到第 1 页）。
+
+### 第二十七轮（2026-10-27 傍晚）：OCR 档位（免费 / 付费可切换）
+
+**动机来自一个产品问题**：系统要面向"不愿意付费的普通用户"。OCR 是全流程里唯一按次计费的
+环节（embedding 一次入库、LLM 每问一次但很便宜），所以它是"零成本能不能成立"的关键。
+
+**先查证再动手**（这类政策会变，不能凭记忆）：硅基流动已上线两个 **¥0** 的文档解析模型
+——`PaddlePaddle/PaddleOCR-VL-1.5`（0.9B，OmniDocBench v1.5 94.5%）与
+`deepseek-ai/DeepSeek-OCR`（3B，8K 上下文）；智谱 `glm-4v-flash` 也永久免费（并发 1~2、
+高峰 429）。但**免费档放在国内站**，实测现有国际站 Key 打国内站返回
+`30014 Token is invalid`——是"站点不认这把 Key"，不是"模型不存在"。
+
+**为什么 OCR 能换模型而 embedding 不能**：embedding 换模型 = 换一套语义坐标，同一集合混两套
+向量会让检索"看着正常但不可信"，必须全库唯一。OCR **不产生向量**，它只把像素变成文本，
+文本再走同一条切块与向量化流程。真正要防的是「同一份文档两次入库得到不同 `chunk_id`」，
+那由 `ocr_cache`（键含模型名 + 提示词版本）挡住，不靠锁死模型。这条写进 `ocr_profiles.py`
+模块头，与 `credentials.py` 模块头形成对照。
+
+**两档的分工**（`ocr_profiles.py`）：
+
+| 档位 | 端点 / 模型 | 来源 | 提示词 |
+|---|---|---|---|
+| `free` | 国内站 `PaddleOCR-VL-1.5`，并发 2 | **代码常量**，不读 `.env` | `document`（原生指令，不带 system） |
+| `paid` | `.env` 的 `R4P_OCR_*` | 全部来自 `.env` | `vlm`（那套 7 条中文规则） |
+
+免费档的端点写死在代码里，不是为了省事：那是"这一步零成本"的全部依据（`free-*` 计价项 +
+专用模型）。放进 `.env` 迟早被人改成付费模型，界面上却还挂着"免费"两个字。
+
+**四条踩过的坑**：
+
+1. **档位不能写回 `Settings`**。最初想用 `model_post_init` 把免费档的端点覆盖到配置里，
+   问题是 `Settings` 只有一份——覆盖之后同进程再切回付费档，就取不回 `.env` 里那个国际站
+   地址了。改成「档位解析集中在 `effective(settings)`，`Settings` 始终保留原值」，
+   两档配置同时活着。
+2. **免费档的 Key 必须单独放**（`R4P_OCR_FREE_API_KEY`），且**不回落**到 `R4P_OCR_API_KEY`。
+   回落的结果是国际站 Key 打到国内站 → `30014`，与「Key 被删」同一个错误码，用户会去
+   反复重建一把本来就没错的 Key。
+3. **用户填的 Key 要落到这一档读的那个字段**。统一写 `ocr_api_key` 的话，免费档的
+   `effective()` 读的是 `ocr_free_api_key`，用户填的 Key 静默失效——界面显示"已保存"、
+   请求仍在用服务端那把。抽成 `settings_for_ocr()`，`CredentialPool` 与 `verify` 共用。
+4. **`user_key()` 的角色查表不能是二分**。原来是
+   `creds.embedding_key if role=="embedding" else creds.llm_key`，加第三个角色后
+   `else` 分支把 OCR 读成了 LLM——strict 模式查 OCR Key 会读到 LLM 那把，
+   "用户没填"被误判成"填了"。改成 `_ROLE_FIELDS` 映射。
+
+**缓存键刻意不一致**：`paid` 保持 `模型名#v2`（旧 `ocr_cache` 全部有效，不重复付费），
+`free` 用 `模型名#document-d1`。两档输出格式完全不同，绝不能共用一份缓存——共用的话切档后
+会读到"格式对不上的旧文本"，而 `verify` 查不出来（它只比 id 集合自洽，不比内容是不是这一版）。
+
+**接口与界面**：新增 `/api/ocr-profiles`；`/api/credentials/verify` 多返回 `ocr` 一项
+（缺 Key 报 `ok:false, source:missing`，不假装通过）；`health.ocr` 报
+`profile / label / free / preset / key_source`；页头加一个 `OCR 免费档 / 付费档 / 关闭` 的
+标签（点它进设置），因为它决定"这次要花多少钱"，不该藏在抽屉里。新增请求头
+`X-R4P-OCR-Key`、`X-R4P-OCR-Profile`，与既有凭据同一条规矩：浏览器保管、服务端不落库。
+
+**验证**：411 passed、ruff 干净、前端 `node --check` 通过；新增 `test_ocr_profiles.py` 30 项，
+**6 条变异全部精确变红**（免费档回落到付费 Key / 用户 Key 一律写付费字段 / 统一缓存键格式 /
+给专用模型也套 7 条规则 / 并发不按档位取 / 角色查表退化成二分）。
+
+**诚实标注**：**免费档尚未在本机跑通过一次真实识别**——手头只有国际站 Key，而免费模型只在
+国内站。README 与 `.env.example` 里那两段的措辞都是"官方定价页与模型目录这么说"，
+不是"我验证过"。首个启用的人要先跑一份小文档试。
 
 ---
 

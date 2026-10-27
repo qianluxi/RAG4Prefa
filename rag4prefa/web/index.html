@@ -153,6 +153,7 @@
   <h1>RAG4Prefa</h1>
   <span class="sub">课题文档知识库 · 混合检索 + 流式问答</span>
   <span id="health" class="badge">检查中…</span>
+  <span id="ocr-badge" class="who" title="扫描件识别档位（点击修改）">OCR…</span>
   <span id="who" class="who" title="点击配置自己的 API Key">公共密钥</span>
   <button class="ghost" id="toggle-settings">API 设置</button>
   <button class="ghost" id="toggle-admin">项目管理</button>
@@ -249,6 +250,20 @@
       对话模型不参与建索引，换它只影响措辞与推理深度。
     </p>
 
+    <label for="su-ocr-profile" style="margin-top:10px">扫描件识别档位</label>
+    <select id="su-ocr-profile"></select>
+    <p class="kbd" id="su-ocr-note" style="margin-top:6px;line-height:1.7">
+      正在读取档位清单…
+    </p>
+    <label for="su-ocr">OCR Key（选填，可留空沿用服务端配置）</label>
+    <input id="su-ocr" type="password" placeholder="sk-..." autocomplete="off" />
+    <p class="kbd" style="margin-top:6px;line-height:1.7">
+      免费档读的是<strong>硅基流动国内站（siliconflow.cn）</strong>签发的 Key，
+      与 embedding 那栏国际站的 Key <strong>不通用</strong>；
+      付费档读的是 <code>R4P_OCR_API_KEY</code>。
+      这一栏留空 = 用服务端配好的那把。
+    </p>
+
     <div class="row" style="margin-top:12px">
       <button class="primary" id="save-creds">保存并验证</button>
       <button class="ghost" id="clear-creds">清除当前用户</button>
@@ -317,6 +332,10 @@ function authHeaders() {
   };
   // 没选模型就不带这个头，服务端回落到默认模型——空串会被当成"指定了空模型"
   if (creds.llmModel) headers["X-R4P-LLM-Model"] = creds.llmModel;
+  // OCR 档位必须每次请求都带：它决定这次入库用免费模型还是付费模型。
+  // 只在设置面板里记着、请求时不带的话，界面显示"免费档"，实际仍按 .env 跑付费档。
+  if (creds.ocrProfile) headers["X-R4P-OCR-Profile"] = creds.ocrProfile;
+  if (creds.ocrKey) headers["X-R4P-OCR-Key"] = creds.ocrKey;
   return headers;
 }
 
@@ -365,6 +384,7 @@ async function loadHealth() {
       ? `就绪 · ${backend}`
       : `${issues.length ? "索引异常" : "配置缺失"} · ${backend}`;
     badge.classList.toggle("err", !h.ok);
+    renderOcrBadge(h.ocr);
     if (issues.length) $("status").textContent = issues.join("；");
     else if (h.notes && h.notes.length) $("status").textContent = h.notes.join("；");
   } catch (err) {
@@ -965,6 +985,33 @@ function syncWho() {
   who.classList.toggle("on", !!creds);
 }
 
+/* 页头的 OCR 档位标签。
+   扫描件识别只在入库时发生，但"这次要花多少钱"是用户最该在动手前知道的一件事，
+   所以放页头而不是藏在设置抽屉里。没有扫描件需求的人也能一眼看出它现在是关的。 */
+function renderOcrBadge(ocr) {
+  const node = $("ocr-badge");
+  if (!node) return;
+  if (!ocr || ocr.mode === "off") {
+    node.textContent = "OCR 关闭";
+    node.classList.remove("on");
+    node.title =
+      "扫描件识别已关闭（R4P_OCR_MODE=off）：没有文字层的 PDF 会因取不到文字被拒。" +
+      "点这里可以去设置里选档位，但还要管理员在 .env 里开启才生效。";
+    return;
+  }
+  const tier = ocr.free ? "免费档" : "付费档";
+  node.textContent = `OCR ${tier}`;
+  // 免费档标绿，与"当前用户"那个标签同一个含义：状态良好且不额外花钱
+  node.classList.toggle("on", !!ocr.free);
+  const keyHint =
+    ocr.key_source === "missing"
+      ? "\n⚠ 这一档没有配 Key：扫描件会在解析开始前报错，不会静默丢页。"
+      : ocr.key_source === "user"
+        ? "\nKey：你自己填的"
+        : "\nKey：服务端公共";
+  node.title = `${ocr.label || tier}（${ocr.model || ""}）${keyHint}\n${ocr.note || ""}\n点击修改`;
+}
+
 function renderServerModels(models, serverKeyFallback) {
   if (!models) return;
   const dim = models.embedding_dim ? `${models.embedding_dim} 维` : "维度自动探测";
@@ -1024,9 +1071,13 @@ function fillCredForm(name) {
   $("su-name").value = name;
   $("su-embed").value = user.embeddingKey || "";
   $("su-llm").value = user.llmKey || "";
+  $("su-ocr").value = user.ocrKey || "";
   // 旧版本存下来的用户没有 llmModel，保持下拉的当前选中项即可
   if (user.llmModel) $("su-llm-model").value = user.llmModel;
+  // 同理，没有 ocrProfile 的用户保持服务端默认档，不要强行改成 free
+  if (user.ocrProfile) $("su-ocr-profile").value = user.ocrProfile;
   showModelNote();
+  showOcrNote();
 }
 
 function showModelNote() {
@@ -1058,6 +1109,45 @@ async function loadLLMModels() {
   showModelNote();
 }
 
+function showOcrNote() {
+  const select = $("su-ocr-profile");
+  const option = select.selectedOptions[0];
+  if (!option || !option.dataset.note) {
+    $("su-ocr-note").textContent = "档位清单加载失败，将使用服务端默认档。";
+    return;
+  }
+  const model = option.dataset.model ? `当前模型：${option.dataset.model}。` : "";
+  $("su-ocr-note").textContent = `${option.dataset.note}${model}`;
+}
+
+async function loadOCRProfiles() {
+  const res = await fetch("/api/ocr-profiles");
+  const data = await res.json();
+  const select = $("su-ocr-profile");
+  select.innerHTML = "";
+  for (const option of data.options) {
+    const node = document.createElement("option");
+    node.value = option.id;
+    node.textContent = option.label;
+    node.dataset.note = option.note;
+    node.dataset.model = option.model;
+    if (option.selected) node.selected = true;
+    select.appendChild(node);
+  }
+  select.addEventListener("change", showOcrNote);
+  // 已保存用户的档位可能因为服务端下线某档而失效，回填时保留但由后端收敛
+  const creds = currentCreds();
+  if (creds && creds.ocrProfile) select.value = creds.ocrProfile;
+  showOcrNote();
+  // 服务端关掉 OCR 时，档位存了也不会生效。这句话必须在用户选之前就出现，
+  // 否则他会以为"选了免费档，扫描件就能进了"。
+  if (data.mode === "off") {
+    $("su-ocr-note").textContent =
+      `服务端当前关闭了扫描件识别（R4P_OCR_MODE=off），档位会存下来，` +
+      `但要管理员开启后才生效。\n${$("su-ocr-note").textContent}`;
+  }
+}
+
 function describeCheck(result) {
   const line = (item, okText) => {
     // 留空的项会回落到服务端 Key，必须标出来，否则用户以为验的是自己的额度
@@ -1067,7 +1157,13 @@ function describeCheck(result) {
     // 换了模型却不显示出来，用户无从判断到底跑的是哪一个
     return `${okText} 可用（${who}，${item.model}）`;
   };
-  return [line(result.embedding, "embedding"), line(result.llm, "LLM")].join("\n");
+  const rows = [line(result.embedding, "embedding"), line(result.llm, "LLM")];
+  // OCR 是可选项：没配就是"用不了扫描件"，不影响检索与问答，所以单独一行、单独判
+  if (result.ocr) {
+    const tier = result.ocr.free ? "免费档" : "付费档";
+    rows.push(line(result.ocr, `OCR · ${tier}`));
+  }
+  return rows.join("\n");
 }
 
 async function saveCreds() {
@@ -1075,6 +1171,8 @@ async function saveCreds() {
   const embeddingKey = $("su-embed").value.trim();
   const llmKey = $("su-llm").value.trim();
   const llmModel = $("su-llm-model").value || "";
+  const ocrKey = $("su-ocr").value.trim();
+  const ocrProfile = $("su-ocr-profile").value || "";
   if (!name) return alert("请填写用户名");
   // 不填 Key 也是合法的：用服务端公共额度跑自选模型。后端 `from_headers` 早就支持
   // 只带模型头，这里再硬要求填 Key，就会出现"后端能做的事，界面做不了"。
@@ -1090,6 +1188,8 @@ async function saveCreds() {
         embedding_key: embeddingKey,
         llm_key: llmKey,
         llm_model: llmModel,
+        ocr_key: ocrKey,
+        ocr_profile: ocrProfile,
       }),
     });
     renderServerModels(result.server);
@@ -1104,13 +1204,19 @@ async function saveCreds() {
       embeddingKey,
       llmKey,
       llmModel: result.server.llm_model,
+      // OCR 档位与 Key 都存下来：档位决定"用免费还是付费模型"，
+      // 光存 Key 不存档位，下次回来会回到服务端默认档，Key 那份也就不对了
+      ocrKey,
+      ocrProfile: ocrProfile || (result.ocr && result.ocr.profile) || "",
       savedAt: new Date().toISOString(),
     };
     store.current = name;
     saveCredStore(store);
     syncWho();
     renderUserList();
-    const quotaNote = embeddingKey || llmKey ? "" : "\n（未填 Key：问答与入库都走服务端公共额度）";
+    const quotaNote = embeddingKey || llmKey || ocrKey
+      ? ""
+      : "\n（未填 Key：问答与入库都走服务端公共额度）";
     $("su-result").textContent =
       `已保存并切换为「${name}」\n${describeCheck(result)}${quotaNote}`;
     await loadHealth();
@@ -1132,6 +1238,7 @@ function clearCreds() {
   store.current = "";
   saveCredStore(store);
   $("su-name").value = ""; $("su-embed").value = ""; $("su-llm").value = "";
+  $("su-ocr").value = "";
   $("su-result").textContent = `已清除「${name}」，后续请求使用服务端公共 Key`;
   syncWho();
   renderUserList();
@@ -1171,6 +1278,7 @@ $("clear-all").onclick = clearAll;
 
 $("toggle-settings").onclick = openSettings;
 $("who").onclick = openSettings;
+$("ocr-badge").onclick = openSettings;
 $("close-settings").onclick = () => $("settings").classList.remove("open");
 $("close-sources").onclick = closeSources;
 $("save-creds").onclick = saveCreds;
@@ -1182,6 +1290,10 @@ loadProjects();
 // 拉不到清单不该挡住主流程：下拉空着就等于"用服务端默认模型"
 loadLLMModels().catch(() => {
   $("su-llm-note").textContent = "模型清单加载失败，将使用服务端默认模型。";
+});
+// 同理：档位清单拉不到就用服务端默认档，扫描件该能进的还是能进
+loadOCRProfiles().catch(() => {
+  $("su-ocr-note").textContent = "档位清单加载失败，将使用服务端默认档。";
 });
 </script>
 </body>

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from . import admin, ask, concurrency, consistency, ingest, repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
+from .adapters.ocr import VlmOcr
 from .adapters.parsers import SUPPORTED_SUFFIXES, explain_unsupported
 from .adapters.vectors import BackendUnavailable, StoreRef
 from .concurrency import MaintenanceBusy
@@ -29,8 +30,10 @@ from .credentials import (
     missing_roles,
     platform_mismatch,
     resolve_llm_model,
+    settings_for_ocr,
 )
 from .domain import Filter, JobState
+from .ocr_profiles import OCR_PROFILES, effective, key_for, resolve_profile
 from .services import Services, build_services
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -61,6 +64,9 @@ class CredentialCheck(BaseModel):
     llm_key: str = Field(default="", max_length=4096)
     # 只影响这一项的探测目标；embedding 模型不接受外部指定（见 credentials 模块头）
     llm_model: str = Field(default="", max_length=128)
+    # 扫描件识别是第三个独立环节：Key 与上面两把不通用，档位决定探测哪个端点
+    ocr_key: str = Field(default="", max_length=4096)
+    ocr_profile: str = Field(default="", max_length=16)
 
 
 CLEAR_CONFIRM = "清空"
@@ -237,6 +243,34 @@ def create_app(services: Services | None = None) -> FastAPI:
             "embedding_fixed": True,
         }
 
+    @app.get("/api/ocr-profiles")
+    def ocr_profile_list(request: Request) -> dict:
+        """扫描件识别的可选档位。
+
+        与 `/api/llm-models` 同一套约定：清单由服务端给，前端只渲染。
+        差别是这里**不需要**逐个真调过——档位是配置，不是模型可用性证明；
+        能不能调通由 `/api/credentials/verify` 的 `ocr` 项回答。
+        """
+        services = svc(request)
+        current = effective(services.settings).profile.id
+        return {
+            "current": current,
+            "mode": services.settings.ocr_mode,
+            "options": [
+                {
+                    "id": profile.id,
+                    "label": profile.label,
+                    "note": profile.note,
+                    "free": profile.free,
+                    # 每档各自算自己的模型名：两档用的是完全不同的模型，
+                    # 只回一个 `effective()` 会让没选中那一档显示成同一个名字
+                    "model": effective(services.settings, profile.id).model,
+                    "selected": profile.id == current,
+                }
+                for profile in OCR_PROFILES.values()
+            ],
+        }
+
     @app.post("/api/credentials/verify")
     def verify_credentials(request: Request, payload: CredentialCheck) -> dict:
         """用给定的 Key 各试调一次，把"哪一项不通、为什么"说清楚。
@@ -273,6 +307,7 @@ def create_app(services: Services | None = None) -> FastAPI:
         secrets = (
             payload.embedding_key,
             payload.llm_key,
+            payload.ocr_key,
             base.embedding_api_key,
             base.llm_api_key,
         )
@@ -293,6 +328,16 @@ def create_app(services: Services | None = None) -> FastAPI:
         llm_source = (
             "user" if payload.llm_key.strip() else ("missing" if strict_keys else "server")
         )
+        # 档位先落定：源标签要看的是"这一档该读的那个字段"有没有值，
+        # 而免费档读 R4P_OCR_FREE_API_KEY，与付费档不是同一把。
+        ocr_profile_id = resolve_profile(payload.ocr_profile, base.ocr_profile)
+        ocr_profile = OCR_PROFILES[ocr_profile_id]
+        ocr_key = payload.ocr_key.strip() or ("" if strict_keys else key_for(base, ocr_profile_id))
+        ocr_source = (
+            "user"
+            if payload.ocr_key.strip()
+            else ("missing" if (strict_keys or not ocr_key) else "server")
+        )
         result: dict = {
             # 前端要拿它提示"你的 Key 必须属于同一家服务商"——embedding 模型由服务端统一决定
             "server": {
@@ -305,6 +350,15 @@ def create_app(services: Services | None = None) -> FastAPI:
             "user": payload.username.strip() or "anonymous",
             "embedding": {"ok": False, "source": emb_source, "error": no_key_error},
             "llm": {"ok": False, "source": llm_source, "error": no_key_error},
+            # OCR 是第三项，默认「未配置」而不是「通过」：没验过的项不能报 ok
+            "ocr": {
+                "ok": False,
+                "source": ocr_source,
+                "profile": ocr_profile_id,
+                "label": ocr_profile.label,
+                "free": ocr_profile.free,
+                "error": no_key_error,
+            },
         }
 
         # 先做本地预检：明显填错平台的 Key 不必真发请求，也免得把厂商那句
@@ -371,6 +425,66 @@ def create_app(services: Services | None = None) -> FastAPI:
             finally:
                 if llm is not None:
                     llm.close()
+
+        # ── OCR ──
+        # 这一项验的是「这个档位 + 这把 Key 能不能真发出去一次请求」。
+        # 与上面两项不同的是：它只有真的送一张图才知道通不通，所以用 16×16 白图探一次。
+        if ocr_key:
+            probe_settings = settings_for_ocr(base, ocr_profile_id, ocr_key)
+            ocr_eff = effective(probe_settings, ocr_profile_id, ocr_key)
+            # 免费档的端点写在代码里、Key 在国内站，最典型的错误是把国际站的 Key 填进来
+            # ——那种情况真发请求也能查出来（30014），但本地先判一次零成本，还能把
+            # 两个域名直接摆出来。
+            ocr_hint = platform_mismatch(ocr_key, ocr_eff.base_url, label="OCR")
+            if ocr_hint:
+                result["ocr"] = {
+                    "ok": False,
+                    "source": ocr_source,
+                    "profile": ocr_profile_id,
+                    "label": ocr_profile.label,
+                    "free": ocr_profile.free,
+                    "model": ocr_eff.model,
+                    "error": ocr_hint,
+                }
+            else:
+                provider: VlmOcr | None = None
+                try:
+                    provider = VlmOcr(probe_settings)
+                    reply = provider.probe()
+                    result["ocr"] = {
+                        "ok": True,
+                        "source": ocr_source,
+                        "profile": ocr_profile_id,
+                        "label": ocr_profile.label,
+                        "free": ocr_profile.free,
+                        "model": ocr_eff.model,
+                        "preset": ocr_eff.preset,
+                        "base_url": ocr_eff.base_url,
+                        # 探测图是纯白的，识别结果本应为空；能拿到响应就说明链路通
+                        "probe_chars": len(reply),
+                    }
+                except Exception as exc:  # noqa: BLE001 - 单项失败不影响另外两项
+                    message = _redact(f"{type(exc).__name__}: {exc}", *secrets)
+                    # 400 是**正常**的：专用解析模型只吃真实页面，一张 16×16 白图它有权拒绝。
+                    # 这与 401 完全不同——Key 已经过了鉴权。不说这一条，用户会把
+                    # 「探测图被拒」读成「我的 Key 不对」，然后反复重建一把没错的 Key。
+                    if "400" in message and "401" not in message:
+                        message += (
+                            "\n（Key 已通过鉴权：模型拒绝的是这张 64×64 的探测图，不是你的 Key。"
+                            "真正的识别要送整页图片，建议直接拿一份扫描件试。）"
+                        )
+                    result["ocr"] = {
+                        "ok": False,
+                        "source": ocr_source,
+                        "profile": ocr_profile_id,
+                        "label": ocr_profile.label,
+                        "free": ocr_profile.free,
+                        "model": ocr_eff.model,
+                        "error": _explain_error(message, ocr_eff.base_url, ocr_key),
+                    }
+                finally:
+                    if provider is not None:
+                        provider.close()
 
         return result
 

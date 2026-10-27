@@ -21,6 +21,10 @@ LAST_AUTH: dict[str, str] = {}
 # 界面上显示已切换、实际还在跑旧模型，靠这个断言。
 LAST_MODEL: dict[str, str] = {}
 
+# 记录 chat 请求最后一次收到的 messages 角色序列（只要 role，不留内容）。
+# OCR 两档的提示词形状不同——专用解析模型不带 system——这件事只能从请求本身看出来。
+LAST_ROLES: dict[str, list[str]] = {}
+
 # 以该前缀开头的 Key 一律 401，用来测"错 Key 会被明确拒绝"
 REJECT_PREFIX = "bad-"
 
@@ -28,6 +32,7 @@ REJECT_PREFIX = "bad-"
 def reset() -> None:
     LAST_AUTH.clear()
     LAST_MODEL.clear()
+    LAST_ROLES.clear()
 
 
 def _embed(text: str) -> list[float]:
@@ -88,6 +93,9 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path.endswith("/chat/completions"):
             LAST_MODEL[self.path] = body.get("model", "")
+            LAST_ROLES[self.path] = [
+                str(m.get("role", "")) for m in (body.get("messages") or [])
+            ]
             if body.get("stream"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")

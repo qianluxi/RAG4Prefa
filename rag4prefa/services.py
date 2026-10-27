@@ -30,6 +30,7 @@ from .consistency import (
 )
 from .credentials import CredentialPool, UserCredentials
 from .db import connect, init_db
+from .ocr_profiles import effective
 from .repo import (
     get_meta,
     get_vector_backend,
@@ -410,6 +411,31 @@ class Services:
             )
         ensure_backend_current(self.conn, self.store)
 
+    def _ocr_status(self) -> dict:
+        """扫描件识别的当前状态：开没开、哪一档、花不花钱、Key 从哪来。
+
+        **不报 Key 本身**，只报来源。这一条和 `verify` 的 `source` 字段是同一套词：
+        `user` 是用户自己填的，`server` 是 `.env` 里那把，`missing` 是这个档位没配 Key
+        ——那时扫描件会在解析开始前就报错，前端据此把提示写在前面，而不是等用户
+        拖进一个 20MB 的扫描件才说"不行"。
+        """
+        eff = effective(self.settings)
+        mode = self.settings.ocr_mode
+        user_key = bool(self.user_creds and self.user_creds.ocr_key)
+        return {
+            "mode": mode,
+            "profile": eff.profile.id,
+            "label": eff.profile.label,
+            "note": eff.profile.note,
+            # 免费与否**只由档位决定**，与 Key 是谁的无关：免费档换任何人的 Key 都不计费
+            "free": eff.profile.free,
+            "model": eff.model if mode != "off" else None,
+            "preset": eff.preset,
+            "key_source": (
+                "user" if user_key else ("server" if eff.api_key else "missing")
+            ),
+        }
+
     def health(self) -> dict:
         # 后端条数是"索引 vs 归档"交叉校验的一半，读不到就如实说读不到，
         # 不要拿 None 当 0 —— 那会把"查不了"伪装成"索引是空的"。
@@ -477,10 +503,10 @@ class Services:
             "credentials_missing": self.settings.missing_credentials(),
             # 扫描件能不能入库，取决于这一组开没开。不报出来的话，用户只会看到
             # "这个 pdf 几乎取不到文字"，然后自己去翻 .env。
-            "ocr": {
-                "mode": self.settings.ocr_mode,
-                "model": self.settings.ocr_model if self.settings.ocr_mode != "off" else None,
-            },
+            #
+            # 档位必须一起报：同样写着 mode=auto，跑的可能是一页一分钱的付费模型，
+            # 也可能是一分钱不花的免费模型。前端拿 `free` 决定要不要显示「零成本」。
+            "ocr": self._ocr_status(),
             # 前端要拿它提示"你自己的 Key 必须属于同一家服务商"——模型由服务端统一决定
             "models": {
                 "embedding_model": self.settings.embedding_model,

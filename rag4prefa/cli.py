@@ -19,6 +19,7 @@ from .config import get_settings
 from .consistency import IndexMismatch
 from .db import init_db
 from .domain import Filter, JobState
+from .ocr_profiles import resolve_profile
 from .processcontrol import stop_port
 from .services import build_services
 
@@ -111,6 +112,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     # 缺 Key 要在建任务之前就报出来，别留下一条"看起来导过了"的失败记录。
     if getattr(args, "ocr", None):
         services.settings.ocr_mode = args.ocr
+    # 档位同样只覆盖本次运行。`ocr_profile` 是 Literal 字段，直接赋非法值会留在
+    # 对象上直到某个地方读它才炸，所以先收敛再写。
+    if getattr(args, "ocr_profile", None):
+        services.settings.ocr_profile = resolve_profile(args.ocr_profile)
     # 与 API 上传同一条准入：后端没确认时不许动事实与索引。放在建任务之前，
     # 被拒绝时库里连一条"看起来导过了"的记录都不会留下。
     try:
@@ -480,6 +485,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="临时覆盖 R4P_OCR_MODE：auto 只识别没有文字层的页；all 整份重做；"
         "off 关掉。给扫描件补内容时用，改完的结论不会写回 .env",
+    )
+    p.add_argument(
+        "--ocr-profile",
+        choices=("free", "paid"),
+        default=None,
+        help="临时覆盖 R4P_OCR_PROFILE：free 走国内站免费文档解析模型（零成本，需 "
+        "R4P_OCR_FREE_API_KEY），paid 走 .env 里那组付费配置。"
+        "两档的缓存键不同，同一份文件切档会重新识别一遍",
     )
     p.set_defaults(func=cmd_ingest)
 

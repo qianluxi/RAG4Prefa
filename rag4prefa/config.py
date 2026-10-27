@@ -59,9 +59,18 @@ class Settings(BaseSettings):
     # 与 embedding / LLM 是三次独立的三方调用，Key 不通用，所以单独一组配置。
     # `off` 时整条 OCR 路径不加载，解析行为与之前完全一致。
     ocr_mode: Literal["off", "auto", "all"] = "off"
+    # 档位。`paid` 用下面这组配置（换厂商只改这里）；`free` 用代码内置的
+    # 「国内站 PaddleOCR-VL」，端点与模型不读这里——理由见 `ocr_profiles` 模块头。
+    ocr_profile: Literal["free", "paid"] = "paid"
     ocr_base_url: str = ""
     ocr_api_key: str = ""
+    # 免费档专用 Key。硅基流动国内站与国际站是两套独立账号，一把 Key 配不了两站，
+    # 所以不能与 `ocr_api_key` 合并，也不能回落（否则国际站 Key 打到国内站报 30014）。
+    ocr_free_api_key: str = ""
     ocr_model: str = "Qwen/Qwen3-VL-8B-Instruct"
+    # 提示词档：`vlm` 是给通用视觉模型的一组中文规则（本项目实测调出来的）；
+    # `document` 是给文档解析专用模型的短指令，它自带版面理解，多余规则反而干扰。
+    ocr_preset: Literal["vlm", "document"] = "vlm"
     ocr_dpi: int = 150
     # 单份文档最多识别这么多页。不是性能限制，是**账单闸门**：一份 300 页的扫描件
     # 按 18s/页 要跑一个半小时、付三百次调用，而用户很可能只是拖错了文件。
