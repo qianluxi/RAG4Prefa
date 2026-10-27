@@ -67,7 +67,7 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（7 578 行 Python + 952 行单页 HTML + 6 505 行测试，均按非空行计）
+## 3. 代码地图（7 767 行 Python + 952 行单页 HTML + 6 766 行测试，均按非空行计）
 
 行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
@@ -86,14 +86,15 @@ rag4prefa/
 ├── filters.py     88    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
 ├── prompts.py     28    系统提示词与引用格式
 ├── admin.py       84    项目/文档的查询与级联删除
-├── services.py   564    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
+├── services.py   584    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
 ├── credentials.py 304   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
 ├── api.py        557    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度
-├── cli.py        369    init / serve / doctor / ingest / reindex / rebuild / ask / projects / delete / verify；目录导入逐文件报被跳过项
+├── processcontrol.py 168 **停服**：netstat 认 PID + `/api/health` 认身份，认不出就不杀
+├── cli.py        394    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / verify
 └── adapters/    1721    embed / llm / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
 ```
 
-`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 7 309 行——`rag4prefa/` 本身是 6 795 行。
+`scripts/` 另有 514 行（`eval.py` 419 + `relabel_eval.py` 195），合计非空 7 767 行——`rag4prefa/` 本身是 7 253 行。
 
 解析层三个文件的分工，改动前先看清：
 
@@ -105,8 +106,8 @@ rag4prefa/
   → 编号定级」，另含页眉页脚剔除、跨块段落拼接、表格按 `|` 保留。
 - `parsers/__init__.py`：`parse_document(path)` 按扩展名分派，未知格式明确报错。
 
-前端只有一个文件 `rag4prefa/web/index.html`（741 行，原生 JS，无构建步骤）。
-`tests/` 277 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+前端只有一个文件 `rag4prefa/web/index.html`（952 行，原生 JS，无构建步骤）。
+`tests/` 344 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -536,6 +537,20 @@ API 一览（实现见 `api.py`，说明见 README）：
     - 项目详情的摘要生成：判据不能用 `user_label`（**用户名对任何请求都非空**，只传
       模型头也是 `anonymous`），要用 `Services.llm_billable`。
     测试断言必须看"厂商实际收到的 Authorization / 有没有发生调用"，不能只看状态码。
+
+18. **关窗口 ≠ 关服务，停服要先认身份再杀**（2026-10-27 现场反馈）。用户点黑窗口右上角
+    的 X 后，再双击 `start.bat` 仍然报"端口已在监听"，而"去那个窗口按 Ctrl+C"已经做不
+    到了——窗口没了。实测原因：`.venv\Scripts\python.exe` 是**启动器**（1 个线程、6 MB），
+    真正监听端口的是它拉起的子进程（`C:\Users\...\python.exe`，16 线程、65 MB）；杀子进程
+    后启动器会自行退出，**杀启动器不一定带走子进程**。
+    - 判据一"谁在听"只能认 `LISTENING` 且端口**精确相等**（`endswith(":8899")`：`in` 会把
+      `:88990` 判进来）。`TIME_WAIT`/`ESTABLISHED` 不占监听端口，停服后立刻看会有一堆
+      TIME_WAIT，那是客户端残留。
+    - 判据二"是不是本程序"靠 `/api/health` 新增的 `app` 字段。**问不到（None）与答"不是"
+      （False）必须分开**：前者可能是卡死的本程序（给 `--force` 出路），后者明确是别家的
+      服务（**不能递 `--force`**，那等于劝人误杀）。反过来，JSON 里**没有** `app` 字段
+      （旧版本）算 None 而不是 False，否则升级到一半时停不掉旧进程。
+    - "答了"和"没答"的区别不是学院派：`taskkill` 不可回滚，误杀别人家的服务比停不掉更糟。
 
 ---
 
@@ -1509,6 +1524,37 @@ hybrid 不再输给纯 sparse，说明之前吃亏确实是语料问题、不是
 凭据回落 6 条新用例都做了反证：把 `svc_billable` 的拦截条件换成 `False`，两条
 "匿名应 401"的用例精确变红（200 ≠ 401），而"带用户 Key 仍放行""默认回落仍放行"
 不受影响。
+
+---
+
+### 第二十四轮（2026-10-27 上午）：把"怎么关掉它"变成一条命令
+
+现场反馈：关掉黑窗口后再双击 `start.bat`，仍然提示"端口 8899 已经在监听"，而提示里
+说的"去那个窗口按 Ctrl+C"已经不可能执行——窗口没了。查下来不是端口预检误报：
+
+```
+PID 21048  F:\...\.venv\Scripts\python.exe -m rag4prefa serve ...   （16 线程，监听 8899）
+PID 21352  F:\...\.venv\Scripts\python.exe -m rag4prefa serve ...   （1 线程，父进程）
+```
+
+`.venv\Scripts\python.exe` 是**启动器**，真正跑服务的是它拉起的子进程。实验确认：
+`taskkill /PID <子> /T /F` 之后启动器自行退出、端口释放；反过来只关窗口/只杀启动器
+不保证带走子进程。所以"点 X"这条路本来就不可靠，缺的是**能对已经失联的进程动手的入口**。
+
+本轮新增：
+
+1. `rag4prefa stop --port 8899 [--force]`（`processcontrol.py`）：`netstat -ano` 认
+   LISTENING 的 PID → `/api/health` 认身份 → `taskkill /T /F` → **复查端口**。
+2. `/api/health` 新增 `app: "rag4prefa"`，作为"端口上是不是本程序"的唯一依据。
+3. `stop.bat`（GBK + CRLF，参数与退出码都透传）、`start.bat` 的占位提示改成打印
+   PID 与进程名并指向 `stop.bat`。
+
+**验证**（真机，非 mock）：占用时双击 `start.bat` 正确打出 `PID 29772 / python.exe`；
+`stop.bat` 停掉后端口释放、`taskkill` 的返回码由 bat 原样传出；在 8899 上起一个自报
+`{"app": "someone-else"}` 的假服务，`stop.bat` 拒绝执行且该进程**没有被杀**。
+`344 passed`（323 → 344）、ruff 干净。六条变异全部精确变红：去掉 LISTENING 判据、
+端口用 `in` 代替 `endswith`、缺 `app` 字段判成 False、`--force` 不生效、refused 报 0、
+杀完不复查端口。
 
 ---
 

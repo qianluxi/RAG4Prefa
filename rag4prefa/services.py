@@ -443,6 +443,9 @@ class Services:
                 "检索与普通写入都会拒绝，详见 notes"
             )
         return {
+            # 谁在应答。停服命令（`rag4prefa stop`）靠它确认"端口上这个进程是不是
+            # 本程序"——只按端口号杀进程，误杀别人家的服务只需要一次巧合。
+            "app": "rag4prefa",
             # 索引与配置对不上时不能报"健康"：那种状态能跑，但检索结果不可信
             "ok": bool(self.embedder and self.llm) and not issues,
             "backend": {

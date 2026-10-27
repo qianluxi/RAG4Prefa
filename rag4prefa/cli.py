@@ -19,6 +19,7 @@ from .config import get_settings
 from .consistency import IndexMismatch
 from .db import init_db
 from .domain import Filter, JobState
+from .processcontrol import stop_port
 from .services import build_services
 
 
@@ -39,6 +40,17 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     uvicorn.run("rag4prefa.api:app", host=args.host, port=args.port, reload=args.reload)
     return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    """停掉监听指定端口的本程序。
+
+    先问 `/api/health` 认身份，认不出来就不动手——这个命令最容易写错的地方
+    是"谁占着端口就杀谁"，那等于给了自己一次误杀别人服务的权限。
+    """
+    result = stop_port(args.port, force=args.force)
+    print(result.message)
+    return result.exit_code
 
 
 def cmd_doctor(_: argparse.Namespace) -> int:
@@ -365,6 +377,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="检查依赖与配置")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("stop", help="停止监听端口上的服务（先认身份，再杀整棵进程树）")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="跳过身份确认直接 taskkill。只在确认端口上就是本程序、但健康检查没回应（卡死）时用；"
+        "端口上是别的软件时会误杀",
+    )
+    p.set_defaults(func=cmd_stop)
 
     p = sub.add_parser("ingest", help="导入文档（docx / pdf，文件或目录）")
     p.add_argument("paths", nargs="+")

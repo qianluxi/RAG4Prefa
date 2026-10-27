@@ -26,6 +26,7 @@ from rag4prefa.config import Settings
 from rag4prefa.credentials import LLM_CHOICES, UserCredentials
 from rag4prefa.db import connect, init_db
 from rag4prefa.ingest import ingest_file
+from rag4prefa.processcontrol import APP_MARKER
 from rag4prefa.services import Services
 from tests import mock_openai
 
@@ -86,6 +87,18 @@ def test_health_reports_server_source_without_headers(
     assert data["user"]["source"] == "server"
     assert data["user"]["label"] == "服务端公共 Key"
     assert data["models"]["embedding_model"] == "mock-embed"
+
+
+def test_health_announces_identity_for_stop_command(
+    api_env: tuple[Services, Settings],
+) -> None:
+    """`rag4prefa stop` 靠这一行认出"端口上是本程序"。
+
+    没有它就只能按端口号杀进程，误杀别人家的服务只需要一次巧合。
+    """
+    services, _ = api_env
+    with TestClient(create_app(services)) as client:
+        assert client.get("/api/health").json()["app"] == APP_MARKER
 
 
 def test_health_reflects_the_header_user(api_env: tuple[Services, Settings]) -> None:
