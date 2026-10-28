@@ -209,14 +209,27 @@ chunk 80~480 token，`recall_k=50`，`rrf_k=60`，重排 `Qwen/Qwen3-Reranker-0.
    dense 的 Recall@5 从 0.840 掉到 0.400，要开重排才拉回 0.800——这就是本课题要研究的差距。
 3. **口语集只有 10 题，单题权重 0.1**，看趋势不看小数点；扩到 50 题（含 10 道库外题）是明确待办。
 
-标注改动后要跑 `python scripts/relabel_eval.py`：它按每题的正文锚点重算 `gold_chunk_id`，
-并校验 `eval/corpus.json` 里的语料指纹。**改了解析器就必须重跑**——`chunk_id` 是内容寻址的，
-章节路径变一个字 id 就全换，旧标注会静默失效（评估照样跑完，只是 Recall 莫名变低）。
+标注改动后要跑 `python scripts/relabel_eval.py --db data/app.db --write`：它按每题的正文锚点
+重算 `gold_chunk_id`。**改了解析器就必须重跑**——`chunk_id` 是内容寻址的，章节路径变一个字
+id 就全换，旧标注会静默失效（评估照样跑完，只是 Recall 莫名变低）。
 
-**源文件被删之后**，上面这条"重新入库再比对"的路走不通了。此时由
+「解析器改没改」这件事由两道记录分开守，别混：
+
+| 记录 | 谁来写 | 守什么 | 什么时候重跑 |
+|---|---|---|---|
+| `eval/corpus.json` | `scripts/build_manifest.py`（从库导出） | 标注时那批语料是什么 | 语料换血 / 标注之后 |
+| `eval/corpus-snapshot.json` | `scripts/snapshot_corpus.py`（从库导出） | 上次出报告时库里有什么（含全量 id） | 入库、删文档之后，出报告之前 |
+| `eval/parser-canary.json` | `scripts/build_manifest.py --canary`（重新解析 7 份样本） | 当前解析器对这些样本输出什么 | 有意改了解析判据之后 |
+
+金丝雀只取 7 份（合计约 3 秒）：全量 52 份重解析实测 106 秒，且其中 5 份当初是开着 OCR
+入库的、纯离线本就复现不出来。它报的是"解析器变了没有"，不是"哪份文档变了"。
+
+**源文件被删之后**，前两道"重新入库再比对"的路走不通了。此时由
 `tests/test_eval_dataset.py::test_dataset_gold_survives_without_source_files` 兜底：拿快照里的
 全量 `chunk_id` 离线判定 gold 是否还在语料里。少了这道守护，标注过期会以"跳过"而不是"失败"的
-姿态消失，看测试摘要根本注意不到。
+姿态消失，看测试摘要根本注意不到。语料目录也不可能总是扁平的——按名字找源文件走
+`snapshot.locate_corpus_file()`（原名两份时它报错而不是挑一份），否则语料一分类，整套用例就
+整体静默跳过（2026-10-28 实际踩到）。
 
 报告头部现在固定包含：坐标系（模型/维度/chunk 参数/`recall_k`/`rrf_k`/重排）、语料快照与
 `ids_sha`、数据集哈希与题数、生成时间、代码提交与工作区状态。**这六项任一不同，前后两份就不可比。**

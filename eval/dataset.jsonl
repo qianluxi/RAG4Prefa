@@ -1,28 +1,34 @@
 // 基础集：问法贴近原文术语，测的是「关键词覆盖」能力。
-// gold 由 `python scripts/relabel_eval.py --write` 按 anchor 计算，不要手写 id。
-// anchor 必须在该题筛选范围内**唯一命中**——它同时是"标注不过期"的保险。
-{"question": "上海对新建民用建筑的装配式实施范围是怎么规定的？", "anchor": ["建筑高度100 米以上的新建居住建筑"], "note": "实施范围与 15%/35% 底线", "filter": {"projects": ["装配式规范"]}, "gold_chunk_ids": ["4ca114ebefbab080925e0bc16093195c"]}
-{"question": "双面叠合墙在计算预制率时的修正系数是多少？", "anchor": ["双面叠合墙 | 0.75\n单面叠合墙 | 0.30\n注：本表适用于"], "note": "同一行在表1~表4 里重复出现，被切进了两个块；只标其中一块——保守口径，Recall 宁低不高", "gold_chunk_ids": ["bfc9148284e8b5b259495a254f13647a"]}
-{"question": "单体装配率由哪几个部分组成？", "anchor": ["建筑单体装配率 = 建筑单体预制率 + 部品装配率"], "note": "预制率 + 部品装配率 + 其他", "gold_chunk_ids": ["27e06ef1001ce4be59ab57ba325ab181"]}
-{"question": "「其他」这一项里包含哪六项工业化技术？", "anchor": ["结构与保温一体化、墙体与窗框一体化、集成式墙体"], "note": "六项技术清单", "gold_chunk_ids": ["ef80dc907cd32ff001bc34261d787bb2"]}
-{"question": "凸窗在预制率计算中算进哪个分项？", "anchor": ["凸窗所在的预制墙体计入墙体分项"], "note": "名词解释：凸窗计入墙体", "gold_chunk_ids": ["33aef360e4ba4093cb0fca2f84fb378b"]}
-{"question": "这本计算细则适用于哪些结构类型和结构体系？", "anchor": ["涵盖剪力墙结构、框架结构、框架-剪力墙（筒体）结构"], "note": "适用范围", "gold_chunk_ids": ["48ea096659ce10f0e14aae62dbd8b1e2"]}
-{"question": "按方法二简化计算时，框架结构里柱的权重系数取多少？", "anchor": ["柱/斜撑 | 0.10 | 全预制柱/斜撑 | 0.90"], "note": "表1 框架结构权重", "gold_chunk_ids": ["029cbff3333699b13d3bf98946dfc23d"]}
-{"question": "全装修在细则里是怎么定义的？", "anchor": ["全装修并不是简单的毛坯房加装修"], "note": "全装修定义", "gold_chunk_ids": ["1f3c6078bd5259facac0353e02ce6b72"]}
-{"question": "空调板算哪一类构件，权重系数是多少？", "anchor": ["空调板是指放置空调外机的搁板"], "note": "名词解释：空调板", "gold_chunk_ids": ["33aef360e4ba4093cb0fca2f84fb378b"]}
-{"question": "浙江省的装配式建筑评价分哪几个阶段，最后以哪个为准？", "anchor": ["装配率以竣工阶段评价的结论为准"], "note": "设计阶段 / 竣工阶段", "gold_chunk_ids": ["0824aed262e2eb90c221fa9e32aac061"]}
-{"question": "浙江省装配式建筑包括哪几类结构？", "anchor": ["包括装配式混凝土结构建筑、装配式钢结构建筑"], "note": "定义：四类结构", "gold_chunk_ids": ["0824aed262e2eb90c221fa9e32aac061"]}
-{"question": "设计变更导致装配率降低、不符合承诺要求时，浙江省要求建设单位怎么办？", "anchor": ["因设计变更导致装配率降低不符合承诺要求"], "note": "重新计算并提交材料", "gold_chunk_ids": ["08d88040bdbaa175af47d95d0c80728d"]}
-{"question": "浙江省装配式建筑评价结果主要用在哪些地方？", "anchor": ["优先推荐“钱江杯”优质工程"], "note": "结果应用", "gold_chunk_ids": ["5b97af29c47c7d6ee929c4c48ca6e791"]}
-{"question": "审查意见里对多联机的 APF 值提了什么要求？", "anchor": ["28<CC<50kw时的APF值不应小于4.536"], "note": "闵行项目审查意见单", "gold_chunk_ids": ["17e4d98012ad3d8317d6f2ae1a13f2aa"]}
-{"question": "东街项目预制率总表里，1# 楼的单体预制率是多少？", "anchor": ["369.73 | 1828.16 | 20.22%"], "note": "预制率计算总表", "gold_chunk_ids": ["0b8a082d900e3b84b29915f975f50b4f"]}
-{"question": "东街项目的设计依据引用了哪些湖州市的政策文件？", "anchor": ["湖州市推进新型建筑工业化项目建设管理办法"], "note": "设计依据：政策文件", "gold_chunk_ids": ["fe07be8f5a20b4cdc705206d9975a222"]}
-{"question": "东街项目设计依据里引用了哪本叠合板图集？", "anchor": ["《桁架钢筋混凝土叠合板(60mm 厚底板)》"], "note": "设计依据：标准图集", "gold_chunk_ids": ["9fd5e511360c4fe7320bac515052544f"]}
-{"question": "东街项目哪些单体参与工业化建筑评价，幼儿园算不算？", "anchor": ["幼儿园按“应做尽做”原则不参与"], "note": "20 幢住宅 + 1 幢商业办公", "gold_chunk_ids": ["136a68728ec54be830e485b19d4e735c"]}
-{"question": "东街项目 4# 楼重复使用最多的三个规格外窗合计多少樘、占比多少？", "anchor": ["重复使用最多的三个规格的外窗总数 | 450"], "note": "外窗统计表", "gold_chunk_ids": ["053a2796854cd558f09c6a0f37dd7612"]}
-{"question": "标准化设计对预制内隔墙板重复使用规格提了什么比例要求？", "anchor": ["单体建筑中重复使用最多的一个规格的预制内隔墙板的面积之和"], "note": "评价条文 4.2.9", "gold_chunk_ids": ["b9bb427ceb6bfbef56a263a2fd0ca3eb"]}
-{"question": "东街项目的深化设计要结合哪些施工条件来考虑？", "anchor": ["综合考虑施工外架条件和模板支撑系统"], "note": "评价条文 4.2.27", "gold_chunk_ids": ["7cd1a3e18c3b6b32aa9507395add44c9"]}
-{"question": "南湖项目自评价表里用的是哪种结构体系的分值口径？", "anchor": ["钢框架—混凝土剪力墙混合结构"], "note": "南湖自评价表", "gold_chunk_ids": ["8f25aa9023957af7931c1c2bf82ddce0"]}
-{"question": "美睿金座 1# 楼内隔墙非砌筑的应用比例是多少？", "anchor": ["77.30%"], "note": "1# 楼内隔墙非砌筑", "gold_chunk_ids": ["1d991e7224ff559ffdd90036613328b3"]}
-{"question": "美睿金座 2# 楼非承重围护墙与保温隔热一体化的比例是多少？", "anchor": ["93.70%"], "note": "2# 楼围护墙", "gold_chunk_ids": ["5b69c7c8465ed3a2f6b630b3b38ac302"]}
-{"question": "美睿金座 3# 楼内隔墙非砌筑的应用比例是多少？", "anchor": ["78.17%"], "note": "3# 楼内隔墙非砌筑", "gold_chunk_ids": ["09c62da89ae2fb12ce84ba0a96094bbd"]}
+// gold 由 `python scripts/relabel_eval.py --db data/app.db --write` 按 anchor 计算，不要手写 id。
+// 语料身份：2026-10-28 重备语料（52 份 / 1210 片段），见 eval/corpus-audit-20261028.md。
+{"question": "装配式内装修的定义是什么？", "note": "定义", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["d0be8ee260843be6cd1c5586ea4d5b37"], "anchor": ["取设备及管线与建筑结构体相分离的方式。rever"]}
+{"question": "新建建筑的装配式内装修设计与建筑设计应如何衔接？", "note": "同步协同", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["69410e4e86541097f1593b3d7902f4b8"], "anchor": ["B/T50002的规定。3.0.5装配式内装修设"]}
+{"question": "双层条板隔墙两侧墙面竖向接缝的错开距离不应小于多少？", "note": "200mm", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["581428c0c99e7722a01b5eb57661166a"], "anchor": ["内部需敷设填充物时，宜选用条板类保温隔声材料。两"]}
+{"question": "厨房橱柜内设置燃气表时，橱柜应具备什么功能？", "note": "自然通风", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c1301653485e1cbe1176e8ca907d405b"], "anchor": ["具有自然通风功能，燃气表四周应预留不小于100m"]}
+{"question": "架空楼地面内敷设管线时，检修口宜设置在什么位置？", "note": "隐蔽位置", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["1bf7449260f0be1a9bb960fea4a2cfc1"], "anchor": ["设置伸缩缝，并宜采取美化遮盖构造设计；5.1.4"]}
+{"question": "装配式墙面可采用哪两类集成墙面板系统？", "note": "干挂/粘贴", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["f1a37248d693c107ff7a5f9a64bcfafe"], "anchor": ["于后期维护与更换。\n5.3.3当装配式墙面设计采"]}
+{"question": "装配式吊顶按龙骨形式可分为哪几类？", "note": "明/暗/无龙骨", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["a38e9344192e22c0d86eab58f9488cd8"], "anchor": ["口，满足日常检修需要。\n3吊顶系统与设备管线应各"]}
+{"question": "集成卫生间有无障碍设计要求时，门槛石位置应如何处理？", "note": "过渡斜坡", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c6e49dae15ef6354ed3eb0f70816b7a1"], "anchor": ["便轮椅通过的过渡斜坡。5.6.5当采用整体卫生间"]}
+{"question": "整体卫生间的选型和预留安装空间应在哪个设计阶段确定？", "note": "建筑设计阶段", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c6e49dae15ef6354ed3eb0f70816b7a1"], "anchor": ["便轮椅通过的过渡斜坡。5.6.5当采用整体卫生间"]}
+{"question": "装配式内装修的设备和管线与主体结构的关系应遵循什么原则？", "note": "管线分离", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["658340cd0742f7d30cce2cdb1bf585e2"], "anchor": ["面架空层、吊顶、装配式内装部品或墙面系统与基层墙"]}
+{"question": "装配式内装修设计应采用什么技术构建内装修模型？", "note": "BIM", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["9557976b5f6ac3326e9026430cd75df3"], "anchor": ["术体系、产品系列和BIM 管理体系，应建立标准化"]}
+{"question": "既有建筑的装配式内装修是否可以参照本导则执行？", "note": "既有建筑", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["69410e4e86541097f1593b3d7902f4b8"], "anchor": ["B/T50002的规定。3.0.5装配式内装修设"]}
+{"question": "单层条板隔墙用作分户墙时厚度不应小于多少？", "note": "120mm", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["f17dfd1ec4af8aa6784152c4cf74a264"], "anchor": ["固定措施。固措施，固定点间距应大于 300mm。"]}
+{"question": "施工图审查时装配式墙面应用比例 Q5 的计算是否扣除门窗洞口面积？", "note": "不扣除（原文在 2 处重复，只标第一块）", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["b261de612f66b1b5b3c6b995c220a5d2"], "anchor": ["电气管线、给排水管、采暖管、送风管等应分别在平面"]}
+{"question": "施工图审查评分表中装配式内装设计 Q1 项的满分是多少？", "note": "20 分", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["0703099fa596c9313ce98da36f94e14e"], "anchor": ["评价项 | 评价要求 | 评价分值 | 自评分值"]}
+{"question": "集成卫生间采用同层排水后排式座便器时结构降板高度不宜小于多少？", "note": "150mm", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["911ebe74ecb2594e25af6294d169406e"], "anchor": ["不应使用胶粘连接；5集成卫生间的构件、部件等的安"]}
+{"question": "装配式隔墙高度超过多少米时其强度应进行验算？", "note": "4 米", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c7a520251c1ba49ea98cc7a50079a5ef"], "anchor": ["4隔墙上固定重物时，应按设计文件要求采取加固措施"]}
+{"question": "跌级吊顶的灯槽线条距离低位板边缘不应小于多少？", "note": "10 毫米", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["9edff49f840f2cca36b516c4657da78e"], "anchor": ["主体结构可靠连接，且不应破坏主体结构，检查口、预"]}
+{"question": "装配式墙面与基层墙体的连接应采用什么方式？", "note": "插接/型材件", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["03f40c4332249202315db64325524915"], "anchor": ["空间尺寸、造型、图案和颜色应符合设计要求。3.2"]}
+{"question": "厨房吊柜安装在墙面板上时，墙板应在哪里开孔？", "note": "工厂预制开孔", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["54c4ac79f332e175ae495e07bba7b195"], "anchor": ["应用技术规程》DBJ33/T1289-2022执"]}
+{"question": "厨卫换新时卫生间吊顶宜采用什么燃烧性能等级的材料？", "note": "A 级（原文在 2 处重复，只标第一块）", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["6182a42bff8cb117f0fb37535959a88e"], "anchor": ["滑耐磨、低吸水率和易清洁的材料；3吊顶、墙面、地"]}
+{"question": "厨卫换新时厨房吊柜悬挂在轻质隔墙上应采取什么措施？", "note": "加强措施（原文在 2 处重复，只标第一块）", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c286496526a3c2ff852ca1fb43d159da"], "anchor": ["时不应破坏主体结构。4.1.12装配式“厨卫换新"]}
+{"question": "申领旧房装修厨卫改造补贴需要提交哪些材料？", "note": "申领材料", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["645a04da2b73779417ab031a1820801f"], "anchor": ["备案通知书编号：\n序号 | 物品或材料 | 单价"]}
+{"question": "2025 年补贴物品材料品类中的集成吊顶是否包含电器设备？", "note": "不含电器", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["f7c0368be1186136ac5fc0f6a6f4e743"], "anchor": ["柜、衣柜、洗衣柜等。\n6 | 卫生洁具 | 坐便"]}
+{"question": "经营者自行修改合同格式条款后还能否以示范文本名义签约？", "note": "示范文本名义", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["a5c7955e8b4de30106886f24060609bc"], "anchor": ["定：经营者在住宅装修装饰合同中采用格式条款的，经"]}
+{"question": "合同示范文本中工期天数的日期计算方式是什么？", "note": "自然日", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c64a48ccf43a2c06b15c113c254a8788"], "anchor": ["例（%） | 金额（元）\n准备阶段 | 合同签订"]}
+{"question": "按 2024 年二季度参考价，5.5 平方米厨房基本型的装修造价大致多少？", "note": "造价区间", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["d5b5c70f0175bd83f26bc71721d57ccb"], "anchor": ["间（5.3 高配型）约 1.58万—1.75万元"]}
+{"question": "浙江省装配化装修试点包括哪几个设区市？", "note": "四个试点市", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["29bdce1b80a7b4722ef2e052b62e3d77"], "anchor": ["步建立装配化装修技术标准和工程管理机制，形成一批"]}
+{"question": "预制墙板底部灌浆应采用什么方式灌注？", "note": "机械压力注浆", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["77a10816cad6a4735559dc49fe14d8b5"], "anchor": ["面的浆液清理干净，并将灌浆孔表面抹压平整；\n灌浆"]}
+{"question": "预制构件安装施工前宜先进行哪项工作？", "note": "试安装", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["ce7e8d55cd6348d9f3238fe9330d5f5d"], "anchor": ["安\n装结果及时调整施工工艺、完善施工方案。\n抽查"]}
+{"question": "隐蔽工程验收记录应包含哪些内容？", "note": "照片与影像", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["b78615c3d835c154a5a2b44364bb2933"], "anchor": ["结构安全与主要使用功能的隐蔽工程施工过程影像记录"]}

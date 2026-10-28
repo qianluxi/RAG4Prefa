@@ -14,6 +14,12 @@
 **为什么把全量 id 也存下来。** 只存汇总哈希能回答"变没变"，回答不了"哪道题的标注失效了"。
 存全量 id 之后，`dataset*.jsonl` 里的 gold 是否还在库里可以纯离线判定——
 这在源文件已经删干净的情况下，是唯一还能守住的判据。
+
+**为什么"按名字找源文件"也在这里。** `eval/corpus.json` 用裸文件名当键（数据库里
+`documents.filename` 就是裸名），而语料是按分类目录存的（2026-10-28 起 `文献资料/`
+下八大类）。`corpus_dir / filename` 这种拼法在扁平目录里成立，一分类就全部找不到——
+而且找不到的表现是"用例整体跳过"，也就是校验以跳过的姿态悄悄消失。定位函数只有一处，
+两份调用方（重标注脚本、标注校验用例）才不会各自写一套并各自走偏。
 """
 
 from __future__ import annotations
@@ -107,6 +113,32 @@ def load_snapshot(path: Path = DEFAULT_PATH) -> dict | None:
     except (json.JSONDecodeError, OSError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def locate_corpus_file(corpus_dir: Path, filename: str) -> Path | None:
+    """在语料目录里按**文件名**找源文件，找不到返回 None。
+
+    语料是按分类目录存的，`corpus_dir / filename` 只在扁平目录下成立：一旦分了子目录，
+    这份清单里每一条都找不到，而调用方通常把"找不到"当成"本机没有这套语料"→ 整体跳过。
+    于是一个月的校验就这么静默消失了（2026-10-28 实测踩到）。
+
+    同名多个时抛 `LookupError` 而不是挑一个：清单的键是裸文件名，两条同名记录本来
+    就分不清谁是谁，随便挑一份等于拿别的文档去验指纹。
+    """
+    if not corpus_dir.is_dir():
+        return None
+    direct = corpus_dir / filename
+    if direct.is_file():
+        return direct
+    # 不用 rglob(filename)：文件名里的 `[` `]` 会被当成通配符，
+    # 真实语料里带方括号的文件名不少（标准号、修订版标注）。
+    hits = sorted(p for p in corpus_dir.rglob("*") if p.is_file() and p.name == filename)
+    if len(hits) > 1:
+        raise LookupError(
+            f"语料里有 {len(hits)} 个同名文件 `{filename}`："
+            + "、".join(str(p.relative_to(corpus_dir)) for p in hits)
+        )
+    return hits[0] if hits else None
 
 
 def dataset_digest(path: Path) -> tuple[str, int]:

@@ -195,9 +195,11 @@ async def retrieve_for(
 
 def evaluate(
     services, rows: list[dict], k: int, modes: list[str],
-    snapshot_path: Path | None = None,
+    snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
 ) -> dict:
-    return asyncio.run(_evaluate(services, rows, k, modes, snapshot_path))
+    return asyncio.run(
+        _evaluate(services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows)
+    )
 
 
 def _code_state() -> dict:
@@ -259,11 +261,15 @@ def _run_context(services, snapshot_path: Path | None = None) -> dict:
 
 async def _evaluate(
     services, rows: list[dict], k: int, modes: list[str],
-    snapshot_path: Path | None = None,
+    snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
 ) -> dict:
     metrics: dict[str, dict[str, list[float]]] = {
         m: {"recall": [], "mrr": [], "ndcg": []} for m in modes
     }
+    # 库外问题单独记账：它们没有 gold，进不了 Recall；而"召回到了什么"本身是结论——
+    # 系统当前没有拒答阈值，任何问题都会拿到 top-k，这组题量的就是这件事。
+    refuse: dict[str, dict] = {m: {"n": 0, "nonempty": 0, "top1": []} for m in modes}
+    refuse_detail: list[dict] = []
     # 每种召回方式实际评估了多少题，必须各自记账：某一方法在部分样本上失败时，
     # 用"总有效题数"代表所有方法，会让不同方法的均值建立在不同题目集合上，不可比。
     evaluated: dict[str, int] = {m: 0 for m in modes}
@@ -300,9 +306,39 @@ async def _evaluate(
             metrics[mode]["ndcg"].append(ndcg_at_k(rels, k, len(gold)))
             evaluated[mode] += 1
 
+    for row in refuse_rows or []:
+        question = str(row.get("question") or "").strip()
+        if not question:
+            continue
+        request_filter = Filter(**row["filter"]) if row.get("filter") else Filter()
+        effective = ask.build_filter(question, request_filter, repo.project_names(services.conn))
+        tops: dict[str, dict] = {}
+        for mode in modes:
+            try:
+                hits = await retrieve_for(
+                    services, mode, question, effective, k, effective.keyword
+                )
+            except consistency.IndexMismatch:
+                raise
+            except Exception as exc:
+                warnings.append(f"{question}（{mode}）：{type(exc).__name__}: {exc}")
+                continue
+            refuse[mode]["n"] += 1
+            if hits:
+                refuse[mode]["nonempty"] += 1
+                refuse[mode]["top1"].append(hits[0].score)
+                tops[mode] = {
+                    "filename": hits[0].filename,
+                    "title": hits[0].title,
+                    "score": hits[0].score,
+                }
+        refuse_detail.append({"question": question, "tops": tops})
+
     return {
         "modes": metrics,
         "evaluated": evaluated,
+        "refuse": refuse,
+        "refuse_detail": refuse_detail,
         "samples": len(rows) - len(skipped),
         "skipped": skipped,
         "warnings": warnings,
@@ -317,7 +353,7 @@ async def _evaluate(
 
 def run(
     dataset_path: Path, k: int, modes: list[str],
-    snapshot_path: Path | None = None,
+    snapshot_path: Path | None = None, refuse_path: Path | None = None,
 ) -> dict:
     services = build_services()
     try:
@@ -325,9 +361,19 @@ def run(
         # 算出来的 Recall 会非常像真的，只是它衡量的是另一批向量。
         services.assert_query_ready()
         rows = load_dataset(dataset_path)
-        if not rows:
+        # 库外题是另一个文件：它们没有 gold，混进主集会让"标注有效题目数"虚高，
+        # 也会让 resolve_gold 把它们当"空标注"跳过。
+        refuse_rows = (
+            load_dataset(refuse_path)
+            if refuse_path is not None and refuse_path.is_file()
+            else []
+        )
+        if not rows and not refuse_rows:
             raise ValueError(f"数据集为空：{dataset_path}")
-        result = evaluate(services, rows, k, modes, snapshot_path)
+        result = evaluate(
+            services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows
+        )
+        result["refuse_dataset"] = str(refuse_path) if refuse_rows else ""
         result["dataset"] = str(dataset_path)
         # 数据集的身份与语料身份同等重要：`eval/dataset.jsonl` 这一个路径
         # 曾经先后对应过 30 题和 25 题两个版本，报告看不出来。
@@ -447,6 +493,40 @@ def report(result: dict, k: int) -> str:
         hybrid_mean, rerank_mean = _mean("hybrid"), _mean("rerank")
         if hybrid_mean is not None and rerank_mean is not None:
             lines.append(f"开重排相对 hybrid：Recall@{k} {rerank_mean - hybrid_mean:+.3f}")
+    refuse = result.get("refuse") or {}
+    detail = result.get("refuse_detail") or []
+    if detail:
+        lines.append("")
+        lines.append("## 库外问题（语料里没有答案）")
+        lines.append("")
+        lines.append("| 召回方式 | 题数 | 召回非空 | top1 分数均值 |")
+        lines.append("|---|---|---|---|")
+        for mode, stat in refuse.items():
+            total = stat.get("n") or 0
+            if not total:
+                lines.append(f"| {mode} | 0 | - | - |")
+                continue
+            mean = statistics.mean(stat["top1"]) if stat["top1"] else None
+            score = f"{mean:.3f}" if mean is not None else "-"
+            lines.append(f"| {mode} | {total} | {stat['nonempty']}/{total} | {score} |")
+        lines.append("")
+        lines.append(
+            "> 这组问题在语料里**没有**对应内容。当前系统没有拒答阈值：任何问题都会返回 top-k，"
+            "所以「召回非空 100%」说明的不是检索好，而是它不会说「不知道」。"
+            "这组数字是课题方向①的起点，不是这一版的缺陷。"
+        )
+        lines.append("")
+        pick = "hybrid" if "hybrid" in refuse else next(iter(refuse), "")
+        lines.append(f"逐题 top1（按 {pick}）：")
+        for item in detail:
+            top = (item.get("tops") or {}).get(pick) or {}
+            got = (
+                f"`{top['filename']} · {top['title']}`（{top['score']:.3f}）"
+                if top
+                else "无召回"
+            )
+            lines.append(f"- {item['question']} → {got}")
+
     if len(result["warnings"]) == 0 and not result["skipped"]:
         return "\n".join(lines)
     lines.append(f"\n## 需要处理的数据问题（{len(result['warnings'])}）\n")
@@ -480,6 +560,11 @@ def main() -> int:
         help="写入 eval/reports/，文件名带日期与语料指纹（推荐，取代手动 --out）",
     )
     parser.add_argument("--snapshot", default="", help="语料快照路径")
+    parser.add_argument(
+        "--refuse",
+        default="eval/dataset.refuse.jsonl",
+        help="库外问题集（默认 eval/dataset.refuse.jsonl，不存在则跳过）",
+    )
     args = parser.parse_args()
 
     if args.top_k < 1:
@@ -501,7 +586,11 @@ def main() -> int:
 
     try:
         result = run(
-            path, args.top_k, modes, Path(args.snapshot) if args.snapshot else None
+            path,
+            args.top_k,
+            modes,
+            Path(args.snapshot) if args.snapshot else None,
+            refuse_path=Path(args.refuse) if args.refuse else None,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

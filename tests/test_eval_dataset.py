@@ -1,124 +1,115 @@
-"""评估集与语料的契约：解析器一改，`chunk_id` 就全变，标注会静默失效。
+"""评估集与解析器的契约：解析一改，`chunk_id` 就全变，标注会静默失效。
 
 `chunk_id` 是内容寻址（`doc_id + 章节路径 + 正文哈希 + 同段序号`），所以任何一处
 解析判据调整——多认一个标题、少认一行目录、分块阈值变化——都会让 id 整体换掉。
 而 `eval/dataset*.jsonl` 里的 gold 是**具体 id**：不同步的话评估照样能跑完，
 只是 Recall 会莫名其妙地低一截，看不出是标注过期还是检索退化。
 
-这份测试把"过期"变成一次明确的失败，并指出要重新生成哪两样东西。
-语料目录不在仓库里（体积大、且含真实项目名），所以 CI 上没有这个目录，自动跳过；
-它保护的是本机那套语料 + 解析器的组合。
+这里守两道，一道在线一道离线：
+
+1. **解析器金丝雀**（`eval/parser-canary.json`，要源文件）：挑 7 份形态各异、
+   解析又快（合计约 3 秒）的文档，把当前解析器对它们的输出记下来。解析器一有改动，
+   这 7 份的指纹就会变——它报的是"解析器变了"，不是"哪份文档变了"；定位靠下面第 2 条。
+2. **标注是否还站得住**（`eval/corpus-snapshot.json`，不要源文件）：库里存了全量
+   chunk_id，gold 是否还在语料中纯离线可判。
+
+**为什么金丝雀不是全量 52 份。** 全量重解析实测 106 秒（其中 A1 一份就 63 秒），
+放进每次 `pytest` 是把开发循环拖慢一倍；而且那份文档当初是**开着 OCR** 入库的，
+纯离线解析本来就复现不出同样的 id，比对必然失败——它证明不了"解析器没变",
+只能证明"OCR 结果不可复现"。所以金丝雀只取文字层完好的文档，按**格式与结构**取样本：
+长多级编号 pdf、短公文 pdf、docx、政策 md（带模板噪声）、标准信息卡 md。
+判据落在"解析器改没改"这件事上，粒度对了，成本才是 3 秒。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from rag4prefa import snapshot
-from rag4prefa.adapters.vectors import NumpyStore
-from rag4prefa.config import Settings
-from rag4prefa.db import connect, init_db
-from rag4prefa.ingest import ingest_file
-from tests.conftest import FakeEmbedder
+from rag4prefa.adapters.parsers import SUPPORTED_SUFFIXES, parse_document
+from rag4prefa.chunking import build_chunks
 
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS_DIR = ROOT.parent / "工程文档"
-MANIFEST = ROOT / "eval" / "corpus.json"
+CANARY = ROOT / "eval" / "parser-canary.json"
 SNAPSHOT = ROOT / "eval" / "corpus-snapshot.json"
 DATASETS = [ROOT / "eval" / "dataset.jsonl", ROOT / "eval" / "dataset.paraphrase.jsonl"]
 
+# 后缀 → 解析器族。`.markdown` 与 `.md` 走同一个 `parse_markdown`，
+# 各要一份样本只是把同一段代码验两遍。新格式进来时这里没有条目，就按后缀本身算，
+# 于是会立刻要求一份样本——这正是期望的行为。
+_FAMILY = {".md": ".md", ".markdown": ".md"}
+
+
+def _suffixes(canary: dict) -> set[str]:
+    return {Path(name).suffix.lower() for name in canary["documents"]}
+
 
 @pytest.fixture(scope="module")
-def corpus(tmp_path_factory: pytest.TempPathFactory) -> sqlite3.Connection:
-    """把 manifest 里的文档按标注时分块参数重新入库，返回连接。"""
-    spec = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    tmp = tmp_path_factory.mktemp("eval-corpus")
-    settings = Settings(
-        # 不读本机的 .env：这份用例要的是"按标注时分块参数重新入库"，而 .env 里的
-        # 任何开关（最典型的是 OCR）都会改变入库结果，让指纹对不上——
-        # 更糟的是它会真的调付费接口，测试就不再是离线的了（2026-10-27 实际踩到）。
-        _env_file=None,
-        data_dir=tmp,
-        embedding_api_key="test",
-        llm_api_key="test",
-        chunk_max_tokens=spec["chunk_max_tokens"],
-        chunk_min_tokens=spec["chunk_min_tokens"],
-        vector_backend="numpy",
-        ocr_mode="off",
-    )
-    settings.ensure_dirs()
-    init_db(settings.db_path)
-    connection = connect(settings.db_path)
-    embedder = FakeEmbedder()
-    store = NumpyStore(connection, embedder.dim)
-    for filename, meta in spec["documents"].items():
-        path = CORPUS_DIR / filename
-        if not path.is_file():
-            pytest.skip(f"语料缺文件：{filename}")
-        ingest_file(
-            connection,
-            store,
-            embedder,
-            settings,
-            path=path,
-            project_name=meta["project"],
-            doc_year=2025,
-        )
-    yield connection
-    connection.close()
+def canary() -> dict:
+    if not CANARY.is_file():
+        pytest.skip("没有解析器金丝雀记录，先跑 python scripts/build_manifest.py --canary")
+    return json.loads(CANARY.read_text(encoding="utf-8"))
 
 
-def _chunk_ids(conn: sqlite3.Connection, project: str, filename: str) -> list[str]:
-    doc_id = hashlib.sha1(f"{project}|{filename}".encode()).hexdigest()[:16]
-    rows = conn.execute("SELECT id FROM chunks WHERE doc_id = ?", (doc_id,))
-    return sorted(row[0] for row in rows)
+def test_canary_covers_every_supported_suffix(canary: dict) -> None:
+    """金丝雀必须覆盖每一种**解析器**（不是每一种后缀）。
 
+    这类记录最容易的"维护"方式是：某天它红了，就把红的那条删掉。删到只剩 md，
+    它就永远绿着，而 pdf 解析器怎么改都没人知道。所以先钉住覆盖面。
 
-def test_corpus_matches_manifest(corpus: sqlite3.Connection) -> None:
-    """语料指纹必须对得上：对不上说明解析器改了，dataset 也要重生成。
-
-    失败时先看这里的两条出路：确实是有意的解析改进 → 跑一遍
-    `python scripts/build_manifest.py` 与评估集生成脚本；不是有意的 → 是回归。
+    按"解析器"而不是按后缀算：`.md` 与 `.markdown` 走的是同一个函数，各要一份样本
+    等于把同一段代码验两遍；而真正新增一种格式（比如 pptx）时，这条会立刻要求样本。
     """
-    spec = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    for filename, meta in spec["documents"].items():
-        ids = _chunk_ids(corpus, meta["project"], filename)
-        digest = hashlib.sha256("\n".join(ids).encode()).hexdigest()[:16]
-        assert len(ids) == meta["chunks"], (
-            f"{filename} 的 chunk 数从 {meta['chunks']} 变成了 {len(ids)}："
-            "解析器或分块参数改动过，eval/corpus.json 与 dataset*.jsonl 都要重新生成"
-        )
-        assert digest == meta["ids_sha"], (
-            f"{filename} 的 chunk_id 集合变了（数量未变）：章节路径或正文哈希变了，"
-            "dataset*.jsonl 里的 gold 已失效，需要重新生成"
-        )
-
-
-@pytest.mark.parametrize("dataset", DATASETS, ids=lambda p: p.name)
-def test_dataset_gold_ids_exist(corpus: sqlite3.Connection, dataset: Path) -> None:
-    """每题的金标都必须能在库里查到——查不到就是标注过期，评估数字会失真。"""
-    rows = [
-        json.loads(line)
-        for line in dataset.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("//")
-    ]
-    assert rows, f"{dataset.name} 是空的"
-
-    known = {row[0] for row in corpus.execute("SELECT id FROM chunks")}
-    missing: list[str] = []
-    for row in rows:
-        for chunk_id in row.get("gold_chunk_ids") or []:
-            if chunk_id not in known:
-                missing.append(f"{row['question'][:20]} → {chunk_id[:12]}")
+    covered = {_FAMILY.get(suffix, suffix) for suffix in _suffixes(canary)}
+    missing = [s for s in {_FAMILY.get(s, s) for s in SUPPORTED_SUFFIXES} if s not in covered]
     assert not missing, (
-        f"{dataset.name} 里 {len(missing)} 个 gold_chunk_id 在语料中不存在："
-        f"{missing[:3]}。标注与语料已经脱节，重新生成评估集"
+        f"金丝雀没有覆盖 {missing}。别为了让它变绿而删除条目——"
+        "要么补一份该格式的样本，要么说明这种格式不再支持"
     )
+    assert len(canary["documents"]) >= 5, (
+        f"只剩 {len(canary['documents'])} 份样本，已不足以代表解析器的行为"
+    )
+
+
+def test_parser_canary_matches_recorded_fingerprints(canary: dict) -> None:
+    """重新解析这几份样本，输出必须与记录一致。
+
+    红了的含义只有一个：**解析器的输出变了**。这时先判断是有意改进还是回归，然后
+    ——有意改进：`python scripts/build_manifest.py --canary` 更新记录，再跑
+    `python scripts/relabel_eval.py --db data/app.db --write` 重算 gold；
+    ——回归：改回去。
+
+    别直接改记录把数字凑上：那份记录的全部价值就是"我没动过解析器"。
+    """
+    for filename, meta in canary["documents"].items():
+        try:
+            path = snapshot.locate_corpus_file(CORPUS_DIR, filename)
+        except LookupError as exc:
+            pytest.fail(f"{exc}。金丝雀样本重名会让比对指向另一份文件")
+        if path is None:
+            pytest.skip(
+                f"本机没有这套语料（缺 {filename}）。注意这道校验此刻是失效的："
+                "它守的是「解析器有没有变」，不是「结果对不对」"
+            )
+        chunks = build_chunks(
+            parse_document(path),
+            meta["doc_id"],
+            max_tokens=canary["chunk_max_tokens"],
+            min_tokens=canary["chunk_min_tokens"],
+        )
+        ids = sorted(chunk.id for chunk in chunks)
+        assert len(ids) == meta["chunks"], (
+            f"{filename} 的片段数从 {meta['chunks']} 变成 {len(ids)}："
+            "解析或分块判据改动过，dataset 里的 gold 已失效"
+        )
+        assert snapshot.ids_digest(ids) == meta["ids_sha"], (
+            f"{filename} 的 chunk_id 集合变了（数量未变）：章节路径或正文哈希变了，"
+            "gold 已失效——重跑 relabel_eval 之前先确认这是有意的改进"
+        )
 
 
 @pytest.mark.skipif(
@@ -128,7 +119,7 @@ def test_dataset_gold_ids_exist(corpus: sqlite3.Connection, dataset: Path) -> No
 def test_dataset_gold_survives_without_source_files(dataset: Path) -> None:
     """源文件删掉之后，仍要能发现"标注已经过期"。
 
-    2026-10-28 实测：补语料时旧文件被全部删除，上面两条用例整体跳过。它们守的正是
+    2026-10-28 实测：补语料时旧文件被全部删除，依赖源文件的用例整体跳过。它们守的正是
     "解析器或语料一动，gold 就静默失效"——跳过等于这道守护悄悄消失，而且是以
     "跳过"而不是"失败"的姿态消失，看一眼测试摘要根本注意不到。
 

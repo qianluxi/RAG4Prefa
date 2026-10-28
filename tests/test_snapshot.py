@@ -197,6 +197,66 @@ def test_load_snapshot_tolerates_broken_file(tmp_path: Path) -> None:
     assert snapshot.load_snapshot(tmp_path / "missing.json") is None
 
 
+def test_locate_corpus_file_finds_nested_file(tmp_path: Path) -> None:
+    """语料按分类分子目录存，按文件名也要找得到。
+
+    2026-10-28 实测：语料重排成 `文献资料/0X_分类/` 之后，`corpus_dir / filename`
+    一条都拼不出来，而调用方把"找不到"读成"本机没有这套语料"→ 整套用例跳过。
+    校验没有变红，它以跳过的姿态消失了。
+    """
+    nested = tmp_path / "文献资料" / "02_国家行业标准"
+    nested.mkdir(parents=True)
+    target = nested / "a.pdf"
+    target.write_bytes(b"x")
+
+    assert snapshot.locate_corpus_file(tmp_path, "a.pdf") == target
+
+
+def test_locate_corpus_file_prefers_the_flat_one(tmp_path: Path) -> None:
+    """根目录下就有那份文件时不必遍历：扁平目录下每天都要跑这条路径。"""
+    flat = tmp_path / "b.md"
+    flat.write_text("x", encoding="utf-8")
+
+    assert snapshot.locate_corpus_file(tmp_path, "b.md") == flat
+
+
+def test_locate_corpus_file_refuses_to_guess_between_duplicates(tmp_path: Path) -> None:
+    """同名两份时必须报错，不能挑一份。
+
+    清单的键是裸文件名，两个项目下的"计算书.pdf"本来就分不清谁是谁；
+    随便挑一份，等于拿另一份文档去验指纹——数字对不上，人却会去查解析器。
+    """
+    for name in ("甲", "乙"):
+        sub = tmp_path / name
+        sub.mkdir()
+        (sub / "计算书.pdf").write_bytes(b"x")
+
+    with pytest.raises(LookupError) as exc:
+        snapshot.locate_corpus_file(tmp_path, "计算书.pdf")
+    assert "2 个同名文件" in str(exc.value)
+
+
+def test_locate_corpus_file_returns_none_when_absent(tmp_path: Path) -> None:
+    """找不到返回 None 而不是抛错：CI 上没有语料目录是常态，调用方据此跳过。"""
+    assert snapshot.locate_corpus_file(tmp_path, "nope.pdf") is None
+    assert snapshot.locate_corpus_file(tmp_path / "nope", "nope.pdf") is None
+
+
+def test_locate_corpus_file_does_not_treat_brackets_as_glob(tmp_path: Path) -> None:
+    """文件名里的 `[` `]` 是字面量，不是通配符。
+
+    用 `rglob(filename)` 实现时，`标准 [2024版].pdf` 会被当成年模式匹配，
+    真实的 `标准 2.pdf` 也能命中——于是"找到"和"找错"分不出来。
+    """
+    sub = tmp_path / "标准"
+    sub.mkdir()
+    wanted = sub / "标准 [2024版].pdf"
+    wanted.write_bytes(b"x")
+    (sub / "标准 2.pdf").write_bytes(b"x")
+
+    assert snapshot.locate_corpus_file(tmp_path, wanted.name) == wanted
+
+
 @pytest.mark.skipif(not REAL_SNAPSHOT.is_file(), reason="还没导出语料快照")
 @pytest.mark.skipif(not MANIFEST.is_file(), reason="没有标注清单")
 def test_snapshot_agrees_with_manifest_on_shared_documents() -> None:

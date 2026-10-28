@@ -1,13 +1,18 @@
 // 改写集：只描述意图，**刻意不用原文术语**。测的是语义检索，不是关键词覆盖。
 // 这里才是 dense / hybrid / rerank 三者真正拉开的战场：基础集上纯 BM25 就能到 0.9 以上，
-// 只报那一份会得出"检索已经很好"的误导结论。
-{"question": "两面都叠合的那种墙，算预制率的时候要打几折？", "anchor": ["双面叠合墙 | 0.75\n单面叠合墙 | 0.30\n注：本表适用于"], "note": "原文：双面叠合墙修正系数 0.75；同一行在四张表里重复，只标其中一块（保守口径）", "gold_chunk_ids": ["bfc9148284e8b5b259495a254f13647a"]}
-{"question": "房子盖好之后的那次评价，和图纸阶段那次，最后算数的是哪个？", "anchor": ["装配率以竣工阶段评价的结论为准"], "note": "原文：装配率以竣工阶段评价为准", "gold_chunk_ids": ["0824aed262e2eb90c221fa9e32aac061"]}
-{"question": "一个小区做装配式评价，配套的幼儿园要不要一起算进去？", "anchor": ["幼儿园按“应做尽做”原则不参与"], "note": "原文：幼儿园不参与工业化建筑评价", "gold_chunk_ids": ["136a68728ec54be830e485b19d4e735c"]}
-{"question": "美睿金座 1 号楼里，隔墙不砌砖、直接装板子的做法占了多大比例？", "anchor": ["77.30%"], "note": "原文：内隔墙非砌筑应用比例 77.30%", "gold_chunk_ids": ["1d991e7224ff559ffdd90036613328b3"]}
-{"question": "整个评价里，除了预制那部分和部品那部分，还能靠什么把分拉上去？", "anchor": ["结构与保温一体化、墙体与窗框一体化、集成式墙体"], "note": "原文：其他——六项工业化技术", "gold_chunk_ids": ["ef80dc907cd32ff001bc34261d787bb2"]}
-{"question": "窗子做来做去就那么几个型号，重复用到什么程度才算过关？", "anchor": ["单体建筑中重复使用最多的三个规格的外窗的总个数"], "note": "原文：三个规格外窗占比不低于 50%", "gold_chunk_ids": ["b9bb427ceb6bfbef56a263a2fd0ca3eb"]}
-{"question": "挂空调外机的那块板子，在算预制率时归到哪一类？", "anchor": ["空调板是指放置空调外机的搁板"], "note": "原文：空调板，权重 0.01", "gold_chunk_ids": ["33aef360e4ba4093cb0fca2f84fb378b"]}
-{"question": "多联机那个能效数值，审查最低要求是多少？", "anchor": ["28<CC<50kw时的APF值不应小于4.536"], "note": "原文：APF 不小于 4.536", "gold_chunk_ids": ["17e4d98012ad3d8317d6f2ae1a13f2aa"]}
-{"question": "图纸改过之后装配率掉下来了、达不到当初承诺，甲方得补什么材料？", "anchor": ["因设计变更导致装配率降低不符合承诺要求"], "note": "原文：重新计算装配率并提交变更材料", "gold_chunk_ids": ["08d88040bdbaa175af47d95d0c80728d"]}
-{"question": "项目拿了个高等级的评价，对参建单位有什么实际好处？", "anchor": ["优先推荐“钱江杯”优质工程"], "note": "原文：钱江杯优先推荐 + 信用加分", "gold_chunk_ids": ["5b97af29c47c7d6ee929c4c48ca6e791"]}
+// 只报那一份会得出「检索已经很好」的误导结论。
+{"question": "装配式装修到底是个啥？和传统装修有啥不一样？", "note": "术语的公众问法", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["d0be8ee260843be6cd1c5586ea4d5b37"], "anchor": ["取设备及管线与建筑结构体相分离的方式。rever"]}
+{"question": "我家厨房想换新，大概要花多少钱？", "note": "造价区间", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["d5b5c70f0175bd83f26bc71721d57ccb"], "anchor": ["间（5.3 高配型）约 1.58万—1.75万元"]}
+{"question": "老房子翻新能补多少钱？", "note": "补助上限（原文在 2 处重复，只标第一块）", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["0b768cfdc02da9d73dc4130657ca6741"], "anchor": ["->\n上一篇\n下一篇\n放大\n缩小 默认\n朗读\n-"]}
+{"question": "装修完想拿补贴，得先准备哪些材料？", "note": "申领材料", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["645a04da2b73779417ab031a1820801f"], "anchor": ["备案通知书编号：\n序号 | 物品或材料 | 单价"]}
+{"question": "厨房没窗户，还能装燃气表吗？", "note": "燃气通风", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c1301653485e1cbe1176e8ca907d405b"], "anchor": ["具有自然通风功能，燃气表四周应预留不小于100m"]}
+{"question": "墙上想挂电视和吊柜，会不会掉下来？", "note": "轻质墙加固（原文在 2 处重复，只标第一块）", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c286496526a3c2ff852ca1fb43d159da"], "anchor": ["时不应破坏主体结构。4.1.12装配式“厨卫换新"]}
+{"question": "卫生间想装成轮椅能进去的，门口那个坎怎么做？", "note": "无障碍", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["c6e49dae15ef6354ed3eb0f70816b7a1"], "anchor": ["便轮椅通过的过渡斜坡。5.6.5当采用整体卫生间"]}
+{"question": "墙里的电线以后坏了能换吗？", "note": "管线分离", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["658340cd0742f7d30cce2cdb1bf585e2"], "anchor": ["面架空层、吊顶、装配式内装部品或墙面系统与基层墙"]}
+{"question": "吊顶上面还要装灯装风机，会不会塌？", "note": "吊顶荷载复核", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["66a7f31830f0335c20155a637cf930e7"], "anchor": ["小于10 毫米；3横龙骨与吊顶板连接应稳固，横龙"]}
+{"question": "装修完多久能住进去？", "note": "工期", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["98442dfed1a5b86f5bae1e3e53d52f3e"], "anchor": ["，建成于2000年前后，“我家厨卫间上次装修距今"]}
+{"question": "不是新盖的老房子，也能用这套做法吗？", "note": "既有建筑", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["69410e4e86541097f1593b3d7902f4b8"], "anchor": ["B/T50002的规定。3.0.5装配式内装修设"]}
+{"question": "签装修合同时要注意哪些坑？", "note": "合同格式条款", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["a5c7955e8b4de30106886f24060609bc"], "anchor": ["定：经营者在住宅装修装饰合同中采用格式条款的，经"]}
+{"question": "补贴的钱要是提前发完了怎么办？", "note": "资金额度", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["dfa948c19f6946e7f32f4e80e68d0dcd"], "anchor": ["承担；如\n到期未用完，收回中央和省级资金额度。本"]}
+{"question": "集成吊顶里头包不包含灯具？", "note": "品类边界", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["f7c0368be1186136ac5fc0f6a6f4e743"], "anchor": ["柜、衣柜、洗衣柜等。\n6 | 卫生洁具 | 坐便"]}
+{"question": "同一个部位装修完，怎么知道自己做得好不好？", "note": "验收依据", "filter": {"projects": ["装配式内装"]}, "gold_chunk_ids": ["b78615c3d835c154a5a2b44364bb2933"], "anchor": ["结构安全与主要使用功能的隐蔽工程施工过程影像记录"]}

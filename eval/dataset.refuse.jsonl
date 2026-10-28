@@ -1,0 +1,8 @@
+// 库外集：这些问题在库里**没有**对应语料。
+// 当前系统没有拒答阈值，它必然会被强行召回 top-k——本组量的就是「该说不知道时说了什么」。
+// 不计 Recall（没有 gold），单独统计召回非空率与最高分。
+{"question": "上海对新建民用建筑的装配式实施范围是怎么规定的？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
+{"question": "北京市装配化装修的补贴标准是多少？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
+{"question": "日本 SI 住宅体系的部品化率要求是多少？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
+{"question": "江苏省装配式建筑评价标准的装配率怎么算？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
+{"question": "深圳市装配化装修试点企业有哪些？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}

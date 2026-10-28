@@ -13,10 +13,18 @@
 **chunk_id 与 embedding 无关**，所以这里用确定性假向量建临时库，
 不需要任何 API Key，也不碰 `data/`。
 
+两种语料来源：
+
+- `--db data/app.db`（推荐）：直接读**已经入库的库**。chunk_id 是全流程唯一的事实来源，
+  拿真库重标就不会出现"临时库与正式库分块参数不一致"这种只有指标才知道的偏差。
+- 不给 `--db`：按 `eval/corpus.json` 在临时库里重新解析一遍。老办法，只有拿不到库
+  （比如 CI 上只有原始文件）时才用。**注意这条路复现不了 OCR**：当初开着视觉模型
+  识别出来的页，离线重解析是没有的，那几份文档的 id 会对不上——能拿库就别走这条路。
+
 用法：
-    python scripts/relabel_eval.py                       # 补齐 anchor 并校验
-    python scripts/relabel_eval.py --write               # 顺便写回 dataset
-    python scripts/relabel_eval.py --corpus ../工程文档
+    python scripts/relabel_eval.py --db data/app.db             # 补齐 anchor 并校验
+    python scripts/relabel_eval.py --db data/app.db --write     # 顺便写回 dataset
+    python scripts/relabel_eval.py --corpus ../工程文档          # 临时库模式
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from rag4prefa import snapshot  # noqa: E402
 from rag4prefa.adapters.vectors import NumpyStore  # noqa: E402
 from rag4prefa.config import Settings  # noqa: E402
 from rag4prefa.db import connect, init_db  # noqa: E402
@@ -73,9 +82,9 @@ def build_corpus(corpus_dir: Path, manifest: dict) -> sqlite3.Connection:
     embedder = _FakeEmbedder()
     store = NumpyStore(conn, embedder.dim)
     for filename, meta in manifest["documents"].items():
-        path = corpus_dir / filename
-        if not path.is_file():
-            raise SystemExit(f"语料缺文件：{path}")
+        path = snapshot.locate_corpus_file(corpus_dir, filename)
+        if path is None:
+            raise SystemExit(f"语料缺文件：{filename}（在 {corpus_dir} 及其子目录里都没有）")
         ingest_file(
             conn,
             store,
@@ -113,7 +122,13 @@ def pick_anchor(target: str, rows: list[tuple[str, str, str]]) -> str | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="按正文锚点重算评估集金标")
-    parser.add_argument("--corpus", default="../工程文档", help="语料目录")
+    parser.add_argument("--corpus", default="../工程文档", help="语料目录（临时库模式）")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="直接读这个库（推荐）；不给则按 eval/corpus.json 重建临时库",
+    )
     parser.add_argument("--dataset", action="append", help="评估集路径，可重复")
     parser.add_argument("--write", action="store_true", help="写回文件")
     args = parser.parse_args()
@@ -121,11 +136,18 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     given = Path(args.corpus)
     corpus_dir = given if given.is_absolute() else (root / given).resolve()
-    manifest = json.loads((root / "eval" / "corpus.json").read_text(encoding="utf-8"))
     defaults = ["eval/dataset.jsonl", "eval/dataset.paraphrase.jsonl"]
     datasets = [Path(p) for p in (args.dataset or defaults)]
 
-    conn = build_corpus(corpus_dir, manifest)
+    if args.db is not None:
+        db_path = args.db if args.db.is_absolute() else (root / args.db)
+        if not db_path.is_file():
+            raise SystemExit(f"库不存在：{db_path}")
+        conn = connect(db_path)
+        print(f"语料：读现成的库 {db_path}")
+    else:
+        manifest = json.loads((root / "eval" / "corpus.json").read_text(encoding="utf-8"))
+        conn = build_corpus(corpus_dir, manifest)
     rows = [
         (row["id"], row["project"], row["text"])
         for row in conn.execute(

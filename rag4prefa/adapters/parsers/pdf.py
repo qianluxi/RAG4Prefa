@@ -832,7 +832,6 @@ def parse_pdf_report(
                     _scanned_message(pages, watermarked, visible, watermark=True)
                 )
             _ensure_readable(raw)
-            _ensure_readable(raw)
             ocr_targets: tuple[int, ...] = ()
             missing = tuple(i + 1 for i in blank if i not in skip)
         else:
