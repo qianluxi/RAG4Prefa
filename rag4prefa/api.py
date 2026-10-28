@@ -225,11 +225,22 @@ def create_app(services: Services | None = None) -> FastAPI:
                 "（各付各的部署不接受匿名删除：这几条不可撤销。）",
             )
         got = request.headers.get(HEADER_ADMIN_TOKEN, "")
-        # 定长比较：口令是共享秘密，逐字符比较会给"猜口令"留下时间侧信道
-        if not got or not hmac.compare_digest(got, expected):
+        # "没带"和"带错了"分开说：合成一句"口令不对"会让**根本没填过**的人去翻
+        # 自己填了什么（他什么都没填），然后把"填了没生效"当成 bug。
+        # 这两种情况的下一步动作不一样：一个是去填，一个是去核对 .env。
+        if not got:
             raise HTTPException(
                 403,
-                "管理口令不对：在「API 设置」里填与 R4P_ADMIN_TOKEN 相同的口令再试。",
+                "这个部署要求管理口令才能清空 / 删项目 / 删文件。"
+                "打开页面右上角「API 设置」，在最下面的「管理口令」栏里填 .env 中"
+                " R4P_ADMIN_TOKEN 的值，点「保存管理口令」，然后重新操作一次。",
+            )
+        # 定长比较：口令是共享秘密，逐字符比较会给"猜口令"留下时间侧信道
+        if not hmac.compare_digest(got, expected):
+            raise HTTPException(
+                403,
+                "管理口令不对（与 .env 里的 R4P_ADMIN_TOKEN 不一致）。"
+                "改过 .env 之后要重启服务，页面里也要重新点一次「保存管理口令」。",
             )
 
     @app.get("/api/health")
@@ -766,7 +777,13 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     @app.get("/")
     def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
+        # 页面本身就是"客户端"，改了前端却拿到缓存里的旧页面时，新按钮（比如
+        # 「管理口令」那栏）不存在，用户会以为是后端拒绝了他——2026-10-28 实际踩到。
+        # FileResponse 带 ETag/Last-Modified，加 no-cache 只是每次都回来问一次，
+        # 没改动仍然 304，不增加传输量。
+        return FileResponse(
+            WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
 
     return app
 

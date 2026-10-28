@@ -172,6 +172,48 @@ def test_missing_or_wrong_token_is_403(tmp_path: Path) -> None:
         services.close()
 
 
+def test_missing_and_wrong_token_say_different_things(tmp_path: Path) -> None:
+    """没带和带错要分开说，因为下一步动作不同。
+
+    合成一句"管理口令不对"时，**根本没填过**的人会去核对自己填了什么（他什么都没填），
+    最后把"页面上还没有这一栏"当成后端的 bug——2026-10-28 用户就是这么被拦住的。
+    """
+    services = _services(
+        tmp_path, allow_server_key_fallback=False, admin_token="s3cret-token"
+    )
+    try:
+        with TestClient(create_app(services)) as client:
+            missing = client.post("/api/admin/clear", json={"confirm": "清空"})
+            wrong = client.post(
+                "/api/admin/clear",
+                json={"confirm": "清空"},
+                headers={HEADER_ADMIN_TOKEN: "nope"},
+            )
+        assert missing.status_code == wrong.status_code == 403
+        missing_detail = missing.json()["detail"]
+        wrong_detail = wrong.json()["detail"]
+        assert "保存管理口令" in missing_detail, "没带时要说清去哪儿填、怎么保存"
+        assert "不一致" in wrong_detail, "带错时要指向 .env 里那份值"
+        assert missing_detail != wrong_detail
+    finally:
+        services.close()
+
+
+def test_page_is_never_served_from_cache(tmp_path: Path) -> None:
+    """改了前端却拿到缓存里的旧页面时，新控件不存在，用户会误判成后端拒绝。
+
+    静态页就是这里的客户端，所以它必须每次都回来问一次（没改动仍是 304）。
+    """
+    services = _services(tmp_path)
+    try:
+        with TestClient(create_app(services)) as client:
+            resp = client.get("/")
+        assert resp.status_code == 200
+        assert "no-cache" in resp.headers.get("cache-control", "")
+    finally:
+        services.close()
+
+
 def test_correct_token_reaches_the_business_layer(tmp_path: Path) -> None:
     """口令对了就往下走：这里用"项目不存在→404"证明越过了口令这一关。"""
     services = _services(
