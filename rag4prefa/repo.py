@@ -233,7 +233,26 @@ def _document(row: sqlite3.Row) -> DocumentInfo:
         status=row["status"],
         uploaded_at=row["uploaded_at"],
         error=row["error"],
+        ocr_pages=_parse_ocr_pages(row["ocr_pages"]),
     )
+
+
+def _parse_ocr_pages(raw: str | None) -> list[int] | None:
+    """`documents.ocr_pages` 的读法。
+
+    NULL 与 `[]` 必须分开：NULL 是"这份文档入库时还没有这一列"（不知道），
+    `[]` 是"确实没经过识别"（知道没有）。前者若被当空集，界面就会对一批
+    老文档说"本文直接来自原文"，而那正是我们不能保证的事。
+    """
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, list):
+        return None
+    return [int(p) for p in value]
 
 
 def upsert_document(
@@ -248,14 +267,19 @@ def upsert_document(
     chunk_count: int = 0,
     status: str = "indexed",
     error: str | None = None,
+    ocr_pages: Sequence[int] | None = None,
 ) -> None:
     ts = now_iso()
+    # `None` 保持 NULL（"没记录过"），空列表写成 `'[]'`（"记录过，没有识别页"）。
+    # 两者在界面上是两句话，不能合并。
+    ocr_json = None if ocr_pages is None else json.dumps(sorted(ocr_pages))
     with transaction(conn):
         conn.execute(
             """
             INSERT INTO documents (id, project_name, filename, content_sha, doc_year,
-                                   section_count, chunk_count, status, error, uploaded_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   section_count, chunk_count, status, error, uploaded_at,
+                                   ocr_pages)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(project_name, filename) DO UPDATE SET
                 id = excluded.id,
                 content_sha = excluded.content_sha,
@@ -264,7 +288,8 @@ def upsert_document(
                 chunk_count = excluded.chunk_count,
                 status = excluded.status,
                 error = excluded.error,
-                uploaded_at = excluded.uploaded_at
+                uploaded_at = excluded.uploaded_at,
+                ocr_pages = excluded.ocr_pages
             """,
             (
                 doc_id,
@@ -277,6 +302,7 @@ def upsert_document(
                 status,
                 error,
                 ts,
+                ocr_json,
             ),
         )
 

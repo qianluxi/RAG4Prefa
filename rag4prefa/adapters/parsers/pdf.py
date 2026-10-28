@@ -111,6 +111,11 @@ _LATIN_WORD = re.compile(r"[A-Za-z]{3,}")
 _TOC_DOTS = re.compile(r"\.{5,}")
 _TOC_MIN_LINES = 3  # 至少这么多行才可能整页是目录
 _TOC_RATIO = 0.30  # 且占有效行比例够高（实测目录页约 0.49，正文页 < 0.1）
+# 识别稿上的目录判据（见 `_looks_like_ocr_toc`）：行尾是页码、且行普遍很短。
+_TOC_TAIL = re.compile(r"(?:[(（]\s*\d{1,4}\s*[)）]|[.．·…]{2,}\s*\d{1,4})\s*$")
+_TOC_TAIL_RATIO = 0.60
+_TOC_MAX_LINE = 48
+_TOC_SHORT_RATIO = 0.70
 
 # 只有编号、没有标题名的一行（`1.1`、`4.6.2`）。它多半是被排版拆开的半个标题。
 _NUMBER_ONLY = re.compile(r"^\d+(?:[.．]\d+)*[.．]?$")
@@ -234,6 +239,28 @@ def _looks_like_toc(lines: list[str]) -> bool:
         return False
     dotted = sum(1 for line in lines if _TOC_DOTS.search(line))
     return dotted >= _TOC_MIN_LINES and dotted / len(lines) >= _TOC_RATIO
+
+
+def _looks_like_ocr_toc(lines: list[str]) -> bool:
+    """识别出来的目录页。**不能用 `_looks_like_toc`**，因为点线引导符活不下来。
+
+    实测：`1 General provisions ......... (1)` 经视觉模型还原后变成
+    `1 General provisions (1)`——点线被当成装饰扔掉了。于是那条"5 个以上的点"
+    的判据在 OCR 文本上一次都不会命中，目录页照样变成 `# Contents` 加一串编号节点。
+
+    这里换一条只在识别稿上成立的证据：**大部分行以页码（`(1)`、`…… 12`）结尾，
+    而且行都很短**。两条都必须成立——只有"行尾是数字"会把表格页也吃进来，
+    所以先把带竖线的行排除掉。
+    """
+    if len(lines) < _TOC_MIN_LINES * 2:
+        return False
+    if any(line.startswith("|") for line in lines):
+        return False  # 表格：每行都以数字结尾也很常见，这条判据在那儿毫无意义
+    tailed = sum(1 for line in lines if _TOC_TAIL.search(line))
+    if tailed / len(lines) < _TOC_TAIL_RATIO:
+        return False
+    short = sum(1 for line in lines if len(line) <= _TOC_MAX_LINE)
+    return short / len(lines) >= _TOC_SHORT_RATIO
 
 
 def _toc_pages(texts: list[str]) -> list[int]:
@@ -713,12 +740,20 @@ def _merge_by_page(
 
 def _ocr_events(
     doc, targets: tuple[int, ...], ocr: OcrOptions | None
-) -> tuple[list[tuple[int | None, str, int]], tuple[int, ...]]:
-    """逐页识别，返回 `(事件流, 识别后仍没有文字的页)`。"""
+) -> tuple[list[tuple[int | None, str, int]], tuple[int, ...], tuple[int, ...]]:
+    """逐页识别，返回 `(事件流, 识别后仍没有文字的页, 识别出来是目录被跳过的页)`。
+
+    为什么要单独挑出目录页：`_toc_pages()` 的判据跑在**文字层**上，而这批文件
+    （整页图 + 一行水印、或字体缺 ToUnicode）恰好没有可用的文字层——判据看不到
+    目录，目录页就会进 OCR，然后以「1 总则……(1)」这种形式变成一堆章节节点。
+    实测 DB33 的英文目次页会被还原成 `# Contents` 加 7 条编号行，正是
+    `_looks_like_toc` 当初要防的那种"凭空长出一棵树"。
+    """
     if not targets or ocr is None:
-        return [], ()
+        return [], (), ()
     events: list[tuple[int | None, str, int]] = []
     empty: list[int] = []
+    toc: list[int] = []
     workers = max(1, min(ocr.workers, len(targets)))
     # 分批：一页 150dpi 的 PNG 约 0.8 MB，两百页一次性渲染就是 160 MB 常驻。
     # 渲染必须在主线程做——pymupdf 的 Page 不是线程安全的，并发只包住网络调用。
@@ -738,14 +773,19 @@ def _ocr_events(
         markdown = dict(zip(keys, answers, strict=True))
 
         for pno, png in rendered:
-            page_events = _markdown_events(markdown[hashlib.sha256(png).hexdigest()], pno + 1)
+            page_md = markdown[hashlib.sha256(png).hexdigest()]
+            lines = [ln.strip() for ln in page_md.splitlines() if ln.strip()]
+            if _looks_like_toc(lines) or _looks_like_ocr_toc(lines):
+                toc.append(pno + 1)
+                continue
+            page_events = _markdown_events(page_md, pno + 1)
             if page_events:
                 events.extend(page_events)
             else:
                 # 空白页、整页插图：模型按约定回 <EMPTY>。记下来，别让它变成
                 # "这一页解析成功了但什么都没有"的沉默缺口。
                 empty.append(pno + 1)
-    return events, tuple(empty)
+    return events, tuple(empty), tuple(toc)
 
 
 def _scanned_message(
@@ -861,16 +901,20 @@ def parse_pdf_report(
             events = _events(items, body, ranks, trust_numbers=True)
         events = _merge_number_only_heads(events)
 
-        ocr_events, empty = _ocr_events(doc, ocr_targets, ocr)
+        ocr_events, empty, toc_skipped = _ocr_events(doc, ocr_targets, ocr)
         events = _merge_by_page(events, ocr_events)
 
     report = ParseReport(
         pages=pages,
         # 报"真读出来的"页：识别后仍为空的那些分开报，否则"第 5 页经 OCR 识别"
-        # 会让用户以为第 5 页的内容进了库。
-        ocr_pages=tuple(i + 1 for i in ocr_targets if (i + 1) not in empty),
+        # 会让用户以为第 5 页的内容进了库。目录页同理——它识别出来了，但内容是
+        # 一串点线引导符，不该算作"正文来自识别"。
+        ocr_pages=tuple(
+            i + 1 for i in ocr_targets if (i + 1) not in empty and (i + 1) not in toc_skipped
+        ),
         missing_pages=missing,
         empty_pages=empty,
+        toc_pages=toc_skipped,
     )
     return build_sections(events), report
 

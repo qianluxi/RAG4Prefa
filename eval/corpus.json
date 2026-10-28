@@ -2,6 +2,26 @@
  "chunk_min_tokens": 80,
  "chunk_max_tokens": 480,
  "documents": {
+  "19_GB55038-2025_住宅项目规范.pdf": {
+   "project": "装配式内装",
+   "chunks": 49,
+   "ids_sha": "75e9e1783e7f10cb"
+  },
+  "12_JGJT477-2018_装配式整体厨房应用技术标准.pdf": {
+   "project": "装配式内装",
+   "chunks": 33,
+   "ids_sha": "9631a2138f4224e6"
+  },
+  "13_JGJT467-2018_装配式整体卫生间应用技术标准.pdf": {
+   "project": "装配式内装",
+   "chunks": 50,
+   "ids_sha": "7f2420031552a6e6"
+  },
+  "11_JGJT491-2021_装配式内装修技术标准.pdf": {
+   "project": "装配式内装",
+   "chunks": 74,
+   "ids_sha": "d9f6643967e19f4e"
+  },
   "D5_浙江省2018版计价依据综合解释及动态调整补充六_含装配化装修补充定额_浙建站计2023-8号.pdf": {
    "project": "装配式内装",
    "chunks": 31,

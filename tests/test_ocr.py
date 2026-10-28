@@ -442,3 +442,28 @@ def test_docx_report_is_empty(conn: sqlite3.Connection, docx_file: Path) -> None
     """docx 里不存在"某页没文字层"这件事——正文一定在文件里。"""
     _, report = parse_document_report(docx_file)
     assert report == ParseReport()
+
+
+def test_ocr_toc_page_is_dropped_instead_of_growing_a_fake_tree(scanned_pdf: Path) -> None:
+    """识别出来的目录页必须整页丢掉，否则会凭空长出一棵树。
+
+    `_toc_pages()` 的判据跑在文字层上，而这类文件（整页图 + 一行水印、或字体缺
+    ToUnicode）根本没有可用文字层——判据看不到目录，目录页就进了 OCR。
+    **点线引导符活不过识别**：实测 `1 General provisions ......... (1)` 会被还原成
+    `1 General provisions (1)`，所以判目录得用"行尾是页码 + 行都很短"这条证据。
+    """
+    toc = (
+        "# 目录\n\n1 总则 (1)\n2 术语 (2)\n3 基本规定 (3)\n"
+        "4 装配率计算 (4)\n5 评价 (11)\n术语说明 (12)\n条文说明 (13)"
+    )
+
+    def fake(png: bytes, page: int) -> str:
+        return toc if page == 1 else f"# 第{page}章 正文\n\n第 {page} 页的正文内容。"
+
+    sections, report = parse_document_report(scanned_pdf, ocr=_options(fake))
+
+    assert report.toc_pages == (1,), "目录页要单独报出来，别混进'识别后无文字'"
+    assert report.ocr_pages == (2, 3), "目录页识别出来了，但它的内容没进库"
+    assert [s.title for s in sections] == ["第2章 正文", "第3章 正文"]
+    # 这句话要说得具体：只报"有页被跳过"用户不知道该信哪一段
+    assert "第 1 页是目录，已跳过" in (report.note() or "")

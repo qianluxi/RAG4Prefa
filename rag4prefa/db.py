@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS documents (
     status        TEXT NOT NULL,
     error         TEXT,
     uploaded_at   TEXT NOT NULL,
+    -- 哪些页是视觉模型认出来的（JSON 数组，1-based）。NULL = 未记录（加这一列之前
+    -- 入库的文档），'[]' = 明确没有经过识别。**正文可能漏字，检索时必须能说出来**。
+    ocr_pages     TEXT,
     UNIQUE (project_name, filename)
 );
 
@@ -148,6 +151,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(chunks)")}
     if "page" not in cols:
         conn.execute("ALTER TABLE chunks ADD COLUMN page INTEGER")
+
+    # 识别来源。同样只补列不重建：这一列是**事后追溯**用的，补出来是 NULL 表示
+    # "这份文档入库时还没有这一列"，与"确实没经过识别"（'[]'）必须能区分开。
+    doc_cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    if "ocr_pages" not in doc_cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN ocr_pages TEXT")
 
 
 @contextmanager

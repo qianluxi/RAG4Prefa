@@ -572,3 +572,74 @@ def test_stale_vector_cleanup_failure_is_not_reported_as_success(
         consistency.ensure_queryable(
             conn, FakeEmbedder.model, store.dim, store_count=store.count()
         )
+
+
+# ── 识别来源：哪些页是视觉模型认的 ────────────────────────────
+
+
+def test_document_records_the_pages_that_were_recognised(
+    conn: sqlite3.Connection, settings: Settings, tmp_path: Path, monkeypatch
+) -> None:
+    """识别过的页码必须落库，否则"这句话是不是原文"永远查不回来。
+
+    实测视觉模型会漏字（JGJ/T 491 的 3.1.10 少了"应采**用**绿色施工模式"里的"用"），
+    而检索结果长得和原文一模一样。没有这一列，界面就只能对一份识别稿说
+    "本文直接来自原文"——那是我们保证不了的事。
+    """
+    import pymupdf
+
+    from rag4prefa.adapters.ocr import OcrOptions
+
+    scanned = tmp_path / "扫描件.pdf"
+    doc = pymupdf.open()
+    for _ in range(2):
+        page = doc.new_page()
+        page.draw_rect(pymupdf.Rect(60, 100, 500, 700), fill=(0.9, 0.9, 0.9))
+    doc.save(str(scanned))
+    doc.close()
+
+    settings.ocr_mode = "auto"
+    fake = OcrOptions(fn=lambda png, page: "# 第1章 总则\n\n识别出来的一段正文。", mode="auto")
+    monkeypatch.setattr("rag4prefa.ingest._build_ocr", lambda s, c: fake)
+
+    ingest_file(
+        conn, _store(conn), FakeEmbedder(), settings, path=scanned, project_name="测试项目"
+    )
+
+    recorded = repo.get_document(conn, "测试项目", "扫描件.pdf")
+    assert recorded is not None
+    assert recorded.ocr_pages == [1, 2]
+
+
+def test_document_without_ocr_records_an_empty_list_not_null(
+    conn: sqlite3.Connection, settings: Settings, docx_file: Path
+) -> None:
+    """没经过识别的文档要写成 `[]`，不是 NULL。
+
+    NULL 的含义是"加这一列之前入库的，不知道有没有识别过"，与"确定没识别"是两句
+    不同的话：前者界面不能说"这是原文"，后者才能。
+    """
+    ingest_file(
+        conn, _store(conn), FakeEmbedder(), settings, path=docx_file, project_name="测试项目"
+    )
+
+    recorded = repo.get_document(conn, "测试项目", docx_file.name)
+    assert recorded is not None
+    assert recorded.ocr_pages == []
+
+
+def test_legacy_document_row_reports_unknown_provenance(
+    conn: sqlite3.Connection, settings: Settings
+) -> None:
+    """老库补列补出来的 NULL，要读成"不知道"，不能读成"没有识别页"。"""
+    repo.upsert_project(conn, "旧项目")
+    conn.execute(
+        "INSERT INTO documents (id, project_name, filename, content_sha, section_count,"
+        " chunk_count, status, uploaded_at) VALUES ('d1', '旧项目', '老文件.pdf', 'x', 0, 0,"
+        " 'indexed', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+
+    recorded = repo.get_document(conn, "旧项目", "老文件.pdf")
+    assert recorded is not None
+    assert recorded.ocr_pages is None

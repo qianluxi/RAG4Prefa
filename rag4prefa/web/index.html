@@ -562,6 +562,17 @@ async function documentsRow(p) {
     line.appendChild(status);
     // 年份是检索筛选条件之一，删之前要能看清自己在删哪一年入库的那份
     if (d.doc_year) line.appendChild(el("span", "kbd", `${d.doc_year} 年`));
+    // 识别稿要能认出来。视觉模型会漏字（实测 3.1.10 少一个"用"），而检索结果长得
+    // 和原文一模一样；不标出来，用户没法知道哪句话该回原文核对。
+    if (d.ocr_pages && d.ocr_pages.length) {
+      const ocr = el("span", "kbd", `识别 ${d.ocr_pages.length} 页`);
+      ocr.style.cssText = "color:var(--warn,#b45309);border-color:currentColor";
+      ocr.title =
+        "这份文档的以下页是视觉模型识别的，可能有漏字：" +
+        d.ocr_pages.join("、") +
+        "\n引用具体数字或条文时请回原文核对。";
+      line.appendChild(ocr);
+    }
     const rm = el("button", "ghost", "删除");
     rm.style.padding = "1px 8px";
     rm.onclick = async () => {

@@ -122,6 +122,10 @@ class DocumentInfo(BaseModel):
     status: str
     uploaded_at: str
     error: str | None = None
+    # 视觉模型认出过的页码（1-based）。`None` = 未记录（加这一列之前入库的文档），
+    # `[]` = 明确没有经过识别。**不能合并成"空"**：前者是"不知道"，后者是"没有"，
+    # 而正文漏字这件事只有后者才敢说"这句是原文"。
+    ocr_pages: list[int] | None = None
 
 
 class JobState(StrEnum):

@@ -370,6 +370,10 @@ def _ingest_locked(
             section_count=len(sections),
             chunk_count=len(chunks),
             status="indexed",
+            # 这一列是**追溯依据**：视觉模型会漏字（实测 3.1.10 少一个"用"），
+            # 而检索结果长得和原文一模一样。记下页码，界面才能提示"本条来自识别稿"。
+            # 注意传 `()` 而不是 None：这次入库确实没有识别页，要写成 `'[]'`。
+            ocr_pages=report.ocr_pages,
         )
         # 元数据由"真正写过向量的人"记，而不是指望每个调用方都记得调一次
         repo.set_meta(conn, "embedding_model", embedder.model)

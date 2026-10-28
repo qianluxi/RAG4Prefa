@@ -34,6 +34,10 @@ class ParseReport:
     ocr_pages: tuple[int, ...] = ()  # 走 OCR 读出来的页（1-based）
     missing_pages: tuple[int, ...] = ()  # 没有文字层、也没做 OCR 的页
     empty_pages: tuple[int, ...] = ()  # 做了 OCR，但模型说这页没有可读文字
+    # 做了 OCR、识别出来却是目录的页。**必须与 empty_pages 分开**：这一类不是
+    # "没有内容"，是"内容被主动丢掉"，而丢掉的理由（目录条目会凭空长出章节树）
+    # 用户需要知道，否则他会以为那几页没进来。
+    toc_pages: tuple[int, ...] = ()
 
     def note(self) -> str | None:
         """给用户看的一句话。没有异常情况就返回 None，别在界面上刷"一切正常"。"""
@@ -42,6 +46,8 @@ class ParseReport:
             parts.append(f"{_page_list(self.ocr_pages)}经 OCR 识别")
         if self.empty_pages:
             parts.append(f"{_page_list(self.empty_pages)}识别后仍无文字，内容缺失")
+        if self.toc_pages:
+            parts.append(f"{_page_list(self.toc_pages)}是目录，已跳过")
         if self.missing_pages:
             parts.append(
                 f"{_page_list(self.missing_pages)}没有文字层、未做 OCR，内容缺失"
