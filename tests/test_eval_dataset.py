@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from rag4prefa import snapshot
 from rag4prefa.adapters.vectors import NumpyStore
 from rag4prefa.config import Settings
 from rag4prefa.db import connect, init_db
@@ -28,12 +29,8 @@ from tests.conftest import FakeEmbedder
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS_DIR = ROOT.parent / "工程文档"
 MANIFEST = ROOT / "eval" / "corpus.json"
+SNAPSHOT = ROOT / "eval" / "corpus-snapshot.json"
 DATASETS = [ROOT / "eval" / "dataset.jsonl", ROOT / "eval" / "dataset.paraphrase.jsonl"]
-
-pytestmark = pytest.mark.skipif(
-    not CORPUS_DIR.is_dir(),
-    reason="本地语料目录不存在（工程文档/ 不进仓库，CI 上跳过）",
-)
 
 
 @pytest.fixture(scope="module")
@@ -121,4 +118,28 @@ def test_dataset_gold_ids_exist(corpus: sqlite3.Connection, dataset: Path) -> No
     assert not missing, (
         f"{dataset.name} 里 {len(missing)} 个 gold_chunk_id 在语料中不存在："
         f"{missing[:3]}。标注与语料已经脱节，重新生成评估集"
+    )
+
+
+@pytest.mark.skipif(
+    not SNAPSHOT.is_file(), reason="没有语料快照，先跑 scripts/snapshot_corpus.py"
+)
+@pytest.mark.parametrize("dataset", DATASETS, ids=lambda p: p.name)
+def test_dataset_gold_survives_without_source_files(dataset: Path) -> None:
+    """源文件删掉之后，仍要能发现"标注已经过期"。
+
+    2026-10-28 实测：补语料时旧文件被全部删除，上面两条用例整体跳过。它们守的正是
+    "解析器或语料一动，gold 就静默失效"——跳过等于这道守护悄悄消失，而且是以
+    "跳过"而不是"失败"的姿态消失，看一眼测试摘要根本注意不到。
+
+    快照里存了全量 chunk_id，于是同一件事不依赖源文件也能判：只要 gold 还在语料里，
+    标注就还有效；不在，就必须重算。
+    """
+    snap = snapshot.load_snapshot(SNAPSHOT)
+    assert snap, "快照读不出来（文件损坏？重跑 scripts/snapshot_corpus.py）"
+
+    missing = snapshot.gold_missing(snap, dataset)
+    assert not missing, (
+        f"{dataset.name} 里 {len(missing)} 个 gold 已不在语料中：{missing[:3]}。"
+        "标注与语料脱节，Recall 会偏低且看不出原因——按 anchor 重新生成标注"
     )

@@ -26,16 +26,19 @@ import asyncio
 import json
 import math
 import statistics
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rag4prefa import ask, consistency, repo  # noqa: E402
+from rag4prefa import ask, consistency, repo, snapshot  # noqa: E402
 from rag4prefa.domain import Filter, Hit  # noqa: E402
 from rag4prefa.services import build_services  # noqa: E402
 
 MODES = ("dense", "sparse", "hybrid", "rerank")
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_dataset(path: Path) -> list[dict]:
@@ -190,15 +193,49 @@ async def retrieve_for(
 # ── 主流程 ─────────────────────────────────────────────────
 
 
-def evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dict:
-    return asyncio.run(_evaluate(services, rows, k, modes))
+def evaluate(
+    services, rows: list[dict], k: int, modes: list[str],
+    snapshot_path: Path | None = None,
+) -> dict:
+    return asyncio.run(_evaluate(services, rows, k, modes, snapshot_path))
 
 
-def _run_context(services) -> dict:
+def _code_state() -> dict:
+    """跑这组数字时代码处在哪个版本。
+
+    报告只写"指标 + 参数"是不够的：同一个库、同一份数据集，改过检索融合或提示词之后
+    数字会变，而报告本身看不出来。有这条，"这两份报告为什么不一样"才有一个可查的答案。
+
+    取不到就返回空字典——没装 git、不在仓库里跑，都不该让评估失败。
+    """
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT, capture_output=True, text=True, timeout=5, check=False,
+        ).stdout.strip()
+        # 只看被跟踪文件：未提交改动会让"这个提交号"变得名不副实。
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=ROOT, capture_output=True, text=True, timeout=5, check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if not commit:
+        return {}
+    return {"commit": commit, "dirty": bool(dirty)}
+
+
+def _run_context(services, snapshot_path: Path | None = None) -> dict:
     """跑出这组数字时用的坐标系。缺一项，数字就不能跟前一次直接比。"""
     settings = services.settings
     state = consistency.inspect(services.conn)
     rerank_on = ask.rerank_available(getattr(services, "reranker", None))
+    current = snapshot.build_snapshot(
+        services.conn,
+        chunk_min_tokens=settings.chunk_min_tokens,
+        chunk_max_tokens=settings.chunk_max_tokens,
+    )
+    saved = snapshot.load_snapshot(snapshot_path or (ROOT / snapshot.DEFAULT_PATH))
     return {
         # 以索引里登记的为准（state），它才是这批向量真正的来源；
         # 配置只是"打算用什么"，两者不一致时检索本来就会被拒绝。
@@ -209,10 +246,21 @@ def _run_context(services) -> dict:
         "recall_k": settings.recall_k,
         "rrf_k": settings.rrf_k,
         "rerank_model": settings.rerank_model if rerank_on else "",
+        # 语料身份跟指标一起走。换成"当时库里有多少片段"之后，
+        # "两份报告能不能比"就从靠回忆变成了一次字符串比较。
+        "corpus": {
+            "documents": current["document_count"],
+            "chunks": current["chunk_count"],
+            "ids_sha": current["ids_sha"],
+            "drift": snapshot.compare(saved, current),
+        },
     }
 
 
-async def _evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dict:
+async def _evaluate(
+    services, rows: list[dict], k: int, modes: list[str],
+    snapshot_path: Path | None = None,
+) -> dict:
     metrics: dict[str, dict[str, list[float]]] = {
         m: {"recall": [], "mrr": [], "ndcg": []} for m in modes
     }
@@ -263,11 +311,14 @@ async def _evaluate(services, rows: list[dict], k: int, modes: list[str]) -> dic
         "rerank_enabled": ask.rerank_available(getattr(services, "reranker", None)),
         # 数值的"坐标系"必须跟数值一起走：换模型/换维度/换 chunk 参数/换 rrf_k 之后
         # 前后两次数值不可比，而报告本身不会提醒下一届读者这件事。
-        "context": _run_context(services),
+        "context": _run_context(services, snapshot_path),
     }
 
 
-def run(dataset_path: Path, k: int, modes: list[str]) -> dict:
+def run(
+    dataset_path: Path, k: int, modes: list[str],
+    snapshot_path: Path | None = None,
+) -> dict:
     services = build_services()
     try:
         # 评估数字只有在"索引已被证明是归档这一版"时才有意义：拿一份内容过期的索引
@@ -276,8 +327,13 @@ def run(dataset_path: Path, k: int, modes: list[str]) -> dict:
         rows = load_dataset(dataset_path)
         if not rows:
             raise ValueError(f"数据集为空：{dataset_path}")
-        result = evaluate(services, rows, k, modes)
+        result = evaluate(services, rows, k, modes, snapshot_path)
         result["dataset"] = str(dataset_path)
+        # 数据集的身份与语料身份同等重要：`eval/dataset.jsonl` 这一个路径
+        # 曾经先后对应过 30 题和 25 题两个版本，报告看不出来。
+        result["dataset_sha"], result["dataset_rows"] = snapshot.dataset_digest(dataset_path)
+        result["generated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        result["code"] = _code_state()
         return result
     finally:
         services.close()
@@ -297,6 +353,7 @@ def report(result: dict, k: int) -> str:
         "- 片段标注已解析成范围内包含它的全部 chunk，三个指标共用同一个 Gold",
     ]
     ctx = result.get("context") or {}
+    corpus: dict = {}
     if ctx:
         rerank = f"`{ctx['rerank_model']}`" if ctx.get("rerank_model") else "未启用"
         lines.append(
@@ -304,8 +361,38 @@ def report(result: dict, k: int) -> str:
             f"chunk {ctx['chunk_min_tokens']}~{ctx['chunk_max_tokens']} token · "
             f"recall_k={ctx['recall_k']} · rrf_k={ctx['rrf_k']} · 重排 {rerank}"
         )
+        corpus = ctx.get("corpus") or {}
+        if corpus:
+            lines.append(
+                f"- 语料快照：{corpus['documents']} 份文档 / {corpus['chunks']} 个片段 · "
+                f"ids_sha `{corpus['ids_sha']}`"
+            )
     if result.get("dataset"):
-        lines.append(f"- 数据集：`{result['dataset']}`")
+        bits = [f"`{result['dataset']}`"]
+        if result.get("dataset_rows"):
+            bits.append(f"{result['dataset_rows']} 题")
+        if result.get("dataset_sha"):
+            bits.append(f"sha `{result['dataset_sha']}`")
+        lines.append("- 数据集：" + " · ".join(bits))
+    if result.get("generated_at"):
+        code = result.get("code") or {}
+        tail = ""
+        if code.get("commit"):
+            state = "有未提交改动" if code.get("dirty") else "工作区干净"
+            tail = f" · 代码 `{code['commit']}`（{state}）"
+        lines.append(f"- 生成于 {result['generated_at']}{tail}")
+
+    # 语料变了还沿用旧快照，是最容易出错的一种"看起来正常"：数字算得出来、
+    # 也像是真的，只有跟上一份报告并排时才说不清为什么不一样。
+    drift = corpus.get("drift") or []
+    if drift:
+        lines.append("")
+        lines.append(
+            "> **语料已变化**：" + "；".join(drift) + "。"
+            f"`{snapshot.DEFAULT_PATH.as_posix()}` 记录的是旧语料，"
+            "本报告对应当前库，与按旧快照跑出的报告**不可直接比较**。"
+            "更新记录：`python scripts/snapshot_corpus.py`。"
+        )
     lines += [
         "",
         f"| 召回方式 | 有效样本 | Recall@{k} | MRR | nDCG@{k} |",
@@ -369,12 +456,30 @@ def report(result: dict, k: int) -> str:
     return "\n".join(lines)
 
 
+def _report_path(result: dict, dataset_path: Path) -> Path:
+    """按「数据集 + 日期 + 语料指纹」命名。
+
+    刻意不用 `-new` 这种名字：`baseline-new` 用了两个月就不再是"新"的，
+    而它指向的语料已经变过两轮；同一天换语料重跑也会互相覆盖。
+    带上 ids_sha 之后，同名即同语料，不同语料必然不同名。
+    """
+    corpus = (result.get("context") or {}).get("corpus") or {}
+    stamp = (result.get("generated_at") or "")[:10].replace("-", "")
+    tag = (corpus.get("ids_sha") or "nosnapshot")[:8]
+    return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{stamp}-{tag}.md"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="检索质量评估")
     parser.add_argument("--dataset", default="eval/dataset.jsonl")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--modes", default="dense,sparse,hybrid,rerank")
     parser.add_argument("--out", default="")
+    parser.add_argument(
+        "--save", action="store_true",
+        help="写入 eval/reports/，文件名带日期与语料指纹（推荐，取代手动 --out）",
+    )
+    parser.add_argument("--snapshot", default="", help="语料快照路径")
     args = parser.parse_args()
 
     if args.top_k < 1:
@@ -395,7 +500,9 @@ def main() -> int:
         return 2
 
     try:
-        result = run(path, args.top_k, modes)
+        result = run(
+            path, args.top_k, modes, Path(args.snapshot) if args.snapshot else None
+        )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -409,9 +516,11 @@ def main() -> int:
 
     text = report(result, args.top_k)
     print(text)
-    if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
-        print(f"\n已写入 {args.out}")
+    target = args.out or (str(_report_path(result, path)) if args.save else "")
+    if target:
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        Path(target).write_text(text, encoding="utf-8")
+        print(f"\n已写入 {target}")
     return 0
 
 

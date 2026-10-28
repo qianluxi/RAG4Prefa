@@ -179,37 +179,49 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 322 项，全部离线（假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy）
-python scripts/eval.py --dataset eval/dataset.jsonl --top-k 5
-python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --top-k 5
+pytest -q                                  # 433 项，其中 3 项需要本地语料目录（CI 上跳过）
+python scripts/snapshot_corpus.py          # 先记下"此刻库里有什么"
+python scripts/eval.py --dataset eval/dataset.jsonl --save
+python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --save
 ```
 
-评估集分两份，**不要混成一个平均数**。下面是真机实测（库内 323 块 = 315 块标注语料 + 8 块存量计算书，
-`Qwen/Qwen3-Embedding-0.6B` 1024 维，chunk 80~480 token，`recall_k=50`，`rrf_k=60`，
-重排 `Qwen/Qwen3-Reranker-0.6B`）：
+**评估数字只有在语料身份确定时才有意义，所以先出快照。** `snapshot_corpus.py` 从数据库导出
+`eval/corpus-snapshot.json`：文档数、片段数、全量 `chunk_id` 与整体指纹，不依赖源文件
+（补语料时旧文件会被删，靠重新解析拿不回当时的指纹）。评估报告读它并核对，对不上就显式写
+「语料已变化，与旧报告不可直接比较」。
 
-| 召回方式 | 基础 30 题 Recall@5 | MRR | 改写 10 题 Recall@5 | MRR |
+评估集分两份，**不要混成一个平均数**。下面是真机实测，同一份语料快照（9 份文档 / 152 片段，
+`ids_sha = 4a096f6bd0a23d13`）、同一天、同一套参数（`Qwen/Qwen3-Embedding-0.6B` 1024 维，
+chunk 80~480 token，`recall_k=50`，`rrf_k=60`，重排 `Qwen/Qwen3-Reranker-0.6B`）：
+
+| 召回方式 | 基础 25 题 Recall@5 | MRR | 口语 10 题 Recall@5 | MRR |
 |---|---|---|---|---|
-| dense（纯向量） | 0.817 | 0.704 | 0.500 | 0.333 |
-| sparse（纯 BM25） | **0.950** | **0.834** | 0.500 | 0.275 |
-| hybrid（向量 + BM25 + RRF） | 0.900 | 0.721 | 0.700 | 0.520 |
-| rerank（混合 + 重排） | **0.950** | 0.732 | **0.800** | **0.542** |
+| dense（纯向量） | 0.840 | 0.665 | **0.400** | 0.400 |
+| sparse（纯 BM25） | 0.880 | 0.630 | 0.700 | 0.492 |
+| hybrid（向量 + BM25 + RRF） | 0.880 | 0.700 | 0.600 | 0.550 |
+| rerank（混合 + 重排） | 0.840 | 0.668 | **0.800** | **0.650** |
 
 三句话读完这张表：
 
-1. **基础集上纯 BM25 就打了 0.95，混合召回反而低 0.05。** 语料里 96% 是一份软件手册，
-   按钮名、参数名这类专有词密度极高，分词后几乎等于原样命中——这类语料上融合是稀释而不是增强。
-2. **改写集才是语义检索的战场。** 同一个"两面都叠合的那种墙要打几折"，不用原文术语之后
-   BM25 掉到 0.50，混合召回 0.70，开重排 0.80。
-3. **只报一份会给出误导性的结论。** 单看基础集会得出"检索已经很好"，单看改写集会得出
-   "BM25 没用"，两个都不对。
+1. **基础集上混合召回与纯 BM25 打平（都是 0.880），开重排反而 −0.040。** 语料是规范、计算书、
+   审查意见单，专有名词密度极高，分词后近乎原样命中；这类语料上融合是稀释而非增强。
+2. **口语集上纯向量掉到 0.400。** 同一个系统、同一批语料，只把问法从术语换成大白话，
+   dense 的 Recall@5 从 0.840 掉到 0.400，要开重排才拉回 0.800——这就是本课题要研究的差距。
+3. **口语集只有 10 题，单题权重 0.1**，看趋势不看小数点；扩到 50 题（含 10 道库外题）是明确待办。
 
 标注改动后要跑 `python scripts/relabel_eval.py`：它按每题的正文锚点重算 `gold_chunk_id`，
 并校验 `eval/corpus.json` 里的语料指纹。**改了解析器就必须重跑**——`chunk_id` 是内容寻址的，
 章节路径变一个字 id 就全换，旧标注会静默失效（评估照样跑完，只是 Recall 莫名变低）。
 
-报告本身带「坐标系」一行（模型、维度、chunk 参数、`recall_k`、`rrf_k`、重排模型），
-因为换掉其中任何一项，前后两次数值就不可比。实测样本存在 `eval/reports/`。
+**源文件被删之后**，上面这条"重新入库再比对"的路走不通了。此时由
+`tests/test_eval_dataset.py::test_dataset_gold_survives_without_source_files` 兜底：拿快照里的
+全量 `chunk_id` 离线判定 gold 是否还在语料里。少了这道守护，标注过期会以"跳过"而不是"失败"的
+姿态消失，看测试摘要根本注意不到。
+
+报告头部现在固定包含：坐标系（模型/维度/chunk 参数/`recall_k`/`rrf_k`/重排）、语料快照与
+`ids_sha`、数据集哈希与题数、生成时间、代码提交与工作区状态。**这六项任一不同，前后两份就不可比。**
+`--save` 按 `<数据集>-<日期>-<ids_sha 前 8 位>.md` 命名，同名即同语料。历史报告在
+`eval/reports/archive/`，保留是为了留下"当时的结论是什么"，不再当基线。
 
 CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`ruff check rag4prefa tests scripts`
 → `pytest -q`。全部离线，不需要任何 Key。

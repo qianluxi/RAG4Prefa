@@ -656,6 +656,19 @@ def archived_chunk_ids(conn: sqlite3.Connection) -> set[str]:
     return {r["chunk_id"] for r in conn.execute("SELECT chunk_id FROM vectors")}
 
 
+def chunk_ids_by_doc(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    """按文档分组的全部片段 id，一次查询取完。
+
+    给语料快照用。按文档逐个 `chunk_ids_of_doc()` 也能得到同样的结果，但那是
+    "文档数"次查询：语料扩到几十份以后，每跑一次评估都要多花几十毫秒去做一件
+    与评估本身无关的事。这里一条 SQL 换的是「评估启动开销不随语料规模线性涨」。
+    """
+    grouped: dict[str, list[str]] = {}
+    for row in conn.execute("SELECT doc_id, id FROM chunks"):
+        grouped.setdefault(row["doc_id"], []).append(row["id"])
+    return grouped
+
+
 def recoverable_chunk_ids(conn: sqlite3.Connection) -> set[str]:
     """能作为"恢复源"的归档 id：仍然有正文的那些。
 
