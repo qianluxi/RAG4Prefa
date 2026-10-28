@@ -124,6 +124,42 @@ def test_collect_files_separates_supported_and_skipped(tmp_path) -> None:
     assert ".docx" in reasons["c.doc"] and "另存为" in reasons["c.doc"]
 
 
+def test_collect_files_walks_into_subdirectories(tmp_path) -> None:
+    """目录导入必须递归，子目录里的语料不能凭空消失。
+
+    2026-10-28 实测：`文献资料/0X_分类/子类/` 这种两层结构下，`iterdir()` 只拿到第一层，
+    45 份里丢了 30 份，而导入报告只字未提——连"跳过"都算不上。语料少一半，检索指标
+    会平白变差，但没有任何一处会报错。
+    """
+    deep = tmp_path / "04_技术应用与案例" / "试点项目"
+    deep.mkdir(parents=True)
+    (tmp_path / "顶层.pdf").write_bytes(b"x")
+    (deep / "P1_试点.md").write_bytes(b"x")
+    (deep / "P2_详情.docx").write_bytes(b"x")
+    (deep / "旧格式.doc").write_bytes(b"x")
+    hidden = tmp_path / ".workbuddy" / "memory"
+    hidden.mkdir(parents=True)
+    (hidden / "2026-10-28.md").write_bytes(b"x")  # 工作记忆不是语料
+
+    files, skipped = cli._collect_files([str(tmp_path)])
+
+    assert sorted(p.name for p in files) == ["P1_试点.md", "P2_详情.docx", "顶层.pdf"]
+    assert [p.name for p, _ in skipped] == ["旧格式.doc"], "子目录里不支持的格式也要报出来"
+    assert all(".workbuddy" not in str(p) for p in files)
+
+
+def test_collect_files_counts_a_file_specified_twice_once(tmp_path) -> None:
+    """目录与目录里的文件同时给出时，同一份语料只算一次。
+
+    重复入库不是报错，是白花一遍 embedding，并且让"这一批处理了几个文件"的数字失真。
+    """
+    (tmp_path / "a.pdf").write_bytes(b"x")
+
+    files, _ = cli._collect_files([str(tmp_path), str(tmp_path / "a.pdf")])
+
+    assert [p.name for p in files] == ["a.pdf"]
+
+
 def test_cmd_ingest_stops_when_everything_was_skipped(tmp_path, monkeypatch, capsys) -> None:
     (tmp_path / "只有老文档.doc").write_bytes(b"x")
     monkeypatch.setattr(

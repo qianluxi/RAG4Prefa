@@ -62,27 +62,55 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         services.close()
 
 
+def _walk_corpus(root: Path) -> list[Path]:
+    """目录里的候选文件，**递归**收集。
+
+    以前这里用 `iterdir()`，只拿第一层。语料按 `文献资料/0X_分类/子类/` 组织之后，
+    子目录里的文件既不在 `files` 里、也不在 `skipped` 里——连"被跳过"都算不上，是
+    彻底消失。2026-10-28 实测：45 份的目录丢掉了 30 份，而导入报告一切正常。
+
+    以 `.` 开头的目录整个跳过：工程目录下还有 `.workbuddy/`（工作记忆），rglob 会
+    把里面的 md 当成语料收走。
+    """
+    picked: list[Path] = []
+    for entry in sorted(root.rglob("*")):
+        rel = entry.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        if not entry.is_file() or entry.name.startswith("~$"):
+            continue  # Office 锁文件不是"被跳过的语料"
+        picked.append(entry)
+    return picked
+
+
 def _collect_files(targets: list[str]) -> tuple[list[Path], list[tuple[Path, str]]]:
     """分离「能处理」与「被跳过」，并给每个跳过项一个可执行的理由。
 
     以前目录导入只按扩展名 glob 一遍，`.doc` / `.xlsx` 这些文件**不会出现在任何输出里**：
     用户看到"入库成功"就以为都进去了，实际少了几份，而且没有任何提示。语料不全是个
     安静的错误——检索效果变差，但没人知道是缺文件导致的。
+
+    目录递归收集；同一个文件被重复指定（例如既给了目录又给了目录里的某个文件）只算一次，
+    否则它会入库两次、白花一遍 embedding。
     """
     files: list[Path] = []
     skipped: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
     for target in targets:
         path = Path(target)
         if path.is_dir():
-            for entry in sorted(path.iterdir()):
-                if not entry.is_file() or entry.name.startswith("~$"):
-                    continue  # 子目录、Office 锁文件不算"被跳过"
+            for entry in _walk_corpus(path):
+                if entry in seen:
+                    continue
+                seen.add(entry)
                 if entry.suffix.lower() in SUPPORTED_SUFFIXES:
                     files.append(entry)
                 else:
                     skipped.append((entry, explain_unsupported(entry.suffix)))
         elif path.suffix.lower() in SUPPORTED_SUFFIXES:
-            files.append(path)
+            if path not in seen:
+                seen.add(path)
+                files.append(path)
         elif path.exists():
             skipped.append((path, explain_unsupported(path.suffix)))
         else:
