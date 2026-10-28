@@ -8,8 +8,9 @@
 1. **条文号连续性**。同一节里 `3.1.1 / 3.1.2 / 3.1.5`——缺 3.1.3 和 3.1.4 说明
    那一段（很可能在某一页的中间）没被识别出来。规范类文档的编号是人工编排的，
    极少本来就跳号，所以这是**最灵敏**的自动判据。
-2. **表号、图号连续性**。同上，但更容易漏：表 4.3.10 之后直接跳到 4.3.12，
-   多半是中间那张表整页丢了。
+2. **表被引用但找不到表头**。规范和条文号不一样：条文号连续，表号是按需挂的。
+   一条正文说"应符合表 4.3.10 的规定"，而全文没有一行 `表 4.3.10 …` 后面跟
+   表头，那就是整张表丢了。
 3. **占位符 ▢**。提示词要求"认不出的字用 ▢ 占位，不要猜"。所以 ▢ 的数量就是
    模型自认看不清的字数——它标记的位置，人眼一定要过一遍。
 4. **片段字数塌陷**。同一份文档里，某个片段只有几十个字而中位数是四五百，
@@ -41,8 +42,10 @@ from rag4prefa.db import connect  # noqa: E402
 
 # `3.1.11` / `4.3.10`：规范条文号。前后不能再接数字，否则 `2018.10.1` 这种日期会混进来。
 _CLAUSE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\.(\d{1,3})(?![\d.])")
-# `表 4.3.10` / `图 3.0.1` / `表4.3.10`
-_TABLE = re.compile(r"[表图]\s*(\d{1,2})\.(\d{1,2})\.(\d{1,3})(?![\d.])")
+# `表 4.3.10` / `表4.3.10`。**图号故意不进来**，理由见 `_tables_without_body()`。
+_TABLE = re.compile(r"表\s*(\d{1,2})\.(\d{1,2})\.(\d{1,3})(?![\d.])")
+# 表标题之后往下看几行找表头。识别稿的表一定是紧跟在标题下面的，隔得远就不是它。
+_HEADER_WINDOW = 2
 # 提示词约定：认不出的字用 ▢ 占位（不是"猜一个"）。数量本身就是质量信号。
 _PLACEHOLDER = "▢"
 
@@ -55,7 +58,7 @@ class DocAudit:
     chars: int
     placeholder: int = 0
     clause_gaps: list[str] = field(default_factory=list)
-    table_gaps: list[str] = field(default_factory=list)
+    table_missing: list[str] = field(default_factory=list)
     slim_chunks: int = 0
 
     @property
@@ -67,8 +70,8 @@ class DocAudit:
         out: list[str] = []
         if self.clause_gaps:
             out.append(f"条文号断档 {len(self.clause_gaps)} 处")
-        if self.table_gaps:
-            out.append(f"表/图号断档 {len(self.table_gaps)} 处")
+        if self.table_missing:
+            out.append(f"表缺正文 {len(self.table_missing)} 处")
         if self.placeholder:
             out.append(f"{self.placeholder} 个认不出的字")
         if self.slim_chunks:
@@ -92,6 +95,51 @@ def _gaps(triples: list[tuple[int, int, int]], label: str) -> list[str]:
             more = f" 等 {len(missing)} 个" if len(missing) > 6 else ""
             gaps.append(f"{label} {a}.{b} 缺 {head}{more}")
     return gaps
+
+
+def _has_header(lines: list[str], index: int) -> bool:
+    """第 `index` 行之后紧跟着的是不是表头（至少两个单元格、不是分隔行）。"""
+    for line in lines[index + 1 : index + 1 + _HEADER_WINDOW]:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        cells = [c for c in cells if c]
+        if len(cells) < 2:
+            continue
+        if all(set(c) <= set("-: ") for c in cells):
+            continue  # `|---|---|` 是分隔行，表头在上面
+        return True
+    return False
+
+
+def _tables_without_body(numbers: str) -> list[str]:
+    """被引用、但找不到表头的表号。
+
+    **不能照搬条文号那套连续性判据。** 条文号是人工从头到尾连续编排的
+    （3.1.1、3.1.2、3.1.3），表号只是挂在某一条下面的编号——没人规定条与条
+    之间必须有表。第一版把表号也按连续性查，实测两份文档报出来的 3 处全是误报：
+
+    * GB 55038 表 7.4.1 之后直接是表 7.4.5，中间那三个编号是**条文号**
+      （7.4.2~7.4.4），被算成"缺了 3 张表"，而这三条正文都在库里；
+    * JGJ/T 467 报"缺图 5.2.6"，5.2.6 本来就是条文，没有配图。
+
+    判据跑在"编号连续"这个不成立的前提上，产出的东西只能靠人一条条推翻，
+    比没有判据更浪费时间。换成**引用 vs 定义**：每个表号都得能找到一行表头，
+    否则那张表整块丢了——方向明确，而且正是"整页表格没识别出来"的表现。
+
+    图不做这条：图注是文字、没有表头可核，图号也天然不连续，硬查只有噪声。
+    """
+    lines = numbers.splitlines()
+    appears: dict[str, list[int]] = {}
+    for i, line in enumerate(lines):
+        for m in _TABLE.finditer(line):
+            key = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+            appears.setdefault(key, []).append(i)
+    # 同一个表号会被引用多次（"应符合表 X 的规定"）。只要**任何一处**后面跟着
+    # 表头，这张表就在；全都没有才报。
+    return [
+        f"表 {key} 被引用，但全文找不到它的表头"
+        for key, positions in sorted(appears.items())
+        if not any(_has_header(lines, i) for i in positions)
+    ]
 
 
 def audit_doc(conn: sqlite3.Connection, row: sqlite3.Row) -> DocAudit:
@@ -118,9 +166,7 @@ def audit_doc(conn: sqlite3.Connection, row: sqlite3.Row) -> DocAudit:
         clause_gaps=_gaps(
             [(int(a), int(b), int(c)) for a, b, c in _CLAUSE.findall(numbers)], "条文"
         ),
-        table_gaps=_gaps(
-            [(int(a), int(b), int(c)) for a, b, c in _TABLE.findall(numbers)], "表/图"
-        ),
+        table_missing=_tables_without_body(numbers),
         # 中位数的一半：低于它的片段要么是短标题，要么是"识别到一半断了"。
         # 阈值故意放宽——短章节本来就存在，这里只抓明显塌陷的那种。
         slim_chunks=sum(1 for n in chars if n and n < max(80, median / 2)),
@@ -135,22 +181,22 @@ def report(rows: list[DocAudit], *, db_path: Path) -> str:
         f"- 数据库：`{db_path}`",
         f"- 有识别页的文档：{len(rows)} 份",
         "",
-        "| 文档 | 识别页 | 片段 | 字/片段 | 认不出 | 条文断档 | 表图断档 | 异常短片段 |",
+        "| 文档 | 识别页 | 片段 | 字/片段 | 认不出 | 条文断档 | 表缺正文 | 异常短片段 |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         lines.append(
             f"| {r.filename[:40]} | {r.ocr_pages} | {r.chunks} | {r.chars_per_chunk} "
-            f"| {r.placeholder} | {len(r.clause_gaps)} | {len(r.table_gaps)} | {r.slim_chunks} |"
+            f"| {r.placeholder} | {len(r.clause_gaps)} | {len(r.table_missing)} | {r.slim_chunks} |"
         )
 
-    details = [r for r in rows if r.clause_gaps or r.table_gaps or r.placeholder]
+    details = [r for r in rows if r.clause_gaps or r.table_missing or r.placeholder]
     lines += ["", "## 需要人眼过的位置", ""]
     if not details:
         lines.append("没有发现断档或占位符。")
     for r in details:
         lines.append(f"### {r.filename}")
-        for gap in r.clause_gaps + r.table_gaps:
+        for gap in r.clause_gaps + r.table_missing:
             lines.append(f"- {gap}")
         if r.placeholder:
             lines.append(f"- 模型自认看不清的字 {r.placeholder} 个（正文里的 ▢）")
@@ -160,6 +206,8 @@ def report(rows: list[DocAudit], *, db_path: Path) -> str:
         "> 断档不等于一定漏了：规范本来就允许「本章不设某节」，也会出现整节作废。",
         "> 判据的价值在于**缩小人眼要看的范围**——把 500 页变成十几处，",
         "> 而不是自动给出「这份识别对了」的结论。占位符 ▢ 的位置则是确定的漏字。",
+        "> 「表缺正文」另算：条文号连续，表号不连续，所以表只核「被引用却没表头」，",
+        "> 不核编号。图不核——图注没有表头可对照。",
     ]
     return "\n".join(lines)
 
@@ -205,7 +253,7 @@ def main() -> int:
     if not args.quiet:
         print(text)
 
-    bad = [a for a in audits if a.clause_gaps or a.table_gaps or a.placeholder]
+    bad = [a for a in audits if a.clause_gaps or a.table_missing or a.placeholder]
     print(f"\n{len(audits)} 份识别稿，{len(bad)} 份有具体线索（断档 / 占位符）")
     return 0
 

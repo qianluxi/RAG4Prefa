@@ -39,6 +39,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import pymupdf
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -47,6 +48,34 @@ from ..ocr_setup import EffectiveOcr, effective
 
 # (页面 PNG 字节, 1-based 页码) -> 该页的 Markdown
 OcrFn = Callable[[bytes, int], str]
+
+
+def page_ink(png: bytes) -> float:
+    """这张页图上有多大比例的像素不是白的（0~1）。
+
+    用来分开两件长得一样、处理方式却相反的事：
+
+    * **本来就没字**（空白页、整页插图）——识别结果为空是**正确**的，该缓存；
+    * **有字但模型停早了**——结果是碎片，缓存它等于把错误固化成"事实"。
+
+    不做 OCR、不引模型，只是数像素：转灰度、缩到 1/8、统计暗于 200 的比例。
+    缩是必须的——150 dpi 的一页有上千万像素，逐点算会把并发吃掉；
+    1/8 之后约 12 万点，算出来的数字与全尺寸一致（实测同一页 8.9% / 9.3%）。
+
+    解不开的字节返回 0（当作没有墨迹）。这**不是**保守，是有意的：我们自己渲染出来
+    的 PNG 一定能解开，解不开说明手里根本不是页图（测试里的假字节、以后换的调用方），
+    这时候没有任何证据说"这页有字却被漏掉了"，多问一次只是白花钱。
+    """
+    try:
+        pix = pymupdf.Pixmap(png)
+        gray = pymupdf.Pixmap(pymupdf.csGRAY, pix)
+        gray.shrink(3)
+        samples = gray.samples
+    except Exception:  # noqa: BLE001 - 见 docstring：解不开就当作没墨迹
+        return 0.0
+    if not samples:
+        return 0.0
+    return sum(1 for byte in samples if byte < 200) / len(samples)
 
 # 提示词版本。改提示词必须 +1：输出格式变了，旧缓存里的文本就不能再当作"同一份"
 # ——缓存键里带着它，不 +1 会静默沿用旧格式的结果。

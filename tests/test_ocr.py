@@ -120,6 +120,22 @@ def test_page_needs_ocr_flags_garbled_font_pages() -> None:
     assert _page_needs_ocr(garbled) is True
 
 
+def test_short_garbled_page_is_still_flagged() -> None:
+    """短到不够做占比判断的乱码页也必须送识别。
+
+    实测 DBJ33 第 1/6/28 页各 156~223 个字符，全是 `%%%%%%$%&'()*+` 这类字形编号。
+    第一版"样本太短不判"直接放行，三段乱码就这样进了库——检索时和原文长得一样。
+    判据不必算占比：**一个汉字都没有、一个英文词都没有**就够了，"图 4-1"这种真短页
+    是有汉字的，不会被误伤。
+    """
+    page_1 = "!\"#!\n%%%%%%%%%%$%&'()*+,\n%%\n$%& '' ()**+, -.#./\n" * 3
+    assert len(page_1.strip()) < 300
+    assert _page_needs_ocr(page_1) is True
+    # 真·短页（有汉字 / 有英文词）仍然放行
+    assert _page_needs_ocr("图 4-1 悬挑节点大样") is False
+    assert _page_needs_ocr("Figure 4-1 Cantilever joint detail") is False
+
+
 # ── 混合型文档：现在是"报出来"，不是"静默丢" ─────────────────
 
 

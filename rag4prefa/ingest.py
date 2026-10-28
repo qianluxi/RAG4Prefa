@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import consistency, repo
 from .adapters.embed import Embedder
-from .adapters.ocr import OcrError, OcrFn, OcrOptions, VlmOcr, cache_key
+from .adapters.ocr import OcrError, OcrFn, OcrOptions, VlmOcr, cache_key, page_ink
 from .adapters.parsers import parse_document_report
 from .adapters.vectors import (
     VectorItem,
@@ -61,6 +61,20 @@ def _sha_file(path: Path) -> str:
 
 def _doc_id(project_name: str, filename: str) -> str:
     return hashlib.sha1(f"{project_name}|{filename}".encode()).hexdigest()[:16]
+
+
+# 一页的识别结果短到这个长度、而页面上明明有墨迹，多半不是"这页本来就没字"，而是
+# 模型停早了。阈值按实测取：真正的短页（一条图注、只有一条条文）在 20~60 字，
+# 而"停早"的碎片是 1~93 字，页面上却有 8% 以上墨迹。
+_OCR_SHORT_CHARS = 120
+_OCR_INK_MIN = 0.02
+
+
+def _looks_cut_short(png: bytes, text: str) -> bool:
+    """结果短得可疑吗——短，**而且**页面上有字。"""
+    if len(text) >= _OCR_SHORT_CHARS:
+        return False
+    return page_ink(png) >= _OCR_INK_MIN
 
 
 def _cached_ocr(
@@ -123,6 +137,13 @@ def _cached_ocr(
         if hit is not None:
             return hit
         text = provider()(png, page)
+        if _looks_cut_short(png, text):
+            # 再问一次。同一个模型、同一张图，输出长度会变：实测 GB 55037 第 61 页
+            # 连问三次分别是 11、665、668 字——它有时只还原第一行就停。
+            # 长的那个更可能是完整的（短的那个已经把页面上大半内容丢掉了）。
+            again = provider()(png, page)
+            if len(again) > len(text):
+                text = again
         # 空结果也存。空白页、整页插图很常见，不存的话每次重跑都要为同一张空白
         # 图片再付一次费，而它永远不会有内容。
         with sqlite_write():

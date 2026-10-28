@@ -2,6 +2,51 @@
  "chunk_min_tokens": 80,
  "chunk_max_tokens": 480,
  "documents": {
+  "20_GB55037-2022_建筑防火通用规范.pdf": {
+   "project": "装配式内装",
+   "chunks": 99,
+   "ids_sha": "50bc131bc695f431"
+  },
+  "18_GB50210-2018_建筑装饰装修工程质量验收标准.pdf": {
+   "project": "装配式内装",
+   "chunks": 153,
+   "ids_sha": "ed61c7bffb11820f"
+  },
+  "10_浙江省装配式建筑评价标准_DBJ33T1165-2024.pdf": {
+   "project": "装配式内装",
+   "chunks": 73,
+   "ids_sha": "7766bc2873982ff0"
+  },
+  "21_GB50325-2020_民用建筑工程室内环境污染控制标准.pdf": {
+   "project": "装配式内装",
+   "chunks": 67,
+   "ids_sha": "8b9b2902a1be7df3"
+  },
+  "16_JGJT445-2018_工业化住宅尺寸协调标准.pdf": {
+   "project": "装配式内装",
+   "chunks": 51,
+   "ids_sha": "d4d8510f8b7b678a"
+  },
+  "15_GBT50002-2013_建筑模数协调标准.pdf": {
+   "project": "装配式内装",
+   "chunks": 41,
+   "ids_sha": "1ad5cb043dc954bd"
+  },
+  "14_JGJT157-2014_建筑轻质条板隔墙技术规程.pdf": {
+   "project": "装配式内装",
+   "chunks": 34,
+   "ids_sha": "ece2ebb36a49e273"
+  },
+  "04_浙江省装配式内装评价标准_DB33T1259-2021.pdf": {
+   "project": "装配式内装",
+   "chunks": 26,
+   "ids_sha": "b014d6a4999cd88f"
+  },
+  "T1_台州市政府公报2023年第9期_含支持建筑业做优做强17条.pdf": {
+   "project": "装配式内装",
+   "chunks": 41,
+   "ids_sha": "e86b93d77361b2a9"
+  },
   "19_GB55038-2025_住宅项目规范.pdf": {
    "project": "装配式内装",
    "chunks": 49,

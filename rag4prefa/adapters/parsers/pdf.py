@@ -106,6 +106,16 @@ _MIN_WORD_DENSITY = 40.0  # 每千字符里 3 个以上连续拉丁字母的组�
 _CJK = re.compile(r"[\u4e00-\u9fff]")
 _LATIN_WORD = re.compile(r"[A-Za-z]{3,}")
 
+# 送识别前把页图长边压到这个像素数以内。
+#
+# 上限是为"页面尺寸异常的 pdf"设的：GB 55037 的页面是 1653×2397 pt（普通 A4 的
+# 2.8 倍），150 dpi 渲出来 3444×4994。同一个模型对这张图**只回一行就停**——
+# 第 15 页回了一个「1」，第 31 页回 14 字，不报错、不超时。缩到长边 2200 就回满
+# 533 字。66 页里 44 页是这么废掉的，而且错误无声：识别结果照样进库、照样有向量。
+#
+# 对普通 A4 不起作用（842 pt × 150/72 = 1754 px < 2200），所以不改已有行为。
+_OCR_MAX_EDGE = 2200
+
 # 目录页判据：点线引导符（"3.2 非装配式构件......45"）。用 5 个点起步，
 # 中文正文的省略号是「……」，不会撞上。
 _TOC_DOTS = re.compile(r"\.{5,}")
@@ -586,10 +596,14 @@ def _page_needs_ocr(text: str) -> bool:
     stripped = text.strip()
     if len(stripped) < _MIN_PAGE_CHARS:
         return True
-    if len(stripped) < _MIN_CHARS_FOR_READABILITY:
-        # 样本太短不判：一页只有"图 4-1"和几个标注，占比算出来没有意义。
-        return False
     cjk, words = _readable_stats(stripped)
+    if len(stripped) < _MIN_CHARS_FOR_READABILITY:
+        # 短页不按**占比**判：一页只有"图 4-1"和几个标注，占比算出来没有意义。
+        # 但"不按占比判"不等于"一律放行"——一个汉字都没有、一个英文词都没有的短页，
+        # 无论多短都不是能用的文字。实测 DBJ33 第 1/6/28 页各 156~223 个字符，
+        # 全是字形编号（`%%%%%%$%&'()*+`、`ÎÎÎÎÎÎ`），就因为没到 300 字被整段放进了库，
+        # 在检索里和原文长得一样，却把 BM25 的文档频率和向量空间一起拖坏。
+        return cjk == 0 and words == 0
     return cjk < _MIN_CJK_RATIO and words < _MIN_WORD_DENSITY
 
 
@@ -738,6 +752,20 @@ def _merge_by_page(
     return out
 
 
+def _render_for_ocr(page, dpi: int) -> bytes:
+    """按 dpi 渲染这一页，但长边不超过 `_OCR_MAX_EDGE`。
+
+    够得着上限才走 `Matrix`，否则原样调 `get_pixmap(dpi=)`。不是为了好看：
+    `ocr_cache` 的键是**页图字节的哈希**，两条路径渲染出来的字节差一个字节，
+    已经付过费的页就要全部重识别一遍。普通 A4 走的必须是原来那条。
+    """
+    longest_pt = max(page.rect.width, page.rect.height)
+    if longest_pt * dpi / 72.0 <= _OCR_MAX_EDGE:
+        return page.get_pixmap(dpi=dpi).tobytes("png")
+    zoom = _OCR_MAX_EDGE / longest_pt
+    return page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
+
+
 def _ocr_events(
     doc, targets: tuple[int, ...], ocr: OcrOptions | None
 ) -> tuple[list[tuple[int | None, str, int]], tuple[int, ...], tuple[int, ...]]:
@@ -760,7 +788,7 @@ def _ocr_events(
     batch = workers * 2
     for start in range(0, len(targets), batch):
         pages = targets[start : start + batch]
-        rendered = [(pno, doc[pno].get_pixmap(dpi=ocr.dpi).tobytes("png")) for pno in pages]
+        rendered = [(pno, _render_for_ocr(doc[pno], ocr.dpi)) for pno in pages]
         # 同一批里页图逐字节相同的只问一次：空白页、重复的模板页渲染出来完全一样。
         # 不合并的话几个线程会同时"查缓存未命中"，同一张图付几次钱。
         unique: dict[str, tuple[int, bytes]] = {}
