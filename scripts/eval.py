@@ -34,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rag4prefa import ask, consistency, repo, snapshot  # noqa: E402
+from rag4prefa.adapters.query_expand import build_expander  # noqa: E402
 from rag4prefa.domain import Filter, Hit  # noqa: E402
 from rag4prefa.services import build_services  # noqa: E402
 
@@ -238,9 +239,13 @@ async def retrieve_for(
 def evaluate(
     services, rows: list[dict], k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
+    expander=None,
 ) -> dict:
     return asyncio.run(
-        _evaluate(services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows)
+        _evaluate(
+            services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
+            expander=expander,
+        )
     )
 
 
@@ -304,6 +309,7 @@ def _run_context(services, snapshot_path: Path | None = None) -> dict:
 async def _evaluate(
     services, rows: list[dict], k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
+    expander=None,
 ) -> dict:
     metrics: dict[str, dict[str, list[float]]] = {
         m: {"recall": [], "mrr": [], "ndcg": []} for m in modes
@@ -332,10 +338,16 @@ async def _evaluate(
             skipped.append(question)
             continue
 
+        # 术语扩展：把口语问句扩成「原话 + 术语」再检索。gold 仍然按原问句解析——
+        # 扩展只改"怎么查"，不改"查什么是对的"。
+        search_question = question
+        if expander is not None and expander.available:
+            search_question = expander.expand(question)
+
         for mode in modes:
             try:
                 hits = await retrieve_for(
-                    services, mode, question, effective, k, effective.keyword
+                    services, mode, search_question, effective, k, effective.keyword
                 )
             except consistency.IndexMismatch:
                 raise  # 配置问题，不是单条样本的问题
@@ -396,6 +408,7 @@ async def _evaluate(
 def run(
     dataset_path: Path, k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_path: Path | None = None,
+    expand: bool = False,
 ) -> dict:
     services = build_services()
     try:
@@ -412,11 +425,16 @@ def run(
         )
         if not rows and not refuse_rows:
             raise ValueError(f"数据集为空：{dataset_path}")
+        expander = None
+        if expand:
+            expander = build_expander(services.settings, getattr(services, "llm", None))
         result = evaluate(
-            services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows
+            services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
+            expander=expander,
         )
         result["refuse_dataset"] = str(refuse_path) if refuse_rows else ""
         result["dataset"] = str(dataset_path)
+        result["expanded"] = bool(expander is not None and expander.available)
         # 数据集的身份与语料身份同等重要：`eval/dataset.jsonl` 这一个路径
         # 曾经先后对应过 30 题和 25 题两个版本，报告看不出来。
         result["dataset_sha"], result["dataset_rows"] = snapshot.dataset_digest(dataset_path)
@@ -469,6 +487,8 @@ def report(result: dict, k: int) -> str:
             state = "有未提交改动" if code.get("dirty") else "工作区干净"
             tail = f" · 代码 `{code['commit']}`（{state}）"
         lines.append(f"- 生成于 {result['generated_at']}{tail}")
+    if result.get("expanded"):
+        lines.append("- **检索使用了 LLM 术语扩展**：口语问句先扩成「原话 + 术语」再检索")
 
     # 语料变了还沿用旧快照，是最容易出错的一种"看起来正常"：数字算得出来、
     # 也像是真的，只有跟上一份报告并排时才说不清为什么不一样。
@@ -604,7 +624,10 @@ def _report_path(result: dict, dataset_path: Path) -> Path:
     corpus = (result.get("context") or {}).get("corpus") or {}
     stamp = (result.get("generated_at") or "")[:10].replace("-", "")
     tag = (corpus.get("ids_sha") or "nosnapshot")[:8]
-    return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{stamp}-{tag}.md"
+    # 带术语扩展与不带是两种不同的检索配置，必须分开命名：
+    # 否则 `--expand` 的对照实验会覆盖掉同一语料、同一数据集的基线报告。
+    suffix = "-expand" if result.get("expanded") else ""
+    return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{stamp}-{tag}{suffix}.md"
 
 
 def main() -> int:
@@ -622,6 +645,11 @@ def main() -> int:
         "--refuse",
         default="eval/dataset.refuse.jsonl",
         help="库外问题集（默认 eval/dataset.refuse.jsonl，不存在则跳过）",
+    )
+    parser.add_argument(
+        "--expand",
+        action="store_true",
+        help="检索前用 LLM 把口语问句扩展成「原话 + 术语」（对照实验用）",
     )
     args = parser.parse_args()
 
@@ -649,6 +677,7 @@ def main() -> int:
             modes,
             Path(args.snapshot) if args.snapshot else None,
             refuse_path=Path(args.refuse) if args.refuse else None,
+            expand=args.expand,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

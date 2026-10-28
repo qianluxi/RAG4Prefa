@@ -170,7 +170,7 @@ api.py        FastAPI 路由（只做协议转换）
   ├── filters.py      问题 → Filter（规则优先，可单测）
   ├── chunking.py     标题树分块
   ├── repo.py         全部 SQL
-  └── adapters/       embed / llm / ocr / vectors / rerank / parsers（docx / pdf / md / 共用标题规则）
+  └── adapters/       embed / llm / ocr / vectors / rerank / query_expand / parsers（docx / pdf / md / 共用标题规则）
 ```
 
 **数据分层**：SQLite 存事实（项目、文档、片段、任务、向量归档），Milvus 只是可重建的索引。
@@ -554,6 +554,13 @@ RAG 系统里这是最坏的一类失败——它不崩溃，只是胡说。降�
   表格识别依赖框线，无边框的"空格对齐表"会被当成正文。
 - token 用字/词估算而非真实 tokenizer，分块边界与模型实际计数有误差（阈值留了余量）。
 - 未做多轮对话改写：追问需要带上上下文关键词，否则召回会偏。
+- **单轮口语术语扩展（`--expand`）首版被证伪**。`adapters/query_expand.py` 用 LLM 把口语
+  问句扩成「原话 + 术语」再检索，目标是把「会不会掉下来」映射到「悬挂较重物体应采用
+  专用连接件」。对照实验（口语集 15 题）只让 dense 从 0.400 升到 0.467，而 5 道「词表
+  鸿沟」题**一道都没救回**——扩展词里「吊柜/电视」这类从原话继承的干扰词，在语料里的
+  频率比术语更高，反而把正确片段挤出候选池。扩展因此**默认不参与生产链路**，只作为
+  `retrieve()`/`search()` 的可选参数与评估的实验开关保留。要跑对照：
+  `python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --expand --save`。
 - 单进程设计（SQLite + 进程内任务）。要多副本时把 SQLite 换成 Postgres、任务换队列，接口层无需改动。
 - **并发**：同一个 `sqlite3.Connection` 被请求与后台入库线程共用（`check_same_thread=False`），
   没有额外的写锁。单用户没问题，多人并发写之前应先改成每线程独立连接。

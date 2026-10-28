@@ -17,6 +17,7 @@ from typing import Any
 from . import consistency, repo
 from .adapters.embed import Embedder
 from .adapters.llm import LLM
+from .adapters.query_expand import QueryExpander
 from .adapters.rerank import NoopReranker, Reranker
 from .adapters.vectors import VectorStore
 from .config import Settings
@@ -83,6 +84,7 @@ async def retrieve(
     question: str,
     filt: Filter,
     recall_k: int | None = None,
+    expander: QueryExpander | None = None,
 ) -> tuple[list[Hit], Filter, dict[str, float]]:
     """返回 (融合后的候选, 实际生效的筛选条件, 各阶段耗时)。"""
     recall = recall_k or settings.recall_k
@@ -99,10 +101,19 @@ async def retrieve(
     consistency.ensure_queryable(
         conn, embedder.model, store.dim, store_count=store.count()
     )
-    query = f"{question} {filt.keyword}" if filt.keyword else question
+
+    # 查询术语扩展：把口语问句扩成「原话 + 术语」，喂给 BM25 与向量两个通道。
+    # 这是可选项——没传 expander（或 expander 不可用）时，query 就是原话，行为与
+    # 加扩展之前完全一致。扩展失败在 expander 内部已降级回原话，这里拿到的永远是
+    # 一个「至少等于原话」的串，不会更差。
+    expanded = question
+    if expander is not None and expander.available:
+        t0 = time.perf_counter()
+        expanded = await asyncio.to_thread(expander.expand, question)
+        timings["expand_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
     t0 = time.perf_counter()
-    vector = await asyncio.to_thread(embedder.embed_one, question)
+    vector = await asyncio.to_thread(embedder.embed_one, expanded)
     timings["embed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     _ensure_same_index(conn, version, "计算查询向量期间")
 
@@ -114,7 +125,10 @@ async def retrieve(
     _ensure_same_index(conn, version, "检索期间")
 
     t0 = time.perf_counter()
-    sparse = await asyncio.to_thread(lambda: repo.fts_search(conn, query, limit=recall, filt=filt))
+    sparse_query = f"{expanded} {filt.keyword}" if filt.keyword else expanded
+    sparse = await asyncio.to_thread(
+        lambda: repo.fts_search(conn, sparse_query, limit=recall, filt=filt)
+    )
     timings["sparse_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
     fused = rrf(dense, sparse, k=settings.rrf_k)
@@ -159,6 +173,9 @@ async def stream_answer(
     # 而不是一条只能靠脚本复现的旁路。
     do_rerank = rerank_available(reranker) if use_rerank is None else use_rerank
     started = time.perf_counter()
+    # 术语扩展是实验开关，默认不启用：首版对照实验（口语集）在 hybrid/rerank 上
+    # 无正收益（详见 HANDOFF 第三十八轮），默认开启只会让每次问答多一次 LLM 调用
+    # 却拿不到好处。要开请在调用点显式传 expander。
     hits, effective, timings = await retrieve(
         conn, store, embedder, settings, question=question, filt=filt
     )
@@ -225,6 +242,7 @@ async def search(
     top_k: int | None = None,
     reranker: Reranker | None = None,
     use_rerank: bool | None = None,
+    expander: QueryExpander | None = None,
 ) -> tuple[list[Hit], Filter, dict[str, float]]:
     """检索（可选重排），返回前 `top_k` 条。
 
@@ -234,7 +252,7 @@ async def search(
     """
     limit = top_k or settings.top_k
     hits, effective, timings = await retrieve(
-        conn, store, embedder, settings, question=question, filt=filt
+        conn, store, embedder, settings, question=question, filt=filt, expander=expander
     )
     do_rerank = (
         rerank_available(reranker) if use_rerank is None else use_rerank
