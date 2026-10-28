@@ -15,7 +15,7 @@ from pathlib import Path
 from ...domain import Section
 from ..ocr import OcrOptions
 
-SUPPORTED_SUFFIXES = (".docx", ".pdf")
+SUPPORTED_SUFFIXES = (".docx", ".pdf", ".md", ".markdown")
 
 
 @dataclass(frozen=True)
@@ -69,8 +69,8 @@ _UNSUPPORTED_HINTS = {
     ".xls": "只支持文档，不支持电子表格",
     ".xlsx": "只支持文档，不支持电子表格",
     ".csv": "只支持文档，不支持电子表格",
-    ".txt": "纯文本没有章节结构，无法按标题树切块",
-    ".md": "Markdown 暂无解析器",
+    ".txt": "纯文本没有标题语法；如果它其实是 Markdown（用 # 或「一、」编号分节），"
+    "改名成 .md 即可入库",
 }
 
 
@@ -99,6 +99,10 @@ def parse_document_report(
         from .pdf import parse_pdf_report
 
         return parse_pdf_report(path, ocr=ocr)
+    if suffix in {".md", ".markdown"}:
+        from .markdown import parse_markdown
+
+        return parse_markdown(path), ParseReport()
     raise ValueError(_unsupported_message(suffix, path))
 
 
