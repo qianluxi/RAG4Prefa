@@ -76,6 +76,20 @@ _MIN_TEXT_CHARS = 50  # 全文可提取字符少于这个数，视为没有文�
 # 就是"有文字层"的证据，送去 OCR 反而只会得到一张图里本来就没有的字。
 # 真正的扫描页是整页 0 个字；留 5 个字的余量挡住水印残留与孤零零的页码。
 _MIN_PAGE_CHARS = 5
+
+# 「整页图 + 一行水印」型扫描件（2026-10-28 实测）。住建部「信息公开浏览专用」的
+# pdf 全是这样：整页一张扫描图，上面叠一行「住房城乡建设部信息公开　浏览专用」。
+# 一页 37 个字符、全是汉字、字符数不为 0——字符数与可读性两道闸门**一道都拦不住**，
+# 45 页会被拼成 719 字的一节，看着入库成功，实际一个字正文都没有。
+#
+# 判据只能看版面几何，不能看字符：水印页的 37 个字是"住房城乡建设部信息公开　浏览
+# 专用"，与正文页的差别不在字，在于**整页被图片铺满**。
+#
+# 实测（2026-10-28，11 份真实文件）：水印型 5 份的图片合计覆盖中位数一律 1.00、
+# 每页字符数恒为 37；正常文档 6 份（含 72 页图集、120 页设计示例）覆盖中位数
+# 一律 0.00、字符中位 126~820。图集里的图是矢量绘制（drawings），不进这一项。
+_SCAN_IMAGE_COVER = 0.6  # 图片**合计**覆盖页面的比例下限（不是单张）
+_SCAN_TEXT_CHARS = 120  # 文字超过这个数就不可能是水印页，省掉几何计算
 _FURNITURE_RATIO_MIN = 20  # 少于这么多段时不用比例保护：短文档里页眉本来占比就高
 _CONTINUATION_GAP = 1.0  # 行间空隙不超过一个字号，就认为是同一段内的换行
 
@@ -508,6 +522,33 @@ def _readable_stats(text: str) -> tuple[float, float]:
     return cjk, words
 
 
+def _image_cover(page) -> float:
+    """图片合计覆盖页面的比例（按与页面求交后的面积，重叠不再叠加）。"""
+    rect = page.rect
+    area = rect.width * rect.height
+    if area <= 0:  # pragma: no cover - 畸形页面，交给下游报错
+        return 0.0
+    total = 0.0
+    for info in page.get_image_info():
+        total += (pymupdf.Rect(info["bbox"]) & rect).get_area()
+    return min(1.0, total / area)
+
+
+def _page_is_scanned(page, text: str) -> bool:
+    """整页是图、文字只剩一行水印的页。
+
+    与 `_page_needs_ocr` 分工：那个只看文字（有没有字、是不是乱码），这个看版面
+    （字是正文还是叠在扫描图上的一行水印）——水印型两条文字判据都拦不住。
+
+    水印页通常由**几张图拼成**（实测一页 8 张、单张只占 15%），所以判的是合计覆盖，
+    拿单张最大值会漏。反过来，正常 PDF 里的插图合计覆盖几乎为 0，图集里的图是矢量
+    绘制，两者都进不来这一条。
+    """
+    if len(text.strip()) > _SCAN_TEXT_CHARS:
+        return False
+    return _image_cover(page) >= _SCAN_IMAGE_COVER
+
+
 def _page_needs_ocr(text: str) -> bool:
     """这一页有没有**可用的**文字层。
 
@@ -707,18 +748,34 @@ def _ocr_events(
     return events, tuple(empty)
 
 
-def _scanned_message(pages: int, blank: tuple[int, ...], visible: int) -> str:
+def _scanned_message(
+    pages: int, blank: tuple[int, ...], visible: int, *, watermark: bool = False
+) -> str:
     """扫描件进不来时说的话。
 
     前缀带 `OCR_SETUP_HINT`：这句话的读者是"拖了一个文件进来的普通用户"，
     前端据此弹配置引导。所以先讲**怎么办**，再讲技术细节——反过来他会以为
     是自己文件坏了。
+
+    `watermark=True` 是另一种坏法：文件里**有**文字，但那点是"住房城乡建设部
+    信息公开　浏览专用"这类水印，正文全在整页图片里。说成"没有文字层"会让人
+    以为自己文件是空的（他明明能看见字）。
     """
     where = ""
     if blank and len(blank) < pages:
         sample = "、".join(str(i + 1) for i in blank[:6])
         more = f" 等共 {len(blank)}" if len(blank) > 6 else ""
         where = f"，其中第 {sample}{more} 页完全没有文字层"
+    if watermark:
+        return (
+            f"{OCR_SETUP_HINT}这个 pdf 的文字层里只有水印"
+            f"（共 {pages} 页、可提取字符 {visible} 个，正文全是整页图片），"
+            "需要视觉模型逐页识别才能读出内容。"
+            "在界面「API 设置」里填一份视觉模型的 Key（服务端配置项 R4P_OCR_API_KEY，"
+            "按页计费，一页约 15 秒、24 页约 1.4 角），或把 R4P_OCR_MODE 设成 auto。"
+            "不配置视觉模型就只能放弃这一份——这类文件入库也是几十页水印，"
+            "检索时还会被当成正文命中。文件未被入库，索引与归档没有任何改动。"
+        )
     return (
         f"{OCR_SETUP_HINT}这个 pdf 没有文字层，是扫描件或图片导出的"
         f"（共 {pages} 页，可提取字符 {visible} 个{where}），需要视觉模型逐页识别。"
@@ -749,7 +806,15 @@ def parse_pdf_report(
 
         # 逐页判"有没有可用文字层"。整份判断漏掉的正是混合型文档（见模块头）：
         # 封面扫描、正文有文字层的公文，整份闸门能过，扫描那几页却一个字都进不来。
-        blank = tuple(i for i, text in enumerate(texts) if _page_needs_ocr(text))
+        # 两条判据并联：一条看文字（没字 / 乱码），一条看版面（字只是叠在整页图上的水印）。
+        watermarked = tuple(
+            i for i, text in enumerate(texts) if _page_is_scanned(doc[i], text)
+        )
+        blank = tuple(
+            i
+            for i, text in enumerate(texts)
+            if i in watermarked or _page_needs_ocr(text)
+        )
         # 目录页不参与任何一条路：目录条目本身是「编号一行、标题一行」，无论从字号
         # 还是从模型眼里看都像标题，进来就会凭空长出一棵树（见 _looks_like_toc）。
         skip = set(_toc_pages(texts))
@@ -758,6 +823,15 @@ def parse_pdf_report(
         if ocr is None:
             if visible < _MIN_TEXT_CHARS:
                 raise ValueError(_scanned_message(pages, blank, visible))
+            # 水印型扫描件单独一条：它的 `visible` 远大于 `_MIN_TEXT_CHARS`（水印本身
+            # 就是字），只看字符数的闸门会放它进来，然后把几十页水印拼成一节假正文。
+            # 判据只能是"每一页都是水印页"，不能拿 `visible` 反推——乱码型的字符数
+            # 同样很多（实测 4 页 2642 字），那种要说的是 ToUnicode，不是水印。
+            if len(watermarked) == pages:
+                raise ValueError(
+                    _scanned_message(pages, watermarked, visible, watermark=True)
+                )
+            _ensure_readable(raw)
             _ensure_readable(raw)
             ocr_targets: tuple[int, ...] = ()
             missing = tuple(i + 1 for i in blank if i not in skip)
