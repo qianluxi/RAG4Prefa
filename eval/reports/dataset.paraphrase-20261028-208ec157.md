@@ -4,10 +4,10 @@
 - 指标：Recall@5、MRR、nDCG@5，相关性按 chunk 二值判定
 - Recall@5 = |TopK ∩ Gold| / |Gold|，Gold 为**本题筛选范围内**的相关 chunk 集合
 - 片段标注已解析成范围内包含它的全部 chunk，三个指标共用同一个 Gold
-- 坐标系：embedding `Qwen/Qwen3-Embedding-0.6B`（1024 维）· chunk 80~480 token · recall_k=50 · rrf_k=60 · 重排 `Qwen/Qwen3-Reranker-0.6B`
+- 坐标系：embedding `Qwen/Qwen3-Embedding-0.6B`（1024 维）· chunk 80~480 token · recall_k=50 · rrf_k=60 · 重排 `Qwen/Qwen3-Reranker-0.6B` · 混合池深=50
 - 语料快照：75 份文档 / 2560 个片段 · ids_sha `208ec1576dfc11cc`
 - 数据集：`eval\dataset.paraphrase.jsonl` · 15 题 · sha `7adbc764f9e417ac`
-- 生成于 2026-10-28T19:17:16+08:00 · 代码 `1e62947`（有未提交改动）
+- 生成于 2026-10-28T21:46:45+08:00 · 代码 `8175ddb`（工作区干净）
 
 | 召回方式 | 有效样本 | Recall@5 | MRR | nDCG@5 |
 |---|---|---|---|---|
@@ -15,12 +15,12 @@
 | dense_rerank | 15 | 0.333 | 0.283 | 0.295 |
 | sparse | 15 | 0.267 | 0.233 | 0.242 |
 | hybrid | 15 | 0.333 | 0.289 | 0.300 |
-| rerank | 15 | 0.267 | 0.222 | 0.233 |
+| rerank | 15 | 0.333 | 0.283 | 0.295 |
 
 混合召回相对纯向量：Recall@5 -0.067
 混合召回相对纯稀疏：Recall@5 +0.067
 重排相对纯向量：Recall@5 -0.067
-开重排相对 hybrid：Recall@5 -0.067
+开重排相对 hybrid：Recall@5 +0.000
 
 ## 库外问题（语料里没有答案）
 
