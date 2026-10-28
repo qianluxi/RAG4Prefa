@@ -244,15 +244,19 @@ def test_rerank_and_hybrid_share_one_candidate_pool(monkeypatch: pytest.MonkeyPa
     报告读起来就像「重排有收益」，其实一个候选都没被重排过。这里钉住两件事：池深一致，
     且 rerank 拿到的是整个池而不是已经截断的 top-k。
     """
-    seen: list[int] = []
+    seen: list[tuple[int, int | None]] = []
     pool = [
         Hit(chunk_id=f"c{i:03d}", score=1.0 - i / 100, project_name="p", filename="f.docx")
         for i in range(60)
     ]
 
-    async def fake_retrieve(conn, store, embedder, settings, *, question, filt, recall_k):
-        seen.append(recall_k)
-        return pool[:recall_k], [], {}
+    async def fake_retrieve(
+        conn, store, embedder, settings, *, question, filt, recall_k, candidate_k=None
+    ):
+        # 两个深度都要记：2026-10-28 之前这里只收 recall_k，于是"声明 50、实得 25"
+        # 这个 bug 被假实现挡住了——假实现按 recall_k 直接切片，看起来一直是对的。
+        seen.append((recall_k, candidate_k))
+        return pool[: (candidate_k or recall_k)], [], {}
 
     monkeypatch.setattr(ev.ask, "retrieve", fake_retrieve)
 
@@ -266,10 +270,14 @@ def test_rerank_and_hybrid_share_one_candidate_pool(monkeypatch: pytest.MonkeyPa
         def require_embedder() -> object:
             return object()
 
+    candidates = asyncio.run(ev.hybrid_pool(_Svc(), "q", Filter(), 5))
     hybrid = asyncio.run(ev.hybrid_hits(_Svc(), "q", Filter(), 5))
     rerank = asyncio.run(ev.rerank_hits(_Svc(), "q", Filter(), 5))
 
-    assert seen == [50, 50], f"两种模式必须用同一个候选池，实际 {seen}"
+    assert seen == [(50, 50), (50, 50), (50, 50)], (
+        f"两种模式必须用同一个候选池，且两段深度都要显式传，实际 {seen}"
+    )
+    assert len(candidates) == ev._hybrid_pool_size(5), "融合结果不许被悄悄截回一半"
     assert len(hybrid) == 5
     assert [h.chunk_id for h in rerank] == [h.chunk_id for h in hybrid], (
         "NoopReranker 下 rerank 与 hybrid 的 top-k 必须一致"

@@ -151,12 +151,23 @@ def _hybrid_pool_size(k: int) -> int:
     而 hybrid 是 50 深的池子取前 5。**池深和截断位置两个变量一起动**，于是在没有配重排
     服务（NoopReranker）的情况下两行数字仍然不同（真实数据上差到 +0.033），报告读起来
     就像"重排带来了 +0.033"，实际上一个候选都没被重排过。
+
+    2026-10-28 专家复审又发现一处更隐蔽的同类问题：这个值只传给了 `recall_k`，
+    而 `ask.retrieve` 当时会按 `max(recall//2, top_k*3)` 再截一刀（50 → 25）。
+    声明 50、实得 25，`hybrid` 与 `dense_rerank` 的池深还因此不一样（后者拿的是
+    dense 直出的 50 条），两行相减不再是单个变量。现在两个深度都显式传下去。
     """
     return max(k * 5, 50)
 
 
 async def hybrid_pool(services, question: str, filt: Filter, k: int) -> list[Hit]:
-    """取深度 ≥ `_hybrid_pool_size(k)` 的融合候选池，不做截断。"""
+    """取深度 = `_hybrid_pool_size(k)` 的融合候选池。
+
+    `recall_k` 与 `candidate_k` 必须**同时**给足：前者决定两个通道各取多少，
+    后者决定融合后保留多少。只给前者时会被 `ask.retrieve` 的默认截断砍回一半，
+    而报告上写的池深仍是 50。
+    """
+    pool = _hybrid_pool_size(k)
     hits, _, _ = await ask.retrieve(
         services.conn,
         services.store,
@@ -164,7 +175,8 @@ async def hybrid_pool(services, question: str, filt: Filter, k: int) -> list[Hit
         services.settings,
         question=question,
         filt=filt,
-        recall_k=_hybrid_pool_size(k),
+        recall_k=pool,
+        candidate_k=pool,
     )
     return hits
 
@@ -173,13 +185,21 @@ async def hybrid_hits(services, question: str, filt: Filter, k: int) -> list[Hit
     return (await hybrid_pool(services, question, filt, k))[:k]
 
 
-async def rerank_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
-    # 候选池与 hybrid 完全一致：两行之间唯一的变量是"有没有重排"。
+async def rerank_hits(
+    services, question: str, filt: Filter, k: int, *, rerank_query: str | None = None
+) -> list[Hit]:
+    """候选池与 hybrid 完全一致：两行之间唯一的变量是"有没有重排"。
+
+    `rerank_query` 单独给：术语扩展只改召回查询时，重排仍必须读原话，
+    否则"改写让候选变了"与"改写让重排判断变了"两件事混在一个差值里。
+    """
     candidates = await hybrid_pool(services, question, filt, k)
-    return await services.reranker.rerank(question, candidates, k)
+    return await services.reranker.rerank(rerank_query or question, candidates, k)
 
 
-async def dense_rerank_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
+async def dense_rerank_hits(
+    services, question: str, filt: Filter, k: int, *, rerank_query: str | None = None
+) -> list[Hit]:
     """纯向量召回 + 重排。候选池深度与 `rerank` 取同一个值。
 
     为什么要这一行（2026-10-28 第一版基线逼出来的）：原来的四行把"融合"和"重排"
@@ -189,27 +209,27 @@ async def dense_rerank_hits(services, question: str, filt: Filter, k: int) -> li
     前者要改融合权重，后者要换重排模型。多这一行就是把这个变量拆开。
     """
     candidates = await dense_hits(services, question, filt, _hybrid_pool_size(k))
-    return await services.reranker.rerank(question, candidates, k)
+    return await services.reranker.rerank(rerank_query or question, candidates, k)
 
 
-async def _dense_mode(services, question, filt, k, keyword):  # noqa: ARG001
+async def _dense_mode(services, question, filt, k, keyword, *, rerank_query=None):  # noqa: ARG001
     return await dense_hits(services, question, filt, k)
 
 
-async def _dense_rerank_mode(services, question, filt, k, keyword):  # noqa: ARG001
-    return await dense_rerank_hits(services, question, filt, k)
+async def _dense_rerank_mode(services, question, filt, k, keyword, *, rerank_query=None):
+    return await dense_rerank_hits(services, question, filt, k, rerank_query=rerank_query)
 
 
-async def _sparse_mode(services, question, filt, k, keyword):
+async def _sparse_mode(services, question, filt, k, keyword, *, rerank_query=None):  # noqa: ARG001
     return await sparse_hits(services, question, filt, k, keyword)
 
 
-async def _hybrid_mode(services, question, filt, k, keyword):  # noqa: ARG001
+async def _hybrid_mode(services, question, filt, k, keyword, *, rerank_query=None):  # noqa: ARG001
     return await hybrid_hits(services, question, filt, k)
 
 
-async def _rerank_mode(services, question, filt, k, keyword):  # noqa: ARG001
-    return await rerank_hits(services, question, filt, k)
+async def _rerank_mode(services, question, filt, k, keyword, *, rerank_query=None):  # noqa: ARG001
+    return await rerank_hits(services, question, filt, k, rerank_query=rerank_query)
 
 
 # 显式分派表，而不是 if/elif 加一个兜底 return：兜底分支会让"加了一种方式但忘了写实现"
@@ -225,12 +245,17 @@ _HANDLERS = {
 
 
 async def retrieve_for(
-    services, mode: str, question: str, filt: Filter, k: int, keyword: str | None
+    services, mode: str, question: str, filt: Filter, k: int, keyword: str | None,
+    *, rerank_query: str | None = None,
 ) -> list[Hit]:
+    """`question` 是**召回**用的串（术语扩展开启时是扩展串）；`rerank_query` 是重排
+    读的串，不传就与召回相同。两者分开，是为了让"扩展只改召回"成为可测的事实。"""
     handler = _HANDLERS.get(mode)
     if handler is None:  # pragma: no cover - 参数校验在 main() 里先拦一道
         raise ValueError(f"未知的召回方式：{mode}")
-    return await handler(services, question, filt, k, keyword)
+    return await handler(
+        services, question, filt, k, keyword, rerank_query=rerank_query
+    )
 
 
 # ── 主流程 ─────────────────────────────────────────────────
@@ -239,12 +264,12 @@ async def retrieve_for(
 def evaluate(
     services, rows: list[dict], k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
-    expander=None,
+    expander=None, expand_rerank: bool = False,
 ) -> dict:
     return asyncio.run(
         _evaluate(
             services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
-            expander=expander,
+            expander=expander, expand_rerank=expand_rerank,
         )
     )
 
@@ -263,8 +288,14 @@ def _code_state() -> dict:
             cwd=ROOT, capture_output=True, text=True, timeout=5, check=False,
         ).stdout.strip()
         # 只看被跟踪文件：未提交改动会让"这个提交号"变得名不副实。
+        # 但 `eval/reports/` 要排除：报告本身就是产物，一次 `--save` 必然改动它。
+        # 不排除的话，第一份报告写完后工作区就"脏"了，之后每份报告都会把自己标成
+        # "有未提交改动"——那个标记也就失去了意义（2026-10-28 专家复审 P1）。
         dirty = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            [
+                "git", "status", "--porcelain", "--untracked-files=no", "--",
+                ".", ":(exclude)eval/reports",
+            ],
             cwd=ROOT, capture_output=True, text=True, timeout=5, check=False,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
@@ -274,7 +305,9 @@ def _code_state() -> dict:
     return {"commit": commit, "dirty": bool(dirty)}
 
 
-def _run_context(services, snapshot_path: Path | None = None) -> dict:
+def _run_context(
+    services, snapshot_path: Path | None = None, k: int | None = None
+) -> dict:
     """跑出这组数字时用的坐标系。缺一项，数字就不能跟前一次直接比。"""
     settings = services.settings
     state = consistency.inspect(services.conn)
@@ -293,6 +326,9 @@ def _run_context(services, snapshot_path: Path | None = None) -> dict:
         "chunk_max_tokens": settings.chunk_max_tokens,
         "chunk_min_tokens": settings.chunk_min_tokens,
         "recall_k": settings.recall_k,
+        # 混合/重排两行用的真实池深。只写 recall_k 是会骗人的：
+        # 曾经 recall_k=50 而融合后只剩 25 条，报告上却看不出这个差。
+        "candidate_k": _hybrid_pool_size(k) if k else None,
         "rrf_k": settings.rrf_k,
         "rerank_model": settings.rerank_model if rerank_on else "",
         # 语料身份跟指标一起走。换成"当时库里有多少片段"之后，
@@ -309,7 +345,7 @@ def _run_context(services, snapshot_path: Path | None = None) -> dict:
 async def _evaluate(
     services, rows: list[dict], k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
-    expander=None,
+    expander=None, expand_rerank: bool = False,
 ) -> dict:
     metrics: dict[str, dict[str, list[float]]] = {
         m: {"recall": [], "mrr": [], "ndcg": []} for m in modes
@@ -323,6 +359,7 @@ async def _evaluate(
     evaluated: dict[str, int] = {m: 0 for m in modes}
     warnings: list[str] = []
     skipped: list[str] = []
+    diagnostics: list[dict] = []
 
     for row in rows:
         question = str(row.get("question") or "").strip()
@@ -340,14 +377,21 @@ async def _evaluate(
 
         # 术语扩展：把口语问句扩成「原话 + 术语」再检索。gold 仍然按原问句解析——
         # 扩展只改"怎么查"，不改"查什么是对的"。
+        #
+        # 扩展默认**只作用于召回**，重排仍读原话（对照实验 B）：否则 rerank 那一行的
+        # 变化里同时混着"候选集变了"和"重排判断变了"两个原因，谁也说不清收益来自哪。
+        # 想研究"扩展词是否也改善重排判断"（实验 C）要显式 `expand_rerank=True`。
         search_question = question
         if expander is not None and expander.available:
             search_question = expander.expand(question)
+        rerank_query = search_question if expand_rerank else question
 
+        per_row = {"question": question, "search_question": search_question, "modes": {}}
         for mode in modes:
             try:
                 hits = await retrieve_for(
-                    services, mode, search_question, effective, k, effective.keyword
+                    services, mode, search_question, effective, k, effective.keyword,
+                    rerank_query=rerank_query,
                 )
             except consistency.IndexMismatch:
                 raise  # 配置问题，不是单条样本的问题
@@ -359,6 +403,14 @@ async def _evaluate(
             metrics[mode]["mrr"].append(mrr(rels))
             metrics[mode]["ndcg"].append(ndcg_at_k(rels, k, len(gold)))
             evaluated[mode] += 1
+            # 逐题留证：只报均值时，"涨了 +0.067 到底是救回了哪道题"无从回答。
+            # 记第一条 gold 的排名与 top-k 的 id 列表，够回答"是不是这道题"。
+            first = next((i for i, r in enumerate(rels, start=1) if r > 0), None)
+            per_row["modes"][mode] = {
+                "first_gold_rank": first,
+                "hits": [h.chunk_id for h in hits[:k]],
+            }
+        diagnostics.append(per_row)
 
     for row in refuse_rows or []:
         question = str(row.get("question") or "").strip()
@@ -396,19 +448,23 @@ async def _evaluate(
         "samples": len(rows) - len(skipped),
         "skipped": skipped,
         "warnings": warnings,
+        # 逐题证据：均值的来源。`--diagnostics` 把它落成 JSONL，
+        # 让"哪道题被救回、哪道题被挤掉"可以事后核对，而不是只有一句结论。
+        "diagnostics": diagnostics,
         # 没配 R4P_RERANK_URL 时 reranker 是 NoopReranker：那一行必须被标成"未启用"，
         # 否则读者会把它当成"重排的收益"。判据与 CLI / /api/health 共用同一个函数。
         "rerank_enabled": ask.rerank_available(getattr(services, "reranker", None)),
         # 数值的"坐标系"必须跟数值一起走：换模型/换维度/换 chunk 参数/换 rrf_k 之后
         # 前后两次数值不可比，而报告本身不会提醒下一届读者这件事。
-        "context": _run_context(services, snapshot_path),
+        "context": _run_context(services, snapshot_path, k),
     }
 
 
 def run(
     dataset_path: Path, k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_path: Path | None = None,
-    expand: bool = False,
+    expand: bool = False, expand_rerank: bool = False,
+    diagnostics_path: Path | None = None,
 ) -> dict:
     services = build_services()
     try:
@@ -430,16 +486,29 @@ def run(
             expander = build_expander(services.settings, getattr(services, "llm", None))
         result = evaluate(
             services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
-            expander=expander,
+            expander=expander, expand_rerank=expand_rerank,
         )
         result["refuse_dataset"] = str(refuse_path) if refuse_rows else ""
         result["dataset"] = str(dataset_path)
         result["expanded"] = bool(expander is not None and expander.available)
+        # 扩展作用在哪一段，必须跟着数字走：只写在命令行参数里，
+        # 报告读者会以为 rerank 那行的变化也是"召回变好"带来的。
+        result["expand_stage"] = (
+            ("rerank" if expand_rerank else "recall") if result["expanded"] else ""
+        )
         # 数据集的身份与语料身份同等重要：`eval/dataset.jsonl` 这一个路径
         # 曾经先后对应过 30 题和 25 题两个版本，报告看不出来。
         result["dataset_sha"], result["dataset_rows"] = snapshot.dataset_digest(dataset_path)
         result["generated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         result["code"] = _code_state()
+        if diagnostics_path is not None:
+            # 一行一题：扩展串 + 每种召回的 gold 排名与 top-k。均值的来源在这里，
+            # 不在报告里——报告只负责给结论，这里负责让人能反驳结论。
+            diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+            with diagnostics_path.open("w", encoding="utf-8") as fh:
+                for item in result["diagnostics"]:
+                    fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+            result["diagnostics_path"] = str(diagnostics_path)
         return result
     finally:
         services.close()
@@ -462,10 +531,11 @@ def report(result: dict, k: int) -> str:
     corpus: dict = {}
     if ctx:
         rerank = f"`{ctx['rerank_model']}`" if ctx.get("rerank_model") else "未启用"
+        pool = f" · 混合池深={ctx['candidate_k']}" if ctx.get("candidate_k") else ""
         lines.append(
             f"- 坐标系：embedding `{ctx['embedding_model']}`（{ctx['embedding_dim']} 维）· "
             f"chunk {ctx['chunk_min_tokens']}~{ctx['chunk_max_tokens']} token · "
-            f"recall_k={ctx['recall_k']} · rrf_k={ctx['rrf_k']} · 重排 {rerank}"
+            f"recall_k={ctx['recall_k']} · rrf_k={ctx['rrf_k']} · 重排 {rerank}{pool}"
         )
         corpus = ctx.get("corpus") or {}
         if corpus:
@@ -488,7 +558,20 @@ def report(result: dict, k: int) -> str:
             tail = f" · 代码 `{code['commit']}`（{state}）"
         lines.append(f"- 生成于 {result['generated_at']}{tail}")
     if result.get("expanded"):
-        lines.append("- **检索使用了 LLM 术语扩展**：口语问句先扩成「原话 + 术语」再检索")
+        stage = result.get("expand_stage") or "recall"
+        if stage == "rerank":
+            lines.append(
+                "- **检索使用了 LLM 术语扩展（召回 + 重排都读扩展串）**："
+                "口语问句先扩成「原话 + 术语」，重排也用扩展串。"
+                "此配置下 rerank 那行的变化同时包含“候选集变化”与“重排判断变化”。"
+            )
+        else:
+            lines.append(
+                "- **召回阶段使用了 LLM 术语扩展**：口语问句先扩成「原话 + 术语」再检索；"
+                "**重排仍读原话**，因此 rerank 那行的差值只反映“候选集变化”。"
+            )
+    if result.get("diagnostics_path"):
+        lines.append(f"- 逐题证据：`{result['diagnostics_path']}`")
 
     # 语料变了还沿用旧快照，是最容易出错的一种"看起来正常"：数字算得出来、
     # 也像是真的，只有跟上一份报告并排时才说不清为什么不一样。
@@ -626,7 +709,14 @@ def _report_path(result: dict, dataset_path: Path) -> Path:
     tag = (corpus.get("ids_sha") or "nosnapshot")[:8]
     # 带术语扩展与不带是两种不同的检索配置，必须分开命名：
     # 否则 `--expand` 的对照实验会覆盖掉同一语料、同一数据集的基线报告。
-    suffix = "-expand" if result.get("expanded") else ""
+    # "只扩召回"与"连重排一起扩"又是两个实验，报告也不能同名。
+    stage = result.get("expand_stage") or ""
+    if stage == "rerank":
+        suffix = "-expand-rerank"
+    elif stage:
+        suffix = "-expand"
+    else:
+        suffix = ""
     return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{stamp}-{tag}{suffix}.md"
 
 
@@ -649,9 +739,23 @@ def main() -> int:
     parser.add_argument(
         "--expand",
         action="store_true",
-        help="检索前用 LLM 把口语问句扩展成「原话 + 术语」（对照实验用）",
+        help="检索前用 LLM 把口语问句扩展成「原话 + 术语」，只作用于召回（重排仍读原话）",
+    )
+    parser.add_argument(
+        "--expand-rerank",
+        action="store_true",
+        help="让重排也读扩展串（实验 C，需同时给 --expand；默认重排读原话）",
+    )
+    parser.add_argument(
+        "--diagnostics",
+        default="",
+        help="把逐题结果（扩展串、各召回方式的 gold 排名与 top-k）写成 JSONL",
     )
     args = parser.parse_args()
+
+    if args.expand_rerank and not args.expand:
+        print("--expand-rerank 需要同时给 --expand", file=sys.stderr)
+        return 2
 
     if args.top_k < 1:
         print("--top-k 必须 ≥ 1", file=sys.stderr)
@@ -678,6 +782,8 @@ def main() -> int:
             Path(args.snapshot) if args.snapshot else None,
             refuse_path=Path(args.refuse) if args.refuse else None,
             expand=args.expand,
+            expand_rerank=args.expand_rerank,
+            diagnostics_path=Path(args.diagnostics) if args.diagnostics else None,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
@@ -696,6 +802,13 @@ def main() -> int:
     if target:
         Path(target).parent.mkdir(parents=True, exist_ok=True)
         Path(target).write_text(text, encoding="utf-8")
+        # 报告默认与逐题证据成对落盘：只有均值时，"涨了 0.067"这种结论没法被反驳，
+        # 也没法被复核。JSONL 与报告同名不同后缀，一眼能对上。
+        if args.save and not args.diagnostics:
+            diag = Path(target).with_suffix(".jsonl")
+            with diag.open("w", encoding="utf-8") as fh:
+                for item in result["diagnostics"]:
+                    fh.write(json.dumps(item, ensure_ascii=False) + "\n")
         print(f"\n已写入 {target}")
     return 0
 

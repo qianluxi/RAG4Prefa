@@ -84,10 +84,23 @@ async def retrieve(
     question: str,
     filt: Filter,
     recall_k: int | None = None,
+    candidate_k: int | None = None,
     expander: QueryExpander | None = None,
 ) -> tuple[list[Hit], Filter, dict[str, float]]:
-    """返回 (融合后的候选, 实际生效的筛选条件, 各阶段耗时)。"""
+    """返回 (融合后的候选, 实际生效的筛选条件, 各阶段耗时)。
+
+    两个深度不是同一个数，必须分开：
+
+    - `recall_k`：**每个通道**各取多少条（稠密、BM25 各自的上限）；
+    - `candidate_k`：RRF 融合后**保留多少条**交给下游（重排、评测、展示）。
+
+    旧实现把后者写死为 `max(recall // 2, top_k * 3)`，于是 `recall_k=50` 实际只拿到
+    25 条。生产问答只取前 top_k 条，少一点无所谓；但评估里 `hybrid` 与 `rerank` 都
+    声明"50 深的池子"，实际是 25，两行数字的差值就不再只等于"有没有重排"这一个变量
+    （2026-10-28 专家复审 P1）。`candidate_k=None` 保留旧行为，生产链路不受影响。
+    """
     recall = recall_k or settings.recall_k
+    pool = candidate_k if candidate_k is not None else max(recall // 2, settings.top_k * 3)
     timings: dict[str, float] = {}
     # 先取号再检查：顺序反过来的话，"检查通过 → 这次切换开始 → 取号拿到新号"会被
     # 当成一路没变，白检查一次。
@@ -104,8 +117,13 @@ async def retrieve(
 
     # 查询术语扩展：把口语问句扩成「原话 + 术语」，喂给 BM25 与向量两个通道。
     # 这是可选项——没传 expander（或 expander 不可用）时，query 就是原话，行为与
-    # 加扩展之前完全一致。扩展失败在 expander 内部已降级回原话，这里拿到的永远是
-    # 一个「至少等于原话」的串，不会更差。
+    # 加扩展之前完全一致。扩展失败在 expander 内部已降级回原话。
+    #
+    # 但"保留原话"只保证"扩不出来时退回原话"，**不保证"扩出来不会更差"**：
+    # 拼接改变的是整串文本，向量与 BM25 的排序都会跟着变，原来命中的片段也可能被
+    # 新加的干扰词挤出去。首版对照实验正是这样拿到 0.400→0.467、却一道目标题都没
+    # 救回（HANDOFF 第三十八轮）。要"原来的排序一定不变"，只能把原话当作**独立通道**
+    # 并行检索再融合，而不是拼成一个串。
     expanded = question
     if expander is not None and expander.available:
         t0 = time.perf_counter()
@@ -132,7 +150,7 @@ async def retrieve(
     timings["sparse_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
     fused = rrf(dense, sparse, k=settings.rrf_k)
-    hits = _to_hits(conn, fused, limit=max(recall // 2, settings.top_k * 3))
+    hits = _to_hits(conn, fused, limit=pool)
 
     # 把两路原始分补回结果，方便前端/评估观察召回来源
     dense_map = dict(dense)
