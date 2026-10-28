@@ -321,21 +321,72 @@ function currentCreds() {
   return user ? { name: store.current, ...user } : null;
 }
 
+/* ── 凭据的三条判断：哪些 Key 算启用、发哪些头、清空后怎么提示 ──
+   放在标记块里是为了能在 Node 里单独执行（`tests/test_web_credentials.py`）：
+   这三条以前只写在调用点内部，只能靠正则断言"代码里有没有这个词"，
+   而真正要守的是**行为**——填错的 Key 到底发不发出去。 */
+/* CRED-LOGIC-START */
+const CRED_ROLES = ["embedding", "llm", "ocr"];
+const CRED_ROLE_LABELS = { embedding: "Embedding", llm: "LLM", ocr: "视觉模型" };
+
+// 旧版本存下来的用户没有 `verified` 字段，按"已启用"处理：升级本身不该把人家
+// 填好、且一直在用的 Key 停掉。
+function roleEnabled(user, role) {
+  return !user || !user.verified || user.verified[role] !== false;
+}
+
+function pendingRoles(user) {
+  return CRED_ROLES.filter((role) => !roleEnabled(user, role));
+}
+
+// 只发**验通过**的那几把 Key。验失败的也存着（免得用户重打一遍），但不进请求：
+// 让它发出去只是把"验证时就已说清"的问题拖到异步任务里失败，报错还来自服务商，
+// 比"没填"更难解释（2026-10-28 复审 P2-2）。
+function credentialHeaders(creds) {
+  if (!creds) return {};
+  const headers = {};
+  if (roleEnabled(creds, "embedding")) {
+    headers["X-R4P-Embedding-Key"] = creds.embeddingKey || "";
+  }
+  if (roleEnabled(creds, "llm")) headers["X-R4P-LLM-Key"] = creds.llmKey || "";
+  // 没选模型就不带这个头，服务端回落到默认模型——空串会被当成"指定了空模型"
+  if (creds.llmModel) headers["X-R4P-LLM-Model"] = creds.llmModel;
+  // 视觉模型 Key 只在填了的时候带上。留空是一个明确的"我没配"，服务端据此决定
+  // 能不能用服务端那把（各付各的部署下就是不能），不靠"不带这个头"去猜意图。
+  if (roleEnabled(creds, "ocr") && creds.ocrKey) {
+    headers["X-R4P-OCR-Key"] = creds.ocrKey;
+  }
+  return headers;
+}
+
+// 三项**至少一项**通过就允许保存：凭据是分角色的，扫描件要 embedding + 视觉模型、
+// 问答要 embedding + LLM，任何一项通过都说明"这个用户名下至少能用一件事"。
+// 反过来三项全不通就不存——存下来只会让之后每次请求都失败，不如当场说清哪栏错了。
+function shouldSave(result) {
+  const checks = [result.embedding, result.llm, result.ocr];
+  return checks.some((item) => item && item.ok);
+}
+
+// 清空凭据后的提示必须跟着部署走：各付各的部署里"后续请求使用服务端公共 Key"
+// 是句假话——清掉之后什么都调不通，用户会以为系统坏了（2026-10-28 复审 P2-1）。
+function clearedMessage(name, fallback) {
+  return fallback
+    ? `已清除「${name}」，后续请求使用服务端公共 Key`
+    : `已清除「${name}」；本部署不代付，后续入库、检索与问答都需要你自己的 Key，请重新填写`;
+}
+
+function noUserMessage(fallback) {
+  return fallback
+    ? "当前没有使用用户 Key，已经是服务端公共配置"
+    : "当前没有使用用户 Key；本部署不代付，入库、检索与问答都会因为缺少 Key 被拒绝";
+}
+/* CRED-LOGIC-END */
+
 function authHeaders() {
   const creds = currentCreds();
   if (!creds) return {};
   // HTTP 头只允许 ASCII：中文用户名必须编码，否则 fetch 直接抛 TypeError
-  const headers = {
-    "X-R4P-User": encodeURIComponent(creds.name),
-    "X-R4P-Embedding-Key": creds.embeddingKey || "",
-    "X-R4P-LLM-Key": creds.llmKey || "",
-  };
-  // 没选模型就不带这个头，服务端回落到默认模型——空串会被当成"指定了空模型"
-  if (creds.llmModel) headers["X-R4P-LLM-Model"] = creds.llmModel;
-  // 视觉模型 Key 只在填了的时候带上：留空是一个明确的"我没配"，服务端据此决定
-  // 能不能用服务端那把（各付各的部署下就是不能），不能靠"不带这个头"去猜意图
-  if (creds.ocrKey) headers["X-R4P-OCR-Key"] = creds.ocrKey;
-  return headers;
+  return { "X-R4P-User": encodeURIComponent(creds.name), ...credentialHeaders(creds) };
 }
 
 async function api(path, options = {}) {
@@ -1081,7 +1132,16 @@ function renderUserList() {
   }
   for (const name of names) {
     const row = el("div", "user-row");
-    const pick = el("button", store.current === name ? "primary" : "ghost", name);
+    // 未通过验证的角色标在名字上：不标的话，用户会以为"存下来了"就等于"能用了"，
+    // 而实际那几把 Key 不会随着请求发出去（见 credentialHeaders）。
+    const pending = pendingRoles(store.users[name]);
+    const label = pending.length
+      ? `${name}（${pending.map((r) => CRED_ROLE_LABELS[r]).join("、")}未启用）`
+      : name;
+    const pick = el("button", store.current === name ? "primary" : "ghost", label);
+    pick.title = pending.length
+      ? "这几项 Key 没通过验证，不会随请求发送。点「编辑」改好后重新验证才会启用。"
+      : "点这里切换到该用户";
     pick.style.flex = "1";
     pick.onclick = () => {
       store.current = name;
@@ -1172,8 +1232,10 @@ async function saveCreds() {
   const llmModel = $("su-llm-model").value || "";
   const ocrKey = $("su-ocr").value.trim();
   if (!name) return alert("请填写用户名");
-  // 不填 Key 也是合法的：用服务端公共额度跑自选模型。后端 `from_headers` 早就支持
-  // 只带模型头，这里再硬要求填 Key，就会出现"后端能做的事，界面做不了"。
+  // 这里不判"必填 Key"：单机演示部署（R4P_ALLOW_SERVER_KEY_FALLBACK=true）下留空就是
+  // 用服务端公共额度跑自选模型，后端 `from_headers` 支持只带模型头，界面硬要求填 Key
+  // 会变成"后端能做的事，界面做不了"。**各付各的部署下留空等于用不了**，那个结论交给
+  // 验证结果与缺项提示去说——别在注释里写一个只对某种部署成立的默认（2026-10-28 复审 P2-3）。
 
   $("save-creds").disabled = true;
   $("su-result").textContent = "正在验证…";
@@ -1190,24 +1252,25 @@ async function saveCreds() {
       }),
     });
     renderServerModels(result.server);
-    // 三个角色**只要有一项**验通过就保存（2026-10-27 复审 P2）。
-    // 原来只判 embedding + LLM，于是"只填了视觉模型 Key、另两栏留空"的人会看到
-    // 「验证通过」却什么都没存下来——而扫描件需要的正是那一把。凭据是分角色的，
-    // 允许"先存能用的、再补缺的"，但"三项全不通"仍然不保存：存下来只会让之后
-    // 每次请求都失败，不如当场说清哪一栏错了。
-    const checks = [result.embedding, result.llm, result.ocr];
-    if (!checks.some((item) => item && item.ok)) {
+    if (!shouldSave(result)) {
       $("su-result").textContent = `验证未通过，未保存：\n${describeCheck(result)}`;
       return;
     }
     const store = credStore();
-    // 允许只用自己的某一项额度，所以只要有一项通就保存，但把另一项的问题写清楚
+    // 允许只用自己的某一项额度，所以只要有一项通就保存，但把另一项的问题写清楚。
+    // `verified` 记的是**这一次验证的结论**：没通过的 Key 仍存下来（免得用户重打一遍），
+    // 但 `credentialHeaders()` 不会把它发出去——见下面的 lackNote。
     store.users[name] = {
       embeddingKey,
       llmKey,
       llmModel: result.server.llm_model,
       // OCR Key 存下来即可：模型由服务端锁死，客户端没有"换模型"这件事
       ocrKey,
+      verified: {
+        embedding: !!result.embedding.ok,
+        llm: !!result.llm.ok,
+        ocr: !!(result.ocr && result.ocr.ok),
+      },
       savedAt: new Date().toISOString(),
     };
     store.current = name;
@@ -1221,11 +1284,14 @@ async function saveCreds() {
     if (!result.llm.ok) lacks.push("LLM（生成答案要它）");
     if (!result.ocr || !result.ocr.ok) lacks.push("视觉模型（只影响扫描件）");
     const lackNote = lacks.length
-      ? `\n还没通过、暂时用不了的：${lacks.join("；")}。补齐后重新点「保存并验证」即可。`
+      ? `\n还没通过、暂不发出的：${lacks.join("；")}。` +
+        "这几把 Key 只存在本机等修改，不会随请求发送；改好后重新点「保存并验证」才启用。"
       : "";
     const quotaNote = embeddingKey || llmKey || ocrKey
       ? ""
-      : "\n（未填 Key：问答与入库都走服务端公共额度）";
+      : serverKeyFallback
+        ? "\n（未填 Key：问答与入库都走服务端公共额度）"
+        : "\n（未填 Key：本部署不代付，问答与入库都会被拒绝）";
     $("su-result").textContent =
       `已保存并切换为「${name}」\n${describeCheck(result)}${lackNote}${quotaNote}`;
     await loadHealth();
@@ -1239,7 +1305,7 @@ async function saveCreds() {
 function clearCreds() {
   const store = credStore();
   if (!store.current) {
-    $("su-result").textContent = "当前没有使用用户 Key，已经是服务端公共配置";
+    $("su-result").textContent = noUserMessage(serverKeyFallback);
     return;
   }
   const name = store.current;
@@ -1248,7 +1314,7 @@ function clearCreds() {
   saveCredStore(store);
   $("su-name").value = ""; $("su-embed").value = ""; $("su-llm").value = "";
   $("su-ocr").value = "";
-  $("su-result").textContent = `已清除「${name}」，后续请求使用服务端公共 Key`;
+  $("su-result").textContent = clearedMessage(name, serverKeyFallback);
   syncWho();
   renderUserList();
   loadHealth();

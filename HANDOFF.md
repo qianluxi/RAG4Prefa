@@ -1897,6 +1897,43 @@ README 已把边界写死；要真正多人使用，得连登录与权限一起�
 
 ---
 
+### 第三十一轮（2026-10-28 上午）：复审 P2——凭据"存了"不等于"用了"
+
+**起因**：外部复审对 `d437e7c` 提了三条 P2。核心那条不是文案：**验证失败的 Key 仍被
+整体写进 localStorage，又原样随请求发出去**。于是"设置里刚告诉你这把不通"与"真跑时
+照样把它送出去、在异步入库任务里失败"同时成立。另两条：`clearCreds()` 无论什么部署都说
+"后续请求使用服务端公共 Key"（各付各的部署里这是假话，与本文件 `syncWho()` 自相矛盾）；
+`saveCreds()` 开头还留着"不填 Key 也合法（走公共额度）"的旧默认。
+
+**改动**：
+
+1. 把三条判据抽成**可执行块**（`index.html` 里 `CRED-LOGIC-START/END` 之间）：
+   `roleEnabled` / `pendingRoles` / `credentialHeaders` / `shouldSave` /
+   `clearedMessage` / `noUserMessage`。抽出来不是为了好看，是为了能**在 Node 里真跑**。
+2. 存储多一个 `verified: {embedding, llm, ocr}`：填错的 Key 仍然存着（免得用户重打），
+   但 `credentialHeaders()` 不发它；用户列表标"（Embedding、视觉模型未启用）"。
+   **旧数据没有 `verified` 按"启用"处理**——升级一次就把人家一直在用的 Key 停掉，
+   比原 bug 更严重。
+3. `clearCreds()` / 无当前用户时的提示按 `serverKeyFallback` 分支。
+4. `saveCreds()` 的注释改成"留空在单机演示下走公共额度、在各付各的部署下等于用不了"，
+   不再把一种部署的默认写成普遍规则。
+
+**测试换了一层**：`tests/test_web_credentials.py` 从"正则匹配源码"改成"抽出标记块、
+在 Node 里执行、断言行为"。没装 Node 整段 skip（`shutil.which("node")`），其余用例仍离线。
+
+**变异**：12 条全红，其中两条是自我纠错换来的——
+① `some -> every` 一开始没抓住，因为"全不通不保存"这一半还留在调用点里，行为测试够不着；
+把它也搬进块里（`shouldSave`）才覆盖到。
+② `saveCreds` 不写 `verified` 时，所有行为测试照绿（缺字段等于"永远启用"），所以另加一条
+**接线断言**：`verified:` 必须写在保存里、`shouldSave(result)` 必须被调用。
+
+**验证**：410 passed（+8）、`ruff check` 干净、`node --check` 通过、12/12 变异变红。
+
+**仍未做**：管理接口授权（P1）。它现在是唯一一条"代码没防、只有文档提示"的缺口，
+而且没有不付代价的做法——开了校验，本机从界面删文档也要先配口令。
+
+---
+
 ## 11. 深入阅读顺序
 
 
