@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from rag4prefa import ask, repo
 from rag4prefa.adapters.vectors import NumpyStore, VectorItem
@@ -207,3 +210,41 @@ def test_expand_rerank_feeds_expanded_query(conn, settings: Settings) -> None:
     )
 
     assert reranker.questions == ["挂电视会不会掉 悬挂 专用连接件"]
+
+
+def _diag_file(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
+    path = tmp_path / "diag.jsonl"
+    path.write_text(
+        "\n".join(
+            json.dumps({"question": q, "search_question": s}, ensure_ascii=False)
+            for q, s in rows
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_replay_expander_reuses_recorded_terms(tmp_path: Path) -> None:
+    """固定扩展串：读回来的必须与落盘的一字不差，且不再问 LLM。
+
+    为什么重要：同一份数据集跑两次，LLM 给的扩展词可以完全不同（实测 15 题 0 题一致）。
+    不复用的话，"只扩召回"与"连重排一起扩"两次实验比的其实是两个查询集。
+    """
+    path = _diag_file(tmp_path, [("挂电视会不会掉", "挂电视会不会掉 悬挂 专用连接件")])
+
+    expander = _ev._replay_expander(path)
+
+    assert expander.available
+    assert expander.expand("挂电视会不会掉") == "挂电视会不会掉 悬挂 专用连接件"
+
+
+def test_replay_expander_rejects_incomplete_file(tmp_path: Path) -> None:
+    """数据集里的题在扩展文件里缺一条，就必须报错。
+
+    静默退回原话会让"扩展组"里混进未扩展的题，而均值上完全看不出来——
+    这正是"看起来做了对照、其实两组条件不同"的典型。
+    """
+    path = _diag_file(tmp_path, [("Q1", "Q1 术语")])
+
+    with pytest.raises(ValueError, match="缺少"):
+        _ev._replay_expander(path, ["Q1", "Q2"])

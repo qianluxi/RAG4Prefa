@@ -460,11 +460,55 @@ async def _evaluate(
     }
 
 
+def _replay_expander(path: Path, questions: list[str] | None = None):
+    """把上一次落盘的扩展串读回来，当作固定查询集复用。
+
+    为什么必须有：LLM 扩展不是确定的。同一份数据集跑两次，15 道题的扩展词**没有一道
+    相同**（2026-10-28 实测）。于是"实验 B 只扩召回"与"实验 C 连重排一起扩"两次运行
+    其实换了两个查询集，C 的收益根本说不清是重排带来的还是扩展词换了。
+    诊断 JSONL 里本来就逐题记着 `search_question`，直接读它即可。
+
+    给了 `questions` 就先校验覆盖：缺题直接报错，而不是让那几道题悄悄退回原话——
+    混在"扩展组"里的未扩展题，事后从均值上完全看不出来。
+    """
+    mapping: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        item = json.loads(line)
+        question = str(item.get("question") or "")
+        expanded = str(item.get("search_question") or "")
+        if question and expanded:
+            mapping[question] = expanded
+
+    if questions is not None:
+        missing = [q for q in questions if q not in mapping]
+        if missing:
+            raise ValueError(
+                f"{path} 缺少 {len(missing)} 道题的扩展串"
+                f"（例：{missing[:3]}），换一份与当前数据集配套的文件"
+            )
+
+    class _Replay:
+        available = True
+
+        def __init__(self, table: dict[str, str]) -> None:
+            self.table = table
+
+        def expand(self, question: str) -> str:
+            # 覆盖性已在上面校验过；这里再 KeyError 就是调用方绕过了校验，
+            # 属于程序错误，不该被静默吞掉。
+            return self.table[question]
+
+    return _Replay(mapping)
+
+
 def run(
     dataset_path: Path, k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_path: Path | None = None,
     expand: bool = False, expand_rerank: bool = False,
-    diagnostics_path: Path | None = None,
+    diagnostics_path: Path | None = None, expand_from: Path | None = None,
 ) -> dict:
     services = build_services()
     try:
@@ -482,7 +526,20 @@ def run(
         if not rows and not refuse_rows:
             raise ValueError(f"数据集为空：{dataset_path}")
         expander = None
-        if expand:
+        if expand_from is not None:
+            # 复现实验用：LLM 扩展是随机的，两次生成的术语并不相同（实测 15 题里
+            # 0 题一致）。把上一轮落盘的扩展串读回来，A/B/C 才是同一个查询集。
+            expander = _replay_expander(expand_from)
+            missing = [
+                r["question"] for r in rows
+                if str(r.get("question") or "").strip() not in expander.table
+            ]
+            if missing:
+                raise ValueError(
+                    f"{expand_from} 缺少 {len(missing)} 道题的扩展串"
+                    f"（例：{missing[:3]}），换一份与当前数据集配套的文件"
+                )
+        elif expand:
             expander = build_expander(services.settings, getattr(services, "llm", None))
         result = evaluate(
             services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
@@ -491,6 +548,7 @@ def run(
         result["refuse_dataset"] = str(refuse_path) if refuse_rows else ""
         result["dataset"] = str(dataset_path)
         result["expanded"] = bool(expander is not None and expander.available)
+        result["expand_source"] = str(expand_from) if expand_from is not None else ""
         # 扩展作用在哪一段，必须跟着数字走：只写在命令行参数里，
         # 报告读者会以为 rerank 那行的变化也是"召回变好"带来的。
         result["expand_stage"] = (
@@ -572,6 +630,10 @@ def report(result: dict, k: int) -> str:
             )
     if result.get("diagnostics_path"):
         lines.append(f"- 逐题证据：`{result['diagnostics_path']}`")
+    if result.get("expand_source"):
+        lines.append(
+            f"- 扩展串来自 `{result['expand_source']}`（固定复用，未重新调用 LLM）"
+        )
 
     # 语料变了还沿用旧快照，是最容易出错的一种"看起来正常"：数字算得出来、
     # 也像是真的，只有跟上一份报告并排时才说不清为什么不一样。
@@ -747,14 +809,22 @@ def main() -> int:
         help="让重排也读扩展串（实验 C，需同时给 --expand；默认重排读原话）",
     )
     parser.add_argument(
+        "--expand-from",
+        default="",
+        help="复用一份诊断 JSONL 里的扩展串（不调 LLM；用于让多次实验共用同一组扩展词）",
+    )
+    parser.add_argument(
         "--diagnostics",
         default="",
         help="把逐题结果（扩展串、各召回方式的 gold 排名与 top-k）写成 JSONL",
     )
     args = parser.parse_args()
 
-    if args.expand_rerank and not args.expand:
-        print("--expand-rerank 需要同时给 --expand", file=sys.stderr)
+    if args.expand_rerank and not (args.expand or args.expand_from):
+        print(
+            "--expand-rerank 需要同时给 --expand（或用 --expand-from 复用扩展串）",
+            file=sys.stderr,
+        )
         return 2
 
     if args.top_k < 1:
@@ -784,6 +854,7 @@ def main() -> int:
             expand=args.expand,
             expand_rerank=args.expand_rerank,
             diagnostics_path=Path(args.diagnostics) if args.diagnostics else None,
+            expand_from=Path(args.expand_from) if args.expand_from else None,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
