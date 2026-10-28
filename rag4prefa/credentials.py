@@ -36,6 +36,9 @@ HEADER_EMBEDDING_KEY = "X-R4P-Embedding-Key"
 HEADER_LLM_KEY = "X-R4P-LLM-Key"
 HEADER_LLM_MODEL = "X-R4P-LLM-Model"
 HEADER_OCR_KEY = "X-R4P-OCR-Key"
+# 管理口令，只在"清空库 / 删项目 / 删文档"三条路由上校验（见 `api.require_admin`）。
+# 与上面几把 Key 不同，它不代表任何额度，只回答一个问题："你有权删吗"。
+HEADER_ADMIN_TOKEN = "X-R4P-Admin-Token"
 
 _MAX_NAME = 64
 _MAX_KEY = 4096

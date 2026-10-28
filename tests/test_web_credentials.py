@@ -36,7 +36,7 @@ const fs = require("fs");
 const src = fs.readFileSync(process.argv[2], "utf8");
 const names = [
   "credentialHeaders", "roleEnabled", "pendingRoles", "shouldSave",
-  "clearedMessage", "noUserMessage", "CRED_ROLE_LABELS", "CRED_ROLES",
+  "clearedMessage", "noUserMessage", "adminHeader", "CRED_ROLE_LABELS", "CRED_ROLES",
 ];
 const api = new Function(src + "\\nreturn {" + names.join(", ") + "};")();
 const ok = (value) => ({ ok: value });
@@ -71,6 +71,8 @@ console.log(JSON.stringify({
   save_none_ok: api.shouldSave({ embedding: ok(false), llm: ok(false), ocr: ok(false) }),
   save_two_ok: api.shouldSave({ embedding: ok(true), llm: ok(false), ocr: ok(true) }),
   save_without_ocr_field: api.shouldSave({ embedding: ok(true), llm: ok(true) }),
+  admin_header_empty: api.adminHeader(""),
+  admin_header_set: api.adminHeader("s3cret"),
   cleared_strict: api.clearedMessage("张三", false),
   cleared_demo: api.clearedMessage("张三", true),
   nouser_strict: api.noUserMessage(false),
@@ -154,6 +156,32 @@ def test_no_current_user_message_also_follows_the_mode(behavior: dict) -> None:
     assert "已经是服务端公共配置" not in behavior["nouser_strict"]
     assert "不代付" in behavior["nouser_strict"]
     assert "已经是服务端公共配置" in behavior["nouser_demo"]
+
+
+# ── 管理口令：不属于任何用户，也不该因为"没选用户"就不发 ──
+
+
+def test_admin_header_is_independent_of_the_current_user(behavior: dict) -> None:
+    """口令留空就不带头（后端据此判断该不该拦），填了就带头。
+
+    关键在于它和"当前选了哪个用户"无关：删库、删项目、删文件都要过这一关，
+    而这些动作不该要求先选一个普通用户。
+    """
+    assert behavior["admin_header_empty"] == {}
+    assert behavior["admin_header_set"] == {"X-R4P-Admin-Token": "s3cret"}
+
+
+def test_admin_header_is_attached_even_without_credentials() -> None:
+    """接线：`authHeaders()` 必须在"没有当前用户"的分支之前就把口令放进去。
+
+    写成"有用户才回头填口令"，就成了"清掉自己的 Key 就再也删不掉文件"。
+    """
+    html = HTML.read_text(encoding="utf-8")
+    start = html.index("function authHeaders()")
+    body = html[start : html.index("\n}", start)]
+    admin_at = body.index("adminHeader(credStore().admin)")
+    user_at = body.index("currentCreds()")
+    assert admin_at < user_at, "口令必须在取当前用户之前就加进去"
 
 
 # ── 接线：判据生效的前提是保存时记下了验证结论 ──────────

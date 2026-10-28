@@ -263,6 +263,17 @@
       它和 embedding 那栏可以填同一把（同站点），与 LLM 那栏不通用。
     </p>
 
+    <label for="su-admin" style="margin-top:10px">管理口令（清空库 / 删项目 / 删文件用）</label>
+    <input id="su-admin" type="password" placeholder="与 .env 里的 R4P_ADMIN_TOKEN 一致" autocomplete="off" />
+    <div class="row" style="margin-top:6px">
+      <button class="ghost" id="save-admin">保存管理口令</button>
+    </div>
+    <p class="kbd" style="margin-top:6px;line-height:1.7">
+      它不是账号，只是删数据的第二道门（那三条接口不可撤销）。
+      各付各的部署里<b>必须填</b>：不填时后端会直接拒绝删除，宁可删不了，也不让访客清库。
+      单机演示（接受代付）下留空即不校验。
+    </p>
+
     <div class="row" style="margin-top:12px">
       <button class="primary" id="save-creds">保存并验证</button>
       <button class="ghost" id="clear-creds">清除当前用户</button>
@@ -305,9 +316,10 @@ const CRED_KEY = "r4p.credentials";
 function credStore() {
   try {
     const raw = JSON.parse(localStorage.getItem(CRED_KEY) || "{}");
-    return { users: raw.users || {}, current: raw.current || "" };
+    // `admin` 是部署级的共享口令，不属于某个用户：删库不该因为切换用户名而失效
+    return { users: raw.users || {}, current: raw.current || "", admin: raw.admin || "" };
   } catch {
-    return { users: {}, current: "" };
+    return { users: {}, current: "", admin: "" };
   }
 }
 
@@ -367,6 +379,12 @@ function shouldSave(result) {
   return checks.some((item) => item && item.ok);
 }
 
+// 管理口令不属于任何用户：删库、删项目、删文件时都要带，与"当前选了谁"无关。
+// 留空就不带——后端据此判断"这个部署该不该拦"（见 `api.require_admin`）。
+function adminHeader(token) {
+  return token ? { "X-R4P-Admin-Token": token } : {};
+}
+
 // 清空凭据后的提示必须跟着部署走：各付各的部署里"后续请求使用服务端公共 Key"
 // 是句假话——清掉之后什么都调不通，用户会以为系统坏了（2026-10-28 复审 P2-1）。
 function clearedMessage(name, fallback) {
@@ -383,10 +401,13 @@ function noUserMessage(fallback) {
 /* CRED-LOGIC-END */
 
 function authHeaders() {
+  // 管理口令先加：它不属于任何用户，删数据时也不该因为"没选用户"就发不出去
+  const headers = adminHeader(credStore().admin);
   const creds = currentCreds();
-  if (!creds) return {};
+  if (!creds) return headers;
   // HTTP 头只允许 ASCII：中文用户名必须编码，否则 fetch 直接抛 TypeError
-  return { "X-R4P-User": encodeURIComponent(creds.name), ...credentialHeaders(creds) };
+  headers["X-R4P-User"] = encodeURIComponent(creds.name);
+  return { ...headers, ...credentialHeaders(creds) };
 }
 
 async function api(path, options = {}) {
@@ -1323,6 +1344,7 @@ function clearCreds() {
 function openSettings() {
   $("drawer").classList.remove("open");
   $("settings").classList.add("open");
+  $("su-admin").value = credStore().admin || "";
   const creds = currentCreds();
   if (creds) fillCredForm(creds.name);
   renderUserList();
@@ -1361,6 +1383,16 @@ const OCR_HINT = "需要配置视觉模型";
 $("close-settings").onclick = () => $("settings").classList.remove("open");
 $("close-sources").onclick = closeSources;
 $("save-creds").onclick = saveCreds;
+$("save-admin").onclick = () => {
+  // 与三把 Key 分开存：服务端没有"验证口令"的接口（它只拿口令比一次），
+  // 混进「保存并验证」会让"验证失败、未保存"和"口令其实存了"同时成立。
+  const store = credStore();
+  store.admin = $("su-admin").value.trim();
+  saveCredStore(store);
+  $("su-result").textContent = store.admin
+    ? "已保存管理口令（只在这台电脑的浏览器里）：清空库、删项目、删文件时会带上它。"
+    : "已清除管理口令。单机演示下不需要；各付各的部署下删数据会被后端拒绝。";
+};
 $("clear-creds").onclick = clearCreds;
 
 syncWho();

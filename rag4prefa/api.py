@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -22,6 +23,7 @@ from .adapters.vectors import BackendUnavailable, StoreRef
 from .concurrency import MaintenanceBusy
 from .consistency import IndexMismatch
 from .credentials import (
+    HEADER_ADMIN_TOKEN,
     KEY_ROLES,
     LLM_CHOICES,
     account_blocked_hint,
@@ -198,6 +200,37 @@ def create_app(services: Services | None = None) -> FastAPI:
             if missing:
                 raise HTTPException(401, _missing_key_message(missing))
         return root.for_credentials(creds)
+
+    def require_admin(request: Request) -> None:
+        """清库 / 删项目 / 删文档这三条不可撤销的入口，必须先过这一关。
+
+        在这之前它们**没有任何身份校验**：`confirm: "清空"` 只防手滑，不证明"这个人
+        有权删"。额度那一层早就收口了（`R4P_ALLOW_SERVER_KEY_FALLBACK=false` 之后匿名
+        请求用不了服务端 Key），"谁能删库"这一层一直是空的——谁能访问端口谁就能删。
+
+        三条规则见 `config.admin_token`：配了口令就校验；没配、又是各付各的部署，
+        **直接 503**（宁可删不了，也不能让访客删掉全库）；没配、且单机演示则放行，
+        那时打开页面的人就是主人。
+        """
+        settings = request.app.state.services.settings
+        expected = settings.admin_token
+        if not expected:
+            if settings.allow_server_key_fallback:
+                return
+            raise HTTPException(
+                503,
+                "这个部署没有配置管理口令，清空库 / 删项目 / 删文件已停用。"
+                "在 .env 里设 R4P_ADMIN_TOKEN=<口令> 并重启，"
+                "然后到页面「API 设置」里填同一个口令。"
+                "（各付各的部署不接受匿名删除：这几条不可撤销。）",
+            )
+        got = request.headers.get(HEADER_ADMIN_TOKEN, "")
+        # 定长比较：口令是共享秘密，逐字符比较会给"猜口令"留下时间侧信道
+        if not got or not hmac.compare_digest(got, expected):
+            raise HTTPException(
+                403,
+                "管理口令不对：在「API 设置」里填与 R4P_ADMIN_TOKEN 相同的口令再试。",
+            )
 
     @app.get("/api/health")
     def health(request: Request) -> dict:
@@ -621,6 +654,7 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     @app.delete("/api/projects/{project_name}")
     def delete_project(request: Request, project_name: str) -> dict:
+        require_admin(request)
         services = svc(request)
         # 删除同时改事实与索引，准入与入库同源：后端没确认时不动任何数据。
         # （用例层还有一道"库里是否登记过活动后端"，两者都要在。）
@@ -641,6 +675,7 @@ def create_app(services: Services | None = None) -> FastAPI:
         删掉这一份"变成一次可校验的意图：`doc_id` 属于别的项目时直接 404，而不是照着 id
         把另一边的数据删掉——那是最难在事后解释的一类事故。
         """
+        require_admin(request)
         services = svc(request)
         # 与删除项目同源：后端没确认、索引不自证一致时一个字节都不动。
         try:
@@ -662,7 +697,11 @@ def create_app(services: Services | None = None) -> FastAPI:
         这条路由**不做** `assert_write_ready`：它是修复入口，索引卡在半途（`unsynced`、
         重建没走完）时恰恰最需要它。安全性由 `admin.clear_all` 里那三条保证——后端身份
         对得上、索引确实归零、业务表确实清空。
+
+        但它**要做**口令校验：能修数据的入口，同样能被用来毁数据。走 CLI 的
+        `python -m rag4prefa clear` 不受影响（本机身份已由 shell 建立）。
         """
+        require_admin(request)
         if req.confirm.strip() != CLEAR_CONFIRM:
             raise HTTPException(
                 400, f'要清空必须显式确认：{{"confirm": "{CLEAR_CONFIRM}"}}'

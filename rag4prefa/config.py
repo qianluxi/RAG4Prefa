@@ -97,6 +97,19 @@ class Settings(BaseSettings):
     # 并被告知去哪里填自己的 Key，而不是先烧掉几百次调用再报额度不足。
     allow_server_key_fallback: bool = True
 
+    # 管理口令：保护"清空库 / 删项目 / 删文档"这三条不可撤销的入口。
+    #
+    # 它不是账号体系，只是一把共享口令（请求头 `X-R4P-Admin-Token`），因为在这之前
+    # 这三条路由**没有任何身份校验**：`confirm: "清空"` 只防手滑，谁能访问端口谁就能删。
+    #
+    # 规则（见 `api.require_admin`）：
+    #   - 配了口令 → 校验，对了才放行（单机也可以配，等于给自己加一道门）；
+    #   - 没配、且 `allow_server_key_fallback=false`（即"给别人用"的部署）→ 直接 503，
+    #     说清去哪儿配。宁可删不了，也不能让任何访客删掉全库；
+    #   - 没配、且是单机演示（fallback=true）→ 不校验：那时打开页面的人就是主人，
+    #     强行要求口令只会让本地开发多一步。
+    admin_token: str = ""
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def db_path(self) -> Path:
