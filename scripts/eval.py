@@ -37,7 +37,7 @@ from rag4prefa import ask, consistency, repo, snapshot  # noqa: E402
 from rag4prefa.domain import Filter, Hit  # noqa: E402
 from rag4prefa.services import build_services  # noqa: E402
 
-MODES = ("dense", "sparse", "hybrid", "rerank")
+MODES = ("dense", "dense_rerank", "sparse", "hybrid", "rerank")
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -119,7 +119,7 @@ def ndcg_at_k(rels: list[float], k: int, total: int) -> float:
     return dcg / idcg if idcg else 0.0
 
 
-# ── 四组召回 ───────────────────────────────────────────────
+# ── 召回方式 ───────────────────────────────────────────────
 
 
 async def dense_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
@@ -178,16 +178,58 @@ async def rerank_hits(services, question: str, filt: Filter, k: int) -> list[Hit
     return await services.reranker.rerank(question, candidates, k)
 
 
+async def dense_rerank_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
+    """纯向量召回 + 重排。候选池深度与 `rerank` 取同一个值。
+
+    为什么要这一行（2026-10-28 第一版基线逼出来的）：原来的四行把"融合"和"重排"
+    绑在一起——`rerank` 恒等于 `hybrid` 再重排，于是口语集上看到
+    `dense 0.467 > hybrid 0.333 = rerank 0.333`，只能得出"重排加融合等于白做"，
+    分不清是**融合拉低了候选池**还是**重排本身没用**。这两件事的结论完全不同：
+    前者要改融合权重，后者要换重排模型。多这一行就是把这个变量拆开。
+    """
+    candidates = await dense_hits(services, question, filt, _hybrid_pool_size(k))
+    return await services.reranker.rerank(question, candidates, k)
+
+
+async def _dense_mode(services, question, filt, k, keyword):  # noqa: ARG001
+    return await dense_hits(services, question, filt, k)
+
+
+async def _dense_rerank_mode(services, question, filt, k, keyword):  # noqa: ARG001
+    return await dense_rerank_hits(services, question, filt, k)
+
+
+async def _sparse_mode(services, question, filt, k, keyword):
+    return await sparse_hits(services, question, filt, k, keyword)
+
+
+async def _hybrid_mode(services, question, filt, k, keyword):  # noqa: ARG001
+    return await hybrid_hits(services, question, filt, k)
+
+
+async def _rerank_mode(services, question, filt, k, keyword):  # noqa: ARG001
+    return await rerank_hits(services, question, filt, k)
+
+
+# 显式分派表，而不是 if/elif 加一个兜底 return：兜底分支会让"加了一种方式但忘了写实现"
+# 变成"多出一行与 rerank 一模一样的数字"，报告里看不出任何异常。
+# `test_eval_modes.py` 断言这张表与 `MODES` 一一对应。
+_HANDLERS = {
+    "dense": _dense_mode,
+    "dense_rerank": _dense_rerank_mode,
+    "sparse": _sparse_mode,
+    "hybrid": _hybrid_mode,
+    "rerank": _rerank_mode,
+}
+
+
 async def retrieve_for(
     services, mode: str, question: str, filt: Filter, k: int, keyword: str | None
 ) -> list[Hit]:
-    if mode == "dense":
-        return await dense_hits(services, question, filt, k)
-    if mode == "sparse":
-        return await sparse_hits(services, question, filt, k, keyword)
-    if mode == "hybrid":
-        return await hybrid_hits(services, question, filt, k)
-    return await rerank_hits(services, question, filt, k)
+    handler = _HANDLERS.get(mode)
+    if handler is None:  # pragma: no cover - 参数校验在 main() 里先拦一道
+        raise ValueError(f"未知的召回方式：{mode}")
+    return await handler(services, question, filt, k, keyword)
 
 
 # ── 主流程 ─────────────────────────────────────────────────
@@ -483,6 +525,14 @@ def report(result: dict, k: int) -> str:
         for label, gain in comparisons:
             lines.append(f"混合召回相对{label}：Recall@{k} {gain:+.3f}")
 
+    # 重排的收益要**单独**算，不能只报"混合 → 重排"那一跳：那一跳里同时有"融合"和
+    # "重排"两个变量。2026-10-28 第一版基线就撞在这里——口语集上 hybrid = rerank = 0.333、
+    # dense = 0.467，只报这一跳会让人以为"重排没用"，而对纯向量重排是 −0.067、
+    # 对融合重排是 ±0.000，两件事的处置完全不同（前者换模型，后者改融合）。
+    plain, reranked = _mean("dense"), _mean("dense_rerank")
+    if plain is not None and reranked is not None and result.get("rerank_enabled", False):
+        lines.append(f"重排相对纯向量：Recall@{k} {reranked - plain:+.3f}")
+
     if "rerank" in modes and not result.get("rerank_enabled", False):
         lines.append(
             "\n> `rerank` 一栏**未启用重排**（没配 `R4P_RERANK_URL`，走的是 NoopReranker）："
@@ -499,7 +549,7 @@ def report(result: dict, k: int) -> str:
         lines.append("")
         lines.append("## 库外问题（语料里没有答案）")
         lines.append("")
-        lines.append("| 召回方式 | 题数 | 召回非空 | top1 分数均值 |")
+        lines.append("| 召回方式 | 题数 | 召回非空 | top1 分数 |")
         lines.append("|---|---|---|---|")
         for mode, stat in refuse.items():
             total = stat.get("n") or 0
@@ -514,6 +564,14 @@ def report(result: dict, k: int) -> str:
             "> 这组问题在语料里**没有**对应内容。当前系统没有拒答阈值：任何问题都会返回 top-k，"
             "所以「召回非空 100%」说明的不是检索好，而是它不会说「不知道」。"
             "这组数字是课题方向①的起点，不是这一版的缺陷。"
+        )
+        # 分数不是一个尺度：余弦 ∈ [0,1]、BM25 无上界、RRF 只有几十分之一。
+        # 不写这句，读者会对着一张表把 16.271 与 0.032 当成"BM25 更有信心"。
+        lines.append("")
+        lines.append(
+            "> top1 分数**量纲不同**：dense 是余弦相似度、sparse 是 BM25 原始分、"
+            "hybrid/rerank 是 RRF 融合分。只能在同一行内比较题目之间，"
+            "不能跨行比高低——BM25 的 16 分不代表它比余弦 0.03 更有把握。"
         )
         lines.append("")
         pick = "hybrid" if "hybrid" in refuse else next(iter(refuse), "")
@@ -553,7 +611,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="检索质量评估")
     parser.add_argument("--dataset", default="eval/dataset.jsonl")
     parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--modes", default="dense,sparse,hybrid,rerank")
+    parser.add_argument("--modes", default="dense,dense_rerank,sparse,hybrid,rerank")
     parser.add_argument("--out", default="")
     parser.add_argument(
         "--save", action="store_true",

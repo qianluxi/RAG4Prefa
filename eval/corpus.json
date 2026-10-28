@@ -2,6 +2,11 @@
  "chunk_min_tokens": 80,
  "chunk_max_tokens": 480,
  "documents": {
+  "32a_装配式内装评价标准换版对照摘要_2021vs2025.md": {
+   "project": "装配式内装",
+   "chunks": 12,
+   "ids_sha": "500ccabce2b5061a"
+  },
   "Z3_浙江省十五五住房和城乡建设规划_浙政办发_2026.md": {
    "project": "装配式内装",
    "chunks": 85,
@@ -216,11 +221,6 @@
    "project": "装配式内装",
    "chunks": 309,
    "ids_sha": "a74c38acdbe95c19"
-  },
-  "32a_装配式内装评价标准换版对照摘要_2021vs2025.md": {
-   "project": "装配式内装",
-   "chunks": 12,
-   "ids_sha": "ac6893bf9e6d64f9"
   },
   "32_装配式内装评价标准报批稿_DBJ33T1259-202x_2026-10公示.pdf": {
    "project": "装配式内装",

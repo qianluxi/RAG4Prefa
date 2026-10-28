@@ -351,3 +351,54 @@ def test_report_stays_quiet_when_corpus_unchanged() -> None:
     真正出问题那次也就跟着被忽略。
     """
     assert "语料已变化" not in _eval.report(_fake_result(), 5)
+
+
+def test_report_separates_fusion_from_reranking() -> None:
+    """报告要把"融合"和"重排"各自的收益分开报。
+
+    2026-10-28 第一版基线：口语集上 `dense 0.467 > hybrid 0.333 = rerank 0.333`。
+    只报"混合 → 重排"这一跳，读者会得出"重排没用"；而对纯向量重排是 −0.067、
+    对融合重排是 ±0.000——两件事的处置完全不同（换重排模型 vs 改融合策略）。
+    """
+    result = _fake_result()
+    result["modes"] = {
+        "dense": {"recall": [0.5], "mrr": [0.5], "ndcg": [0.5]},
+        "dense_rerank": {"recall": [0.7], "mrr": [0.7], "ndcg": [0.7]},
+        "hybrid": {"recall": [0.55], "mrr": [0.55], "ndcg": [0.55]},
+        "rerank": {"recall": [0.7], "mrr": [0.7], "ndcg": [0.7]},
+    }
+    result["evaluated"] = dict.fromkeys(result["modes"], 1)
+    result["rerank_enabled"] = True
+
+    text = _eval.report(result, 5)
+
+    assert "混合召回相对纯向量：Recall@5 +0.050" in text
+    assert "重排相对纯向量：Recall@5 +0.200" in text
+    assert "开重排相对 hybrid：Recall@5 +0.150" in text
+
+
+def test_refuse_section_says_scores_are_not_comparable() -> None:
+    """库外题那张表必须写明"分数不能跨行比"。
+
+    2026-10-28 实测：同一张表里 dense 的 top1 是 0.687（余弦）、sparse 是 16.271
+    （BM25 原始分）、hybrid 是 0.032（RRF）。三个数并排放着，不写量纲，
+    读者一定会把 16 分读成"BM25 最有把握"——而它恰恰是那个召回到无关文件的方式。
+    """
+    result = _fake_result()
+    result["refuse"] = {
+        "dense": {"n": 1, "nonempty": 1, "top1": [0.687]},
+        "sparse": {"n": 1, "nonempty": 1, "top1": [16.271]},
+    }
+    result["refuse_detail"] = [
+        {
+            "question": "上海对新建民用建筑的装配式实施范围是怎么规定的？",
+            "tops": {"dense": {"filename": "a.md", "title": "适用范围", "score": 0.033}},
+        }
+    ]
+
+    text = _eval.report(result, 5)
+
+    assert "库外问题" in text
+    assert "1/1" in text, "召回非空率没印出来"
+    assert "量纲不同" in text and "BM25" in text and "RRF" in text
+    assert "0.033" in text, "逐题 top1 没印出来"

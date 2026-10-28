@@ -1,19 +1,28 @@
 {
- "generated_at": "2026-10-28T12:10:10+08:00",
+ "generated_at": "2026-10-28T12:28:42+08:00",
  "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
  "embedding_dim": "1024",
  "chunk_min_tokens": 80,
  "chunk_max_tokens": 480,
  "document_count": 52,
  "chunk_count": 1210,
- "ids_sha": "a58379e1f07611ea",
+ "ids_sha": "fe8e22a230713556",
  "documents": {
+  "32a_装配式内装评价标准换版对照摘要_2021vs2025.md": {
+   "project": "装配式内装",
+   "doc_id": "22e2e80d7001525f",
+   "chunks": 12,
+   "ids_sha": "500ccabce2b5061a",
+   "doc_year": 2025,
+   "section_count": 14,
+   "uploaded_at": "2026-10-28T04:28:28+00:00"
+  },
   "Z3_浙江省十五五住房和城乡建设规划_浙政办发_2026.md": {
    "project": "装配式内装",
    "doc_id": "b9b643c69b8465d1",
    "chunks": 85,
    "ids_sha": "242e772651d09df5",
-   "doc_year": null,
+   "doc_year": 2026,
    "section_count": 88,
    "uploaded_at": "2026-10-28T03:40:32+00:00"
   },
@@ -22,7 +31,7 @@
    "doc_id": "0a8cbc8018dd73a6",
    "chunks": 2,
    "ids_sha": "0b891c4c67bb23ca",
-   "doc_year": null,
+   "doc_year": 2026,
    "section_count": 2,
    "uploaded_at": "2026-10-28T03:40:27+00:00"
   },
@@ -31,7 +40,7 @@
    "doc_id": "706244b060af211e",
    "chunks": 3,
    "ids_sha": "a8b3ff5b9c5d0144",
-   "doc_year": null,
+   "doc_year": 2026,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:40:26+00:00"
   },
@@ -40,7 +49,7 @@
    "doc_id": "86f03b7d898ad077",
    "chunks": 11,
    "ids_sha": "3b395a065220ad72",
-   "doc_year": null,
+   "doc_year": 2016,
    "section_count": 4,
    "uploaded_at": "2026-10-28T03:40:25+00:00"
   },
@@ -49,7 +58,7 @@
    "doc_id": "177dfc4ae0963b66",
    "chunks": 32,
    "ids_sha": "368457514625fb99",
-   "doc_year": null,
+   "doc_year": 2023,
    "section_count": 46,
    "uploaded_at": "2026-10-28T03:40:24+00:00"
   },
@@ -58,7 +67,7 @@
    "doc_id": "5ce5702caa8e4dae",
    "chunks": 11,
    "ids_sha": "d884d71c97f546b0",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 12,
    "uploaded_at": "2026-10-28T03:40:04+00:00"
   },
@@ -67,7 +76,7 @@
    "doc_id": "481435ab5894b97d",
    "chunks": 9,
    "ids_sha": "e522d9f390e16314",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 17,
    "uploaded_at": "2026-10-28T03:40:03+00:00"
   },
@@ -76,7 +85,7 @@
    "doc_id": "8b509be309e5674d",
    "chunks": 2,
    "ids_sha": "679863de98d9b66d",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:40:00+00:00"
   },
@@ -85,7 +94,7 @@
    "doc_id": "e5d36e05adf024a8",
    "chunks": 6,
    "ids_sha": "0624ba09a1d68527",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:59+00:00"
   },
@@ -94,7 +103,7 @@
    "doc_id": "4536ab548c7c22d6",
    "chunks": 5,
    "ids_sha": "0b8f50370a59c1eb",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:58+00:00"
   },
@@ -103,7 +112,7 @@
    "doc_id": "3503f15c3fa94efe",
    "chunks": 3,
    "ids_sha": "2d8d525101951345",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:57+00:00"
   },
@@ -112,7 +121,7 @@
    "doc_id": "1691a4904893bb71",
    "chunks": 3,
    "ids_sha": "e320d0658488c90c",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:56+00:00"
   },
@@ -121,7 +130,7 @@
    "doc_id": "b1c470f65fe4337d",
    "chunks": 3,
    "ids_sha": "b74901ae69a7b3a2",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:56+00:00"
   },
@@ -130,7 +139,7 @@
    "doc_id": "08d56c0cf0353368",
    "chunks": 4,
    "ids_sha": "74163ee9ae10e9a1",
-   "doc_year": null,
+   "doc_year": 2025,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:55+00:00"
   },
@@ -139,7 +148,7 @@
    "doc_id": "577fba719bf05b31",
    "chunks": 2,
    "ids_sha": "0723ff2fa4ef5c22",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:54+00:00"
   },
@@ -148,7 +157,7 @@
    "doc_id": "9784f2e7260daf80",
    "chunks": 2,
    "ids_sha": "3622e60477c4ec18",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 2,
    "uploaded_at": "2026-10-28T03:39:53+00:00"
   },
@@ -157,7 +166,7 @@
    "doc_id": "e0c81f3a2765a9ed",
    "chunks": 3,
    "ids_sha": "32537391ac7105db",
-   "doc_year": null,
+   "doc_year": 2023,
    "section_count": 2,
    "uploaded_at": "2026-10-28T03:39:52+00:00"
   },
@@ -166,7 +175,7 @@
    "doc_id": "059dede140dc7bdd",
    "chunks": 3,
    "ids_sha": "1eeafad5c86625ac",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:51+00:00"
   },
@@ -175,7 +184,7 @@
    "doc_id": "ea5b5b4001d8d760",
    "chunks": 8,
    "ids_sha": "d37c1625a456322e",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 7,
    "uploaded_at": "2026-10-28T03:39:50+00:00"
   },
@@ -184,7 +193,7 @@
    "doc_id": "79ac97d030ab08c5",
    "chunks": 2,
    "ids_sha": "b40862b9ff8f987f",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:49+00:00"
   },
@@ -193,7 +202,7 @@
    "doc_id": "f72598278fe2b388",
    "chunks": 4,
    "ids_sha": "a5d69c5d0c75dea8",
-   "doc_year": null,
+   "doc_year": 2025,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:48+00:00"
   },
@@ -202,7 +211,7 @@
    "doc_id": "0d36713628538747",
    "chunks": 10,
    "ids_sha": "66b9bbe421f92a3e",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:47+00:00"
   },
@@ -211,7 +220,7 @@
    "doc_id": "01fbeaf91a996391",
    "chunks": 7,
    "ids_sha": "cb0414fab3e86602",
-   "doc_year": null,
+   "doc_year": 2025,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:39:46+00:00"
   },
@@ -220,7 +229,7 @@
    "doc_id": "12e2fc336c1f8730",
    "chunks": 3,
    "ids_sha": "398b3a44f20d3ba1",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 2,
    "uploaded_at": "2026-10-28T03:39:45+00:00"
   },
@@ -229,7 +238,7 @@
    "doc_id": "35e99a8aa0749f24",
    "chunks": 8,
    "ids_sha": "06947bd3656ad8b7",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 5,
    "uploaded_at": "2026-10-28T03:39:44+00:00"
   },
@@ -238,7 +247,7 @@
    "doc_id": "37cb1a02f9e93c55",
    "chunks": 6,
    "ids_sha": "3f3dccdf057150da",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 6,
    "uploaded_at": "2026-10-28T03:39:43+00:00"
   },
@@ -247,7 +256,7 @@
    "doc_id": "b1997e242a430727",
    "chunks": 17,
    "ids_sha": "15bc14d1834fdf5a",
-   "doc_year": null,
+   "doc_year": 2023,
    "section_count": 12,
    "uploaded_at": "2026-10-28T03:39:42+00:00"
   },
@@ -256,7 +265,7 @@
    "doc_id": "13104743ad11ba5e",
    "chunks": 12,
    "ids_sha": "ccb083bdf8af1c63",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 74,
    "uploaded_at": "2026-10-28T03:39:40+00:00"
   },
@@ -265,7 +274,7 @@
    "doc_id": "54c9b3e9c3beedf7",
    "chunks": 31,
    "ids_sha": "c646bfeb01c86ce2",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 5,
    "uploaded_at": "2026-10-28T03:39:39+00:00"
   },
@@ -274,7 +283,7 @@
    "doc_id": "e574d0209a5440b5",
    "chunks": 5,
    "ids_sha": "bed10896c41983d9",
-   "doc_year": null,
+   "doc_year": 2025,
    "section_count": 4,
    "uploaded_at": "2026-10-28T03:39:26+00:00"
   },
@@ -283,7 +292,7 @@
    "doc_id": "49a0e56b326e71fc",
    "chunks": 81,
    "ids_sha": "de48d167544704f6",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 9,
    "uploaded_at": "2026-10-28T03:39:25+00:00"
   },
@@ -292,7 +301,7 @@
    "doc_id": "f80d7b076cd7e006",
    "chunks": 105,
    "ids_sha": "a044808c8253ece8",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 130,
    "uploaded_at": "2026-10-28T03:38:59+00:00"
   },
@@ -301,7 +310,7 @@
    "doc_id": "6e98444fddd47fed",
    "chunks": 3,
    "ids_sha": "ee7db700dfbc93b2",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 2,
    "uploaded_at": "2026-10-28T03:35:33+00:00"
   },
@@ -310,7 +319,7 @@
    "doc_id": "f7534fd89638ea61",
    "chunks": 5,
    "ids_sha": "fa8dbcb6827a0879",
-   "doc_year": null,
+   "doc_year": 2023,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:35:31+00:00"
   },
@@ -319,7 +328,7 @@
    "doc_id": "83d862d15b995851",
    "chunks": 7,
    "ids_sha": "74e88bcfbe407000",
-   "doc_year": null,
+   "doc_year": 2025,
    "section_count": 6,
    "uploaded_at": "2026-10-28T03:35:27+00:00"
   },
@@ -328,7 +337,7 @@
    "doc_id": "7f5838ff21c3ad14",
    "chunks": 8,
    "ids_sha": "a18028d5cffbb1d7",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 5,
    "uploaded_at": "2026-10-28T03:35:26+00:00"
   },
@@ -337,7 +346,7 @@
    "doc_id": "4f8e106097db1bab",
    "chunks": 11,
    "ids_sha": "d5a2a8331cbc6fb4",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 4,
    "uploaded_at": "2026-10-28T03:35:24+00:00"
   },
@@ -346,7 +355,7 @@
    "doc_id": "02d3a8d4de6759d5",
    "chunks": 17,
    "ids_sha": "94799ac5afc1524d",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:35:23+00:00"
   },
@@ -355,7 +364,7 @@
    "doc_id": "3574fb17b85ca151",
    "chunks": 8,
    "ids_sha": "7e5ef0ef13d88719",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 9,
    "uploaded_at": "2026-10-28T03:35:21+00:00"
   },
@@ -364,7 +373,7 @@
    "doc_id": "a4273d98c5cbe770",
    "chunks": 7,
    "ids_sha": "f26368db5ca05b25",
-   "doc_year": null,
+   "doc_year": 2023,
    "section_count": 6,
    "uploaded_at": "2026-10-28T03:35:20+00:00"
   },
@@ -373,7 +382,7 @@
    "doc_id": "ceb1806afa095db9",
    "chunks": 12,
    "ids_sha": "cbaaffb342b06375",
-   "doc_year": null,
+   "doc_year": 2023,
    "section_count": 9,
    "uploaded_at": "2026-10-28T03:35:19+00:00"
   },
@@ -382,7 +391,7 @@
    "doc_id": "20ff59f589e5ec2e",
    "chunks": 4,
    "ids_sha": "c32a80e44bd42e23",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 28,
    "uploaded_at": "2026-10-28T03:35:12+00:00"
   },
@@ -391,25 +400,16 @@
    "doc_id": "c5cc867282a20334",
    "chunks": 309,
    "ids_sha": "a74c38acdbe95c19",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 705,
    "uploaded_at": "2026-10-28T03:35:01+00:00"
-  },
-  "32a_装配式内装评价标准换版对照摘要_2021vs2025.md": {
-   "project": "装配式内装",
-   "doc_id": "22e2e80d7001525f",
-   "chunks": 12,
-   "ids_sha": "ac6893bf9e6d64f9",
-   "doc_year": null,
-   "section_count": 14,
-   "uploaded_at": "2026-10-28T03:34:48+00:00"
   },
   "32_装配式内装评价标准报批稿_DBJ33T1259-202x_2026-10公示.pdf": {
    "project": "装配式内装",
    "doc_id": "7ac314536442380d",
    "chunks": 31,
    "ids_sha": "a24d2e932a071cbb",
-   "doc_year": null,
+   "doc_year": 2026,
    "section_count": 28,
    "uploaded_at": "2026-10-28T03:34:46+00:00"
   },
@@ -418,7 +418,7 @@
    "doc_id": "1003ebb9dec87fc1",
    "chunks": 27,
    "ids_sha": "9716426a4c2ee473",
-   "doc_year": null,
+   "doc_year": 2026,
    "section_count": 5,
    "uploaded_at": "2026-10-28T03:34:35+00:00"
   },
@@ -427,7 +427,7 @@
    "doc_id": "39f4846d9575e9bc",
    "chunks": 15,
    "ids_sha": "94a997765d05b39c",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 17,
    "uploaded_at": "2026-10-28T03:34:31+00:00"
   },
@@ -454,7 +454,7 @@
    "doc_id": "7403ba0978e132be",
    "chunks": 30,
    "ids_sha": "452b58fca21da855",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 26,
    "uploaded_at": "2026-10-28T03:33:51+00:00"
   },
@@ -463,7 +463,7 @@
    "doc_id": "28605670611e9738",
    "chunks": 17,
    "ids_sha": "02db85ce40987ea1",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 1,
    "uploaded_at": "2026-10-28T03:33:46+00:00"
   },
@@ -472,7 +472,7 @@
    "doc_id": "c39a3435b68a4434",
    "chunks": 37,
    "ids_sha": "9d9859145a4123e7",
-   "doc_year": null,
+   "doc_year": 2024,
    "section_count": 49,
    "uploaded_at": "2026-10-28T03:33:39+00:00"
   }
@@ -515,6 +515,7 @@
   "073d1ff999419bf30d60423a98be57c8",
   "07643046a661982365a5714f22735320",
   "07c3bf399a517ae5fba0cf3e3a6ac17a",
+  "08239f6643b48310f6199a0092fcc976",
   "0823e7e9692fdaa67fddd18d0c57cf22",
   "08340166bc61881fba176485f389cf1f",
   "08d208c51141964c454839ab49f60724",
@@ -725,7 +726,6 @@
   "363ee5e8fcef5bbd68a2d47ad17dbfb6",
   "364670d35a1a6ff64ed3cd282a519ddf",
   "365628f18b16ded63201f0d5fb67e62e",
-  "3679e217c6f38c2ffa53a4f7bb75e52b",
   "369beae4961debda2d8bdcafeac3a1c9",
   "36a96c31a9a9deb2d6a7660571dd5b20",
   "36b3247d0d905fe64e723be783c444c6",
@@ -971,6 +971,7 @@
   "68ae6a939918e45240aba86e4d8a6533",
   "6900615bac7c1e582f9ee1693787efca",
   "69410e4e86541097f1593b3d7902f4b8",
+  "69764eac6e34d973cbb21b59c5cd0956",
   "6983efc6d7787fceb1978de939f888be",
   "6996f0541006ce74e4588bcda2dbdea2",
   "69a72e4c03c213fb740e27a2ae105d50",
@@ -990,7 +991,6 @@
   "6c340ca1f7bfa295e34fa6430d21528e",
   "6c43063b46363320f8f7c69d307dbf64",
   "6cb9e9f8974f738d770048a36d0053e8",
-  "6cc353c93b5ddea87000c0465a9f4be8",
   "6cc8e8c23189291bb3bc27a426d2215c",
   "6d83ae3c07447aa559565bc6c332a07d",
   "6d933aa2e67fcba7c5db3b66a26f904b",
