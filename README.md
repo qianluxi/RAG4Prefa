@@ -226,13 +226,17 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 508 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
+pytest -q                                  # 525 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
 python scripts/snapshot_corpus.py          # 先记下"此刻库里有什么"
 python scripts/eval.py --dataset eval/dataset.jsonl --save
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --save
 # 并行改写通道的对照（冻结扩展串，权重视为一个自变量）：
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
   --expand-from eval/expansions/paraphrase-20261028.jsonl --expand-parallel \
+  --modes dense,sparse,hybrid,rerank,hybrid_parallel,rerank_parallel --save
+# 受控词表（公众表达→规范用语）：术语作独立通道 + 重排也读术语串
+python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
+  --term-map rag4prefa/terms/public_to_standard.json --term-rerank --rewrite-weight 1.0 \
   --modes dense,sparse,hybrid,rerank,hybrid_parallel,rerank_parallel --save
 ```
 
@@ -594,6 +598,28 @@ RAG 系统里这是最坏的一类失败——它不崩溃，只是胡说。降�
   调权重、池深或换模型。注意这条链路**不能真并发**：所有读路径共用一条 sqlite 连接，
   多路并发会 `InterfaceError` 且只丢一路（报告上表现为"有效样本 14/15"），
   所以"并行"只指候选来源并行，代价是每多一路多一次 embedding 往返。
+- **受控词表（`rag4prefa/terms/public_to_standard.json`）把 5 道鸿沟题全部救回，但它真
+  起作用的位置不是召回，是重排。** 词表是人写的、每条带 `source`（能追到条文原话），
+  匹配是对原问句做子串判断（分组 `all`，不分词）。8 条规则在口语集上命中 8 题、7 题
+  未覆盖。术语只作为独立通道注入（原话那一路一条都不动），此时：
+
+  | 配置 | `hybrid` | `rerank` | 说明 |
+  |---|---|---|---|
+  | 基线 | 0.333 | 0.333 | 不加词表 |
+  | 词表，重排读原话 | 0.400 | 0.400 | 只多救回 1 题 |
+  | 词表，重排读术语串（权重 1.0） | 0.400 | **0.667** | 5 道鸿沟题全进前 5 |
+
+  逐题 gold 排名：`#6 挂在墙上 3 · #8 电线能换 1 · #11 老房子 1 · #14 吊顶含灯 1 ·
+  #15 怎么算做好 1`；7 道词表未覆盖的题**逐项与基线一致**，3 道本来就对的题仍是第 1，
+  没有任何一题被挤出去。关键不是"给对了词"这一件事，而是**召回与重排要读到同一批词**：
+  gold 早就在候选池里，用口语问句重排它排 19/20/5/7/12，换成术语串排 3/1/1/1/1。
+  这也解释了上一轮"扩展改善不了重排"——那是 LLM 的近义词，本来就换不动。
+  复现：`python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --term-map rag4prefa/terms/public_to_standard.json --term-rerank --rewrite-weight 1.0 --modes dense,sparse,hybrid,rerank,hybrid_parallel,rerank_parallel --save`。
+
+  **这条结论的边界必须写清楚**：8 条规则里有 5 条是看着这 15 题的失败写的，所以它证明的是
+  "给对词这条链能通"（可行性），**不是**"词表能泛化"。真正的检验要等 50 题的分层问题集
+  与一份不参照测试结果的词表。另外词表**尚未接入生产链路**：它现在是评估侧的实验开关。
+
 - 单进程设计（SQLite + 进程内任务）。要多副本时把 SQLite 换成 Postgres、任务换队列，接口层无需改动。
 - **并发**：同一个 `sqlite3.Connection` 被请求与后台入库线程共用（`check_same_thread=False`），
   没有额外的写锁。单用户没问题，多人并发写之前应先改成每线程独立连接。

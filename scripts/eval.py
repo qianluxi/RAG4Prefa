@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rag4prefa import ask, consistency, repo, snapshot  # noqa: E402
 from rag4prefa.adapters.query_expand import build_expander  # noqa: E402
+from rag4prefa.adapters.term_map import load_term_map  # noqa: E402
 from rag4prefa.domain import Filter, Hit  # noqa: E402
 from rag4prefa.services import build_services  # noqa: E402
 
@@ -146,6 +147,17 @@ class _RecallOptions(NamedTuple):
     rerank_query: str | None = None
     rewrites: tuple[str, ...] = ()
     rewrite_weight: float = 0.5
+
+    @property
+    def baseline_rerank_query(self) -> str | None:
+        """基线行（`rerank` / `dense_rerank`）的重排查询。
+
+        基线行必须是"完全不做改写"的那一列，所以只要这次跑带改写串（词表命中，
+        或者 LLM 并行），它就得退回**原话**，哪怕 `rerank_query` 已经被换成术语串。
+        否则同一份报告里的对照组也跟着变，`rerank` 与 `rerank_parallel` 的差值
+        就不再是"多了一路召回 + 重排读了别的串"这两件事的合成，而是笔糊涂账。
+        """
+        return None if self.rewrites else self.rerank_query
 
 
 async def dense_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
@@ -260,7 +272,7 @@ async def _dense_mode(services, question, filt, k, keyword, opts):  # noqa: ARG0
 
 async def _dense_rerank_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
     return await dense_rerank_hits(
-        services, question, filt, k, rerank_query=opts.rerank_query
+        services, question, filt, k, rerank_query=opts.baseline_rerank_query
     )
 
 
@@ -275,8 +287,10 @@ async def _hybrid_mode(services, question, filt, k, keyword, opts):  # noqa: ARG
 
 
 async def _rerank_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
+    # 基线行读 `baseline_rerank_query`：带改写串时它退回原话，
+    # 保证"对照组一行不变量"这条在带词表的报告里依然成立。
     return await rerank_hits(
-        services, question, filt, k, rerank_query=opts.rerank_query
+        services, question, filt, k, rerank_query=opts.baseline_rerank_query
     )
 
 
@@ -343,13 +357,15 @@ def evaluate(
     services, rows: list[dict], k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
     expander=None, expand_rerank: bool = False, parallel: bool = False,
-    rewrite_weight: float = 0.5,
+    rewrite_weight: float = 0.5, term_map=None, term_form: str = "terms",
+    term_rerank: bool = False,
 ) -> dict:
     return asyncio.run(
         _evaluate(
             services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
             expander=expander, expand_rerank=expand_rerank, parallel=parallel,
-            rewrite_weight=rewrite_weight,
+            rewrite_weight=rewrite_weight, term_map=term_map, term_form=term_form,
+            term_rerank=term_rerank,
         )
     )
 
@@ -426,7 +442,8 @@ async def _evaluate(
     services, rows: list[dict], k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
     expander=None, expand_rerank: bool = False, parallel: bool = False,
-    rewrite_weight: float = 0.5,
+    rewrite_weight: float = 0.5, term_map=None, term_form: str = "terms",
+    term_rerank: bool = False,
 ) -> dict:
     metrics: dict[str, dict[str, list[float]]] = {
         m: {"recall": [], "mrr": [], "ndcg": []} for m in modes
@@ -445,6 +462,9 @@ async def _evaluate(
     # 副产品，而报告上两行数字看起来一样漂亮。
     timings: dict[str, list[float]] = {m: [] for m in modes}
     expand_fallbacks: list[str] = []
+    # 词表一条都没命中的题。它们与"词表命中但没用"是两件事：前者说明词表覆盖面不够
+    # （要补词表或换路线），后者说明词表给对了词也救不回来（该路线被证伪）。
+    uncovered: list[str] = []
 
     for row in rows:
         question = str(row.get("question") or "").strip()
@@ -480,7 +500,23 @@ async def _evaluate(
         rerank_query = search_question if expand_rerank else question
         rewrites: tuple[str, ...] = ()
         recall_query = question
-        if parallel:
+        term_hits: list[dict] = []
+        if term_map is not None:
+            # 词表只提供**规范术语**，且只作为独立通道。它不允许拼进原话：
+            # 拼串会改变原话那一路的排序，而"原话排序不动"正是并行形态唯一的承诺。
+            rewrites = tuple(term_map.rewrite(question, form=term_form))
+            term_hits = term_map.explain(question)
+            if not rewrites:
+                # 词表没覆盖到 ≠ 词表没用。这两类题必须分开记账，否则"覆盖不到的题"
+                # 会被算成"词表试过但无效"，把结论往悲观方向带。
+                uncovered.append(question)
+            elif term_rerank:
+                # 重排也读规范术语串。第四十一轮实测：gold 已在候选池里，
+                # 用**口语问句**重排排到 19/20/5/7/12 名，换成术语串后是 3/1/1/1/1。
+                # 也就是说"给对词"这件事对召回与重排是**同一件事**——只改召回，
+                # 等于让一个读不懂口语的模型去挑一份它现在能读懂的候选。
+                rerank_query = " ".join(rewrites)
+        elif parallel:
             if search_question.strip() != question:
                 rewrites = (search_question,)
         else:
@@ -490,6 +526,7 @@ async def _evaluate(
             "question": question,
             "search_question": search_question,
             "rewrites": list(rewrites),
+            "term_entries": term_hits,
             "modes": {},
         }
         for mode in modes:
@@ -580,6 +617,8 @@ async def _evaluate(
         # 扩展没产出一律降级回原话。把这些题单独列出来，否则它们在均值里
         # 与"没开扩展"毫无区别，读的人会以为扩展在这一题上也被检验过了。
         "expand_fallbacks": expand_fallbacks,
+        # 词表未覆盖的题，语义见上（`uncovered` 的注释）。
+        "term_uncovered": uncovered,
         # 逐题证据：均值的来源。`--diagnostics` 把它落成 JSONL，
         # 让"哪道题被救回、哪道题被挤掉"可以事后核对，而不是只有一句结论。
         "diagnostics": diagnostics,
@@ -642,6 +681,8 @@ def run(
     expand: bool = False, expand_rerank: bool = False,
     diagnostics_path: Path | None = None, expand_from: Path | None = None,
     parallel: bool = False, rewrite_weight: float = 0.5,
+    term_map_path: Path | None = None, term_form: str = "terms",
+    term_rerank: bool = False,
 ) -> dict:
     services = build_services()
     try:
@@ -659,6 +700,14 @@ def run(
         if not rows and not refuse_rows:
             raise ValueError(f"数据集为空：{dataset_path}")
         expander = None
+        term_map = load_term_map(term_map_path)
+        if term_map is not None and (expand or expand_from is not None):
+            # 两套改写串一起用，这一轮的实验就不是"词表 vs LLM"，而是"两者叠加"，
+            # 而报告上只有一个 Recall 数——谁也说不清是谁的贡献。
+            raise ValueError(
+                "--term-map 与 --expand/--expand-from 不能同用：两套改写串同时注入时，"
+                "收益无法归因到任何一方"
+            )
         if expand_from is not None:
             # 复现实验用：LLM 扩展是随机的，两次生成的术语并不相同（实测 15 题里
             # 0 题一致）。把上一轮落盘的扩展串读回来，A/B/C 才是同一个查询集。
@@ -677,20 +726,40 @@ def run(
         result = evaluate(
             services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
             expander=expander, expand_rerank=expand_rerank, parallel=parallel,
-            rewrite_weight=rewrite_weight,
+            rewrite_weight=rewrite_weight, term_map=term_map, term_form=term_form,
+            term_rerank=term_rerank,
         )
         result["refuse_dataset"] = str(refuse_path) if refuse_rows else ""
         result["dataset"] = str(dataset_path)
         result["expanded"] = bool(expander is not None and expander.available)
         result["expand_source"] = str(expand_from) if expand_from is not None else ""
-        result["rewrite_weight"] = rewrite_weight if (parallel and result["expanded"]) else None
+        # 改写串从哪来，必须跟着数字走。词表与 LLM 是两种完全不同的主张
+        # （"人写的规范词" vs "模型猜的近义词"），混成一句"用了改写"就白做了。
+        result["rewrite_source"] = (
+            "term-map" if term_map is not None else ("llm" if result["expanded"] else "")
+        )
+        if term_map is not None:
+            result["term_map"] = {
+                "path": str(term_map_path),
+                "entries": len(term_map),
+                "form": term_form,
+                # 重排读的是原话还是术语串，是两个实验。混在一个字段里，
+                # 报告读者会以为 rerank 那行只改了召回。
+                "rerank": "terms" if term_rerank else "question",
+            }
+        result["rewrite_weight"] = (
+            rewrite_weight if (parallel or term_map is not None) else None
+        )
         # 扩展作用在哪一段，必须跟着数字走：只写在命令行参数里，
         # 报告读者会以为 rerank 那行的变化也是"召回变好"带来的。
-        # 三种形态互不兼容，所以是一个值而不是三个布尔：
-        #   recall          拼串（首版，已证伪）
-        #   recall-parallel 并行通道（原话独立保留）
-        #   rerank          连重排也读扩展串（实验 C）
-        if not result["expanded"]:
+        # 四种形态互不兼容，所以是一个值而不是几个布尔：
+        #   recall                  拼串（首版，已证伪）
+        #   recall-parallel         并行通道，改写字来自 LLM
+        #   recall-parallel-termmap 并行通道，改写字来自受控词表
+        #   rerank                  连重排也读扩展串（实验 C）
+        if term_map is not None:
+            stage = "recall-parallel-termmap" + ("-rerank" if term_rerank else "")
+        elif not result["expanded"]:
             stage = ""
         elif parallel:
             stage = "recall-parallel"
@@ -760,7 +829,39 @@ def report(result: dict, k: int) -> str:
             state = "有未提交改动" if code.get("dirty") else "工作区干净"
             tail = f" · 代码 `{code['commit']}`（{state}）"
         lines.append(f"- 生成于 {result['generated_at']}{tail}")
-    if result.get("expanded"):
+    if result.get("rewrite_source") == "term-map":
+        meta = result.get("term_map") or {}
+        weight = result.get("rewrite_weight")
+        lines.append(
+            f"- **注入的是受控词表（公众表达→规范用语），不是 LLM 扩展**："
+            f"`{meta.get('path', '')}` 共 {meta.get('entries', 0)} 条；"
+            f"命中后按 `{meta.get('form', 'terms')}` 形态注入，权重 {weight}（原话恒为 1.0）。"
+        )
+        lines.append(
+            "- 术语一律作为**独立通道**注入：原话那一路的排序与候选一条都没被改动，"
+            "`dense`/`sparse`/`hybrid`/`rerank` 四行与不开词表时逐字一致，"
+            "只有 `*_parallel` 两行反映词表的净效果。"
+        )
+        if meta.get("rerank") == "terms":
+            lines.append(
+                "- **重排读的是规范术语串**（不是原话）：`rerank_parallel` 的候选池含术语通道、"
+                "重排查询是术语串；`rerank` 基线行仍读原话、候选池也不含术语。"
+                "两者之差同时含「池子变了」与「重排查询变了」两件事——要拆开，对照本轮"
+                "不带 `--term-rerank` 的那份报告（只有池子变）。"
+            )
+        else:
+            lines.append(
+                "- 重排仍读原话：`rerank_parallel` 只反映候选池变化，"
+                "不反映重排判断的变化。"
+            )
+        uncovered = result.get("term_uncovered") or []
+        if uncovered:
+            lines.append(
+                f"- **{len(uncovered)} 题的词表一条都没命中**"
+                f"（{'、'.join(uncovered[:3])}{'…' if len(uncovered) > 3 else ''}）："
+                "这些题与不开词表时完全一样，属于「词表没覆盖」，**不是**「词表给了词也没用」。"
+            )
+    elif result.get("expanded"):
         stage = result.get("expand_stage") or "recall"
         if stage == "rerank":
             lines.append(
@@ -962,8 +1063,20 @@ def _report_path(result: dict, dataset_path: Path) -> Path:
     # "只扩召回"「并行通道」与"连重排一起扩"是三个实验，报告也不能同名。
     stage = result.get("expand_stage") or ""
     suffix = ""
+    used_rewrite = False
     if stage == "rerank":
         suffix = "-expand-rerank"
+    elif stage.startswith("recall-parallel-termmap"):
+        # 词表这一路有四个自变量：形态（terms/joined）、权重、重排读哪个串。
+        # 少写一个，不同配置的报告就会互相覆盖——而它们在文件系统里长得一模一样。
+        meta = result.get("term_map") or {}
+        weight = result.get("rewrite_weight")
+        suffix = f"-termmap-{meta.get('form', 'terms')}"
+        if weight is not None:
+            suffix += f"-w{weight:g}".replace(".", "")
+        if meta.get("rerank") == "terms":
+            suffix += "-rerank"
+        used_rewrite = True
     elif stage == "recall-parallel":
         suffix = "-expand-parallel"
         # 权重是并行通道的**自变量**，不同权重的数字不能落在同一个文件里：
@@ -971,12 +1084,14 @@ def _report_path(result: dict, dataset_path: Path) -> Path:
         weight = result.get("rewrite_weight")
         if weight is not None:
             suffix += f"-w{weight:g}".replace(".", "")
+        used_rewrite = True
     elif stage:
         suffix = "-expand"
+        used_rewrite = True
     # `hybrid_parallel` 两行在**没开扩展**时与 baseline 数值相同，但报告的坐标系
     # （跑的哪几行）不一样，也不能互相覆盖——所以按"跑了哪些行"再补一个后缀。
     parallel = any(str(m).endswith("_parallel") for m in (result.get("modes") or {}))
-    if parallel and stage != "recall-parallel":
+    if parallel and not used_rewrite:
         suffix += "-parallel"
     return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{stamp}-{tag}{suffix}.md"
 
@@ -1027,6 +1142,28 @@ def main() -> int:
         help="并行改写通道的融合权重（原话恒为 1.0），取值范围 (0, 1]",
     )
     parser.add_argument(
+        "--term-map",
+        default="",
+        help=(
+            "受控词表路径（公众表达→规范用语）。命中的术语作为**独立通道**注入，"
+            "原话那一路不动；与 --expand/--expand-from 互斥"
+        ),
+    )
+    parser.add_argument(
+        "--term-rerank",
+        action="store_true",
+        help=(
+            "重排也读规范术语串（默认读原话）。第四十一轮实测：gold 在池内时，"
+            "读口语问句排 19/20/5/7/12 名，读术语串排 3/1/1/1/1"
+        ),
+    )
+    parser.add_argument(
+        "--term-form",
+        default="terms",
+        choices=("terms", "joined"),
+        help="词表注入形态：terms=每个术语一条通道（默认）；joined=拼成一串",
+    )
+    parser.add_argument(
         "--diagnostics",
         default="",
         help="把逐题结果（扩展串、各召回方式的 gold 排名与 top-k）写成 JSONL",
@@ -1052,6 +1189,31 @@ def main() -> int:
         print(
             "--expand-parallel 需要同时给 --expand（或用 --expand-from 复用扩展串），"
             "否则没有改写串，并行模式与基线完全相同",
+            file=sys.stderr,
+        )
+        return 2
+    if args.term_map and (args.expand or args.expand_from or args.expand_parallel):
+        print(
+            "--term-map 与 --expand/--expand-from/--expand-parallel 互斥："
+            "词表已经是并行通道，两套改写串叠在一起收益无法归因",
+            file=sys.stderr,
+        )
+        return 2
+    if args.term_map and not any(m.endswith("_parallel") for m in args.modes.split(",")):
+        # 不报错，只提醒：`*_parallel` 两行没被点名时，词表注入的通道根本不在结果里，
+        # 数字会与基线一字不差，而报告上写着"用了词表"。
+        print(
+            "提示：--term-map 只对 *_parallel 两行生效，当前 --modes 未包含它们，"
+            "请加上 hybrid_parallel,rerank_parallel",
+            file=sys.stderr,
+        )
+    if args.term_rerank and not args.term_map:
+        print("--term-rerank 需要同时给 --term-map", file=sys.stderr)
+        return 2
+    if args.term_rerank and args.expand_rerank:
+        print(
+            "--term-rerank 与 --expand-rerank 互斥：两者都改重排查询，"
+            "同时给就分不清重排读的是术语还是 LLM 扩展串",
             file=sys.stderr,
         )
         return 2
@@ -1089,6 +1251,9 @@ def main() -> int:
             expand_from=Path(args.expand_from) if args.expand_from else None,
             parallel=args.expand_parallel,
             rewrite_weight=args.rewrite_weight,
+            term_map_path=Path(args.term_map) if args.term_map else None,
+            term_form=args.term_form,
+            term_rerank=args.term_rerank,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
