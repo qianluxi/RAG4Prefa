@@ -153,7 +153,7 @@ def test_stream_answer_adds_one_channel_and_reranks_with_original_plus_terms(
     assert reranker.queries == [f"{QUESTION} {JOINED}"], "重排必须读到原话，术语只做加法"
     assert meta["terms"] == list(TERMS)
     assert meta["term_entries"] == [
-        {"id": "e1", "matched_by": "张拉 + 要点", "terms": list(TERMS)}
+        {"id": "e1", "intent": "unlabelled", "matched_by": "张拉 + 要点", "terms": list(TERMS)}
     ]
 
 

@@ -191,7 +191,7 @@ def test_explain_reports_which_trigger_fired() -> None:
     term_map = TermMap([entry])
 
     assert term_map.explain("墙上想挂电视和吊柜，会不会掉下来？") == [
-        {"id": "e", "matched_by": "挂电视 + 掉", "terms": ["专用连接件"]}
+        {"id": "e", "intent": "unlabelled", "matched_by": "挂电视 + 掉", "terms": ["专用连接件"]}
     ]
 
 
@@ -299,7 +299,12 @@ def test_evaluate_injects_terms_as_separate_channels(conn, settings: Settings, m
         ("墙面悬挂较重物体", "专用连接件"),
     ]
     assert result["diagnostics"][0]["term_entries"] == [
-        {"id": "e", "matched_by": "挂电视 + 掉", "terms": ["墙面悬挂较重物体", "专用连接件"]}
+        {
+            "id": "e",
+            "intent": "unlabelled",
+            "matched_by": "挂电视 + 掉",
+            "terms": ["墙面悬挂较重物体", "专用连接件"],
+        }
     ]
 
 

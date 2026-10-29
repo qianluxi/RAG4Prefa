@@ -102,8 +102,11 @@ class Settings(BaseSettings):
     # 往返（一条术语通道），这是收益之外必须一起看的成本。
     term_map: str = ""
     # 术语注入形态：`joined` = 所有命中术语拼成一串（默认），`terms` = 每个术语一条通道。
-    # 取 joined 是因为两者**结果相同**（2026-10-29，15 题、重排读术语串时逐题 gold 名次
-    # 一字不差）而 joined 少 N−1 次远程 embedding。形态只在"重排读原话"时才有差别：
+    # 取 joined 是因为两者**Recall 相同、名次只差 1~2 题**（2026-10-29 在 50 题口语集上
+    # 同一天重跑：四条行 Recall 一模一样，`hybrid_parallel` 2 题前移、`rerank_parallel`
+    # 1 题后移且仍在 top-5），而 joined 少 N−1 次远程 embedding。
+    # 别把这句写成"逐题一字不差"——那是 15 题（v1 词表、重排读术语串）上的结论，
+    # 在 50 题上不成立（见 HANDOFF 第十版）。形态只在"重排读原话"时才有实质差别：
     # 那时拼串会把 BM25 的单个精确搭配稀释掉。
     term_map_form: Literal["terms", "joined"] = "joined"
     # 重排读哪个串：

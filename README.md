@@ -226,7 +226,7 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 553 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
+pytest -q                                  # 569 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
 python scripts/snapshot_corpus.py          # 先记下"此刻库里有什么"
 python scripts/eval.py --dataset eval/dataset.jsonl --save
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --save
@@ -236,8 +236,10 @@ python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
   --modes dense,sparse,hybrid,rerank,hybrid_parallel,rerank_parallel --save
 # 受控词表（公众表达→规范用语）：术语作独立通道 + 重排读「原话 + 术语串」
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
-  --term-map rag4prefa/terms/public_to_standard.v2.json --term-form joined --term-rerank append \
+  --term-map rag4prefa/terms/public_to_standard.v3.json --term-form joined --term-rerank append \
   --modes hybrid,hybrid_parallel,rerank,rerank_parallel --save
+# 词表误触发审计（离线）：负例闸门 + 三个数据集的触发率
+python scripts/audit_term_misfire.py rag4prefa/terms/public_to_standard.v3.json
 ```
 
 生产链路上同一个开关叫 `R4P_TERM_MAP`（留空 = 关闭），形态与重排查询由
@@ -433,6 +435,30 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`r
 `meta` 事件带 `terms` 与 `term_entries`（命中哪条、被哪几个词触发），界面状态栏会显示
 「术语通道 …」。配了路径却没把词表交给检索会直接报错，坏词表则降级并写进健康检查——
 这两件事都不允许静默发生。
+
+### 误触发：词对上了，意没对上
+
+上表是 **v2 口径**。v2 之后发现一个更贵的问题：子串匹配只证明"这个词出现在句子里"，
+不证明"用户在问这件事"。专业问法集 31 题上有 6 次触发，**2 次明确错、1 次靠运气**——
+「吊顶安装灯具的构造要求」被注入补贴品类表的「不含电器设备」，「检修口位置」被注入
+「管线分离」（命中的是检修里的「修」）。
+
+v3 从三个地方收紧，每条都能逐题复核：
+
+| 层 | 改法 |
+|---|---|
+| 代码 | 组内还有多字备选时，**仅靠单字命中不算这一组命中**（`修` 不再等于「维修」） |
+| 数据 | 意图词与对象词分到不同的组（`包含/算不算` 与 `灯具/浴霸` 不再是一个 OR） |
+| 数据 | 每条词条标 `intent`（boundary/practice/performance/policy/acceptance/prohibition），用于分组统计误触发率 |
+
+代价与收益都量过：口语集触发 15 → **14** 题（丢的那题靠单字「裂 + 板」，不补，补它就得把
+「板拼」这种非加工过的搭配写进词表），专业问法集 6 → **3** 题，库外集不变。冻在
+`eval/termmap-misfire-20261029.md`，闸门是 `eval/term-negatives.jsonl`（7 条负例，
+拿 v2 跑会抓出 3 条违规、v3 全过）与 `scripts/audit_term_misfire.py`。
+
+v1 / v2 **不再是推荐用法**，保留只为复现旧报告：它们各有 2 条映射标了
+`single_char_evidence: true`——那是"我知道这条在拿语素当词用"的技术债登记，v3 一条都没有
+（测试钉死）。
 
 ## 多用户与 API Key
 
@@ -725,6 +751,30 @@ RAG 系统里这是最坏的一类失败——它不崩溃，只是胡说。降�
   必须在库」，候选抽取走 `scripts/extract_terms.py`（只从规范句抽 n-gram，按「在条文里的
   提纯比」排序），分组统计走 `scripts/analyze_termmap.py`（含不变量检查）。完整记录见
   `eval/termmap-v2-20261029.md`，构建规则见 `eval/termmap-v2-protocol.md`（写在选词之前）。
+
+- **词表 v3：把"词对上了、意没对上"当成一等错误。** v2 的协议只管"术语能不能在语料里
+  逐字查到"，没管"这条映射该不该在这个问句里触发"。实测量出来：**专业问法集 31 题上
+  触发 6 次，其中 2 次明确错、1 次靠运气**——「吊顶安装灯具的构造要求」被注入补贴品类表的
+  「不含电器设备」，「检修口宜设在什么位置」被注入「管线分离」（命中的是检修里的「修」）。
+
+  三条修法：代码层「组内还有多字备选时单字不算证据」，数据层「意图词与对象词分到不同的组」
+  （`ceiling-scope`、`accessibility` 两条），以及每条词条一个 `intent` 标签用于分组统计。
+
+  | 数据集 | 题数 | v2 触发 | v3 触发 |
+  |---|---|---|---|
+  | 口语集（该碰） | 50 | 15 | **14** |
+  | 专业问法集（不该碰） | 31 | 6 | **3** |
+  | 库外集 | 6 | 1 | 1（地域问题，词表修不了） |
+
+  代价是口语集 1 题（靠单字「裂 + 板」的那道，不补——补它得把「板拼」这种非加工过的搭配
+  写进词表）。闸门是 `eval/term-negatives.jsonl` 的 7 条负例：**拿 v2 跑会抓出 3 条违规，
+  v3 全过**（`test_negative_set_would_have_caught_v2` 钉住这件事，只管 v3 的闸门等于没接）。
+  另有 `scripts/audit_term_misfire.py` 输出触发率、按意图分布、多意图冲突题与「单字规则挡掉了
+  什么」。完整记录见 `eval/termmap-misfire-20261029.md`。
+
+  两个边界：①`intent` 是**标签不是分类器**，它不会因为"这题像政策题"就去触发；②28 条里只有
+  2 条被这次改动碰到，其余 26 条不等于没错，只等于**没测到**——负例集 7 条也是我自己写的，
+  同样带着"我想到哪几种错法"的偏差。
 
 - 单进程设计（SQLite + 进程内任务）。要多副本时把 SQLite 换成 Postgres、任务换队列，接口层无需改动。
 - **并发**：同一个 `sqlite3.Connection` 被请求与后台入库线程共用（`check_same_thread=False`），

@@ -1,7 +1,7 @@
 {
   "version": 2,
   "protocol": "eval/termmap-v2-protocol.md",
-  "note": "受控词表 v2：按条文构建，不参考评测集的失败点。选词规则见 protocol：terms 侧逐字可查（scripts/check_term_map.py 机械校验）、groups 侧必须是条文里不会出现的日常说法、一条映射只表达一个概念。public_side 记录公众表达侧的来源可信度：vernacular=按该领域日常说法写，recalled=动笔时已想到某道题（这类不算泛化证据）。",
+  "note": "受控词表 v2：按条文构建，不参考评测集的失败点。选词规则见 protocol：terms 侧逐字可查（scripts/check_term_map.py 机械校验）、groups 侧必须是条文里不会出现的日常说法、一条映射只表达一个概念。public_side 记录公众表达侧的来源可信度：vernacular=按该领域日常说法写，recalled=动笔时已想到某道题（这类不算泛化证据）。**本文件已冻结**：pipeline-hidden / panel-crack 标了 single_char_evidence=true，理由与 v1 相同——旧报告是在「单字也算证据」的口径下跑出来的，改了就复现不了；v3 起用严格口径，两者的差值就是收紧误触发的代价。",
   "entries": [
     {
       "id": "wall-hollow",
@@ -21,7 +21,8 @@
       ],
       "terms": ["裂缝", "翘曲"],
       "source": "05_浙江省装配化装修工程施工质量验收暂行规定「装配式隔墙安装应垂直、平整、位置正确，板材不应有裂缝或缺损」",
-      "public_side": "vernacular"
+      "public_side": "vernacular",
+      "single_char_evidence": true
     },
     {
       "id": "odor-formaldehyde",
@@ -71,7 +72,8 @@
       ],
       "terms": ["管线分离", "维修更换"],
       "source": "01_装配式内装修设计导则 6.1.1「设备管线宜与主体结构相分离，方便维修更换」",
-      "public_side": "recalled"
+      "public_side": "recalled",
+      "single_char_evidence": true
     },
     {
       "id": "drain-smell",

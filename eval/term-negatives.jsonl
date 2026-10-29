@@ -1,0 +1,22 @@
+// 词表负例集：**词出现在句子里**不等于**用户在问这件事**。
+//
+// 一行 = 一条"不该被某条映射命中"的问题。`forbid` 列的是必须**不触发**的词条 id
+// （其它条触发不管——这些句子大多有正当命中，一并列进 forbid 只会把闸门写成摆设）。
+// `kind` 是误触发机制，用来分组统计，别随手加新值。
+//
+// 这份文件是 scripts/audit_term_misfire.py 与 tests/test_term_map_constraints.py
+// 共用的唯一数据源：改词表时先跑它，不要靠肉眼看。
+//
+// kind 取值：
+//   same-word-different-intent  同一个词，问的是另一件事（吊顶+灯具是补贴品类题，不是构造题）
+//   object-word-as-intent       把"对象词"当"意图词"用（浴霸只是对象，问的是安装做法）
+//   single-char-morpheme        单字在中文里是语素不是词（装修里的"修"、楼板里的"板"）
+//   scope-boundary              适用对象/范围不对（城市商品房不是"农村自建房"）
+//
+{"question": "吊顶安装灯具需要满足什么构造要求？", "forbid": ["ceiling-scope"], "kind": "same-word-different-intent", "why": "吊顶+灯具都在，问的是安装构造；ceiling-scope 注入的是补贴品类表的『不含电器设备』，词对了、意错了"}
+{"question": "浴霸装在吊顶上要注意什么？", "forbid": ["ceiling-scope"], "kind": "object-word-as-intent", "why": "浴霸只是对象词。原规则把它与『包含/算不算』写进同一个 OR 组，于是任何提到浴霸的吊顶问题都会触发品类边界映射"}
+{"question": "集成卫生间有无障碍设计要求时，门槛石位置应如何处理？", "forbid": ["accessibility"], "kind": "same-word-different-intent", "why": "问的是门槛石的定位做法；accessibility 注入『过渡斜坡/乘轮椅者』，那是门口高差的方案，不是门槛石位置"}
+{"question": "架空楼地面内敷设管线时，检修口宜设置在什么位置？", "forbid": ["pipeline-hidden"], "kind": "single-char-morpheme", "why": "『检修口』里的『修』命中了 group2 的单字『修』；这题要的术语是检修口，不是管线分离"}
+{"question": "装配式内装修的设备和主体结构的关系应遵循什么原则？", "forbid": ["pipeline-hidden"], "kind": "single-char-morpheme", "why": "『内装修』里的『修』不是『维修』。这题注入了正确的『管线分离』纯属运气——专业问法里『管线』『主体结构』本来就在问句中，不需要口语映射"}
+{"question": "楼板能不能打洞走下水？", "forbid": ["panel-crack"], "kind": "single-char-morpheme", "why": "『楼板』里的『板』是位置不是缺陷对象；这题该触发的是同层排水/防火封堵，不是裂缝翘曲"}
+{"question": "城市里的老破小算不算补贴范围？", "forbid": ["subsidy-scope"], "kind": "scope-boundary", "why": "subsidy-scope 的对象组是农村/自建房/宅基地；城市商品房不在其列，触发了就会把回答引向『农村自建房能不能补』"}
