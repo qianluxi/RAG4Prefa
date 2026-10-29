@@ -101,6 +101,43 @@ def test_rrf_multi_scales_each_run_by_its_weight() -> None:
     assert fused["c"] == pytest.approx(0.5 * 0.5)
 
 
+def test_rrf_equal_weight_lets_two_weak_hits_beat_one_strong_hit() -> None:
+    """等权 RRF 下「两路都排第 31/30」会压过「单路排第 1」——这是数学性质，不是 bug。
+
+    口语集实测（2026-10-29，50 题）：「卫生间地面要不要往地漏那边找坡？」的 gold
+    在 dense 排第 1、BM25 不进前 50，融合后掉到第 22 名，于是 `hybrid` 整行
+    Recall@5 只有 0.460，比纯 dense 的 0.600 还低 0.14。
+
+    算一遍就明白：单路第 1 得 1/61≈0.0164；两路各自排 31 得 1/91+1/91≈0.0220。
+    这个用例钉住的是「别把 hybrid 低于 dense 当成实现写错了」——真正的修法只有
+    两种：给强通道更高权重，或者改成按名次取并集后再统一重排。改 rrf 公式本身
+    修不了它（等权就是等权）。
+    """
+    dense = [("strong", 0.9)] + [(f"d{i}", 0.5) for i in range(29)] + [("weak", 0.4)]
+    sparse = [(f"s{i}", 1.0) for i in range(29)] + [("weak", 0.9)]
+
+    fused = ask.rrf_multi(((dense, 1.0), (sparse, 1.0)), k=60)
+
+    assert fused["strong"] == pytest.approx(1 / 61)
+    assert fused["weak"] == pytest.approx(1 / 91 + 1 / 90)
+    assert fused["weak"] > fused["strong"]
+
+
+def test_rrf_weight_can_rescue_the_strong_single_run() -> None:
+    """同一个构造，把 dense 权重抬起来就能翻回来——说明权重是那个可动的旋钮。
+
+    临界值不是 2.0：`w/61 > w/91 + 1/90` 解出 w > 2.06。2.0 仍然输（0.0328 vs
+    0.0331），3.0 才赢。写成测试而不是注释，是因为"抬一点权重就够了"是个很容易
+    想当然的结论，而它恰好差在临界值下面一点。
+    """
+    dense = [("strong", 0.9)] + [(f"d{i}", 0.5) for i in range(29)] + [("weak", 0.4)]
+    sparse = [(f"s{i}", 1.0) for i in range(29)] + [("weak", 0.9)]
+
+    fused = ask.rrf_multi(((dense, 3.0), (sparse, 1.0)), k=60)
+
+    assert fused["strong"] > fused["weak"]
+
+
 def test_parallel_keeps_every_original_candidate(conn, settings: Settings) -> None:
     """改写权重再大，原话通道的 top-k 也必须一条不落地留在融合结果里。
 

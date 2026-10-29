@@ -1049,15 +1049,21 @@ def report(result: dict, k: int) -> str:
 
 
 def _report_path(result: dict, dataset_path: Path) -> Path:
-    """按「数据集 + 日期 + 语料指纹」命名。
+    """按「数据集 + 日期 + 语料指纹 + 数据集指纹」命名。
 
     刻意不用 `-new` 这种名字：`baseline-new` 用了两个月就不再是"新"的，
     而它指向的语料已经变过两轮；同一天换语料重跑也会互相覆盖。
     带上 ids_sha 之后，同名即同语料，不同语料必然不同名。
+
+    **但只带语料指纹是不够的**（2026-10-29 踩到）：同一天、同一份语料、同一套配置，
+    把口语集从 15 题扩到 50 题重跑，文件名一字不差——旧报告被静默覆盖，
+    而 HANDOFF 里引用的正是那个文件名。所以数据集指纹也要进名字：
+    同名当且仅当"同一份语料 + 同一份数据集 + 同一套配置 + 同一天"。
     """
     corpus = (result.get("context") or {}).get("corpus") or {}
     stamp = (result.get("generated_at") or "")[:10].replace("-", "")
     tag = (corpus.get("ids_sha") or "nosnapshot")[:8]
+    data = (result.get("dataset_sha") or "nodataset")[:8]
     # 带术语扩展与不带是两种不同的检索配置，必须分开命名：
     # 否则 `--expand` 的对照实验会覆盖掉同一语料、同一数据集的基线报告。
     # "只扩召回"「并行通道」与"连重排一起扩"是三个实验，报告也不能同名。
@@ -1093,7 +1099,7 @@ def _report_path(result: dict, dataset_path: Path) -> Path:
     parallel = any(str(m).endswith("_parallel") for m in (result.get("modes") or {}))
     if parallel and not used_rewrite:
         suffix += "-parallel"
-    return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{stamp}-{tag}{suffix}.md"
+    return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{data}-{stamp}-{tag}{suffix}.md"
 
 
 def main() -> int:

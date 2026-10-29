@@ -118,3 +118,27 @@ def test_unknown_mode_is_rejected(capsys, monkeypatch) -> None:
 def test_missing_dataset_returns_code(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ev.sys, "argv", ["eval.py", "--dataset", str(tmp_path / "无.jsonl")])
     assert ev.main() == 2
+
+
+def test_report_name_distinguishes_datasets_on_same_corpus() -> None:
+    """同一份语料、同一天、同一套配置，只换了数据集，报告不能同名。
+
+    2026-10-29 实测：口语集从 15 题扩到 50 题后重跑，文件名一字不差，
+    15 题那份被静默覆盖——而 HANDOFF 里引用的正是那个名字。语料指纹挡不住这种覆盖，
+    因为它只承诺"同语料同名"，没承诺"同数据集同名"。
+    """
+    base = {
+        "generated_at": "2026-10-29T11:17:00+08:00",
+        "context": {"corpus": {"ids_sha": "208ec1576dfc11cc"}},
+        "modes": {"dense": {}},
+        "dataset_sha": "3da85a91a18c4a11",
+    }
+    other = {**base, "dataset_sha": "00000000deadbeef"}
+
+    a = ev._report_path(base, Path("eval/dataset.paraphrase.jsonl"))
+    b = ev._report_path(other, Path("eval/dataset.paraphrase.jsonl"))
+
+    assert a != b
+    assert "208ec157" in a.name and "3da85a91" in a.name
+    # 同语料不同数据集必须不同名；反过来同一份数据集必须稳定同名（可复现）。
+    assert a == ev._report_path(dict(base), Path("eval/dataset.paraphrase.jsonl"))
