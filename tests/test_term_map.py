@@ -373,7 +373,7 @@ def test_term_rerank_switches_only_the_rerank_query(
     asyncio.run(
         _ev._evaluate(
             services, rows, 5, ["rerank", "rerank_parallel"],
-            term_map=term_map, term_rerank=True,
+            term_map=term_map, term_rerank="terms",
         )
     )
 
@@ -427,3 +427,50 @@ def test_term_map_and_expander_are_mutually_exclusive(tmp_path: Path, monkeypatc
         _ev.run(
             dataset, 5, ["hybrid_parallel"], term_map_path=DEFAULT_MAP, expand=True,
         )
+
+
+def test_term_rerank_append_keeps_the_original_question(
+    conn, settings: Settings, monkeypatch
+) -> None:
+    """`append` 形态下重排读「原话 + 术语串」，原话那一段不能丢。
+
+    为什么要有这条：2026-10-29 在 v2 词表覆盖的 15 题上实测，纯术语串把三道**原本已经
+    排第 1** 的题打出了前 5（原话 11/15、纯术语串 12/15、原话+术语串 14/15）。
+    机制很直白——那几道题重排本来就能读懂，换成术语串等于拿掉信号。
+    所以「术语只做加法」必须是一条被钉住的性质，而不是一个可以随手改的拼法。
+    """
+    services = _services(conn, settings)
+    reranker = _RecordingReranker()
+    services.reranker = reranker
+    rows = [{"question": QUESTION, "gold_snippets": [TEXTS[0]]}]
+    term_map = TermMap(
+        [TermEntry("e", (("挂电视",), ("掉",)), ("墙面悬挂较重物体", "专用连接件"), "s")]
+    )
+
+    asyncio.run(
+        _ev._evaluate(
+            services, rows, 5, ["rerank", "rerank_parallel"],
+            term_map=term_map, term_rerank="append",
+        )
+    )
+
+    # 基线行仍然只读原话：对照组的定义不能因为换了形态而变
+    assert reranker.queries[0] == QUESTION
+    # 处理行是「原话 + 术语串」：原话在前、术语在后，不能只剩术语
+    handled = reranker.queries[1]
+    assert handled.startswith(QUESTION), f"原话被丢了：{handled!r}"
+    assert "墙面悬挂较重物体" in handled and "专用连接件" in handled
+
+
+def test_unknown_public_side_is_rejected(tmp_path: Path) -> None:
+    """`public_side` 写错必须报错，不能静默退回 `vernacular`。
+
+    这个字段决定评估时怎么分组：`recalled`（动笔时想到某道题）与 `vernacular`（按条文写）
+    的结论正好相反——2026-10-29 实测，前者 5 题救 3，后者 10 题救 1。写成 `recall`、
+    `seen` 之类拼错的形式，会被悄悄算进"按条文写"那一组，把两组的差别抹平，
+    而报告上完全看不出异常。
+    """
+    path = _write(tmp_path, [_entry(public_side="recall")])
+
+    with pytest.raises(ValueError, match="public_side 非法"):
+        load_term_map(path)

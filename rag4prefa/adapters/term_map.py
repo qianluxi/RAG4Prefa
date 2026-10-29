@@ -46,6 +46,11 @@ class TermEntry:
     groups: tuple[tuple[str, ...], ...]
     terms: tuple[str, ...]
     source: str
+    # 公众表达侧的可信度：`vernacular` = 按该领域的日常说法写的；`recalled` =
+    # 动笔时已经想到某道具体题目。评估要按它分开算——`recalled` 的那些不能算泛化证据。
+    # 它默认 `vernacular` 仅仅是给 v1 词表（那时还没有这个概念）留的兼容口子，
+    # 新写的词表都应当显式写明。
+    public_side: str = "vernacular"
 
     def matches(self, question: str) -> bool:
         return all(any(alt in question for alt in group) for group in self.groups)
@@ -102,13 +107,22 @@ class TermMap:
             if not terms:
                 raise ValueError(f"词表 {path} 的 {entry_id} 没有术语")
 
+            # 写错会**静默**退回默认值，把「记得住的题」混进「按条文写的」那一组——
+            # 而这两组的结论正好相反，混在一起等于把结论洗掉。所以这里直接报错。
+            public_side = str(item.get("public_side") or "vernacular").strip()
+            if public_side not in ("vernacular", "recalled"):
+                raise ValueError(
+                    f"词表 {path} 的 {entry_id} 的 public_side 非法：{public_side!r}"
+                    "（只能是 vernacular / recalled）"
+                )
+
             source = str(item.get("source") or "").strip()
             # 没有出处就无法区分"条文原话"与"模型意译的近义词"，而这两者的检索效果
             # 恰恰是这轮实验要证明有差别的东西。
             if not source:
                 raise ValueError(f"词表 {path} 的 {entry_id} 缺 source（必须能追到条文原话）")
 
-            entries.append(TermEntry(entry_id, groups, terms, source))
+            entries.append(TermEntry(entry_id, groups, terms, source, public_side))
         return cls(entries)
 
     def hits(self, question: str) -> list[TermEntry]:

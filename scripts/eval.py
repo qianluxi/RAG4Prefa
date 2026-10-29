@@ -358,7 +358,7 @@ def evaluate(
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
     expander=None, expand_rerank: bool = False, parallel: bool = False,
     rewrite_weight: float = 0.5, term_map=None, term_form: str = "terms",
-    term_rerank: bool = False,
+    term_rerank: str = "none",
 ) -> dict:
     return asyncio.run(
         _evaluate(
@@ -445,7 +445,7 @@ async def _evaluate(
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
     expander=None, expand_rerank: bool = False, parallel: bool = False,
     rewrite_weight: float = 0.5, term_map=None, term_form: str = "terms",
-    term_rerank: bool = False,
+    term_rerank: str = "none",
 ) -> dict:
     metrics: dict[str, dict[str, list[float]]] = {
         m: {"recall": [], "mrr": [], "ndcg": []} for m in modes
@@ -512,12 +512,18 @@ async def _evaluate(
                 # 词表没覆盖到 ≠ 词表没用。这两类题必须分开记账，否则"覆盖不到的题"
                 # 会被算成"词表试过但无效"，把结论往悲观方向带。
                 uncovered.append(question)
-            elif term_rerank:
+            elif term_rerank != "none":
                 # 重排也读规范术语串。第四十一轮实测：gold 已在候选池里，
                 # 用**口语问句**重排排到 19/20/5/7/12 名，换成术语串后是 3/1/1/1/1。
                 # 也就是说"给对词"这件事对召回与重排是**同一件事**——只改召回，
                 # 等于让一个读不懂口语的模型去挑一份它现在能读懂的候选。
-                rerank_query = " ".join(rewrites)
+                #
+                # 但"换成"是有代价的（2026-10-29 实测，v2 词表 15 题）：
+                # 原话 11/15、纯术语串 12/15、**原话 + 术语串 14/15**。三道原本已排第 1 的题
+                # 被纯术语串打出去了——它们本来就能读懂，换串等于拿掉信号。
+                # 所以 `append` 才是默认该选的那个：术语只做加法。
+                joined = " ".join(rewrites)
+                rerank_query = joined if term_rerank == "terms" else f"{question} {joined}"
         elif parallel:
             if search_question.strip() != question:
                 rewrites = (search_question,)
@@ -684,7 +690,7 @@ def run(
     diagnostics_path: Path | None = None, expand_from: Path | None = None,
     parallel: bool = False, rewrite_weight: float = 0.5,
     term_map_path: Path | None = None, term_form: str = "terms",
-    term_rerank: bool = False, fusion: str = "",
+    term_rerank: str = "none", fusion: str = "",
 ) -> dict:
     services = build_services()
     if fusion:
@@ -749,9 +755,9 @@ def run(
                 "path": str(term_map_path),
                 "entries": len(term_map),
                 "form": term_form,
-                # 重排读的是原话还是术语串，是两个实验。混在一个字段里，
+                # 重排读的是原话 / 术语串 / 原话+术语串，是三个实验。混在一个字段里，
                 # 报告读者会以为 rerank 那行只改了召回。
-                "rerank": "terms" if term_rerank else "question",
+                "rerank": "question" if term_rerank == "none" else term_rerank,
             }
         result["rewrite_weight"] = (
             rewrite_weight if (parallel or term_map is not None) else None
@@ -764,7 +770,9 @@ def run(
         #   recall-parallel-termmap 并行通道，改写字来自受控词表
         #   rerank                  连重排也读扩展串（实验 C）
         if term_map is not None:
-            stage = "recall-parallel-termmap" + ("-rerank" if term_rerank else "")
+            # `term_rerank` 现在是三态字符串，"none" 也是真值——用真值判断会让
+            # 没开重排的那份报告也带上 `-rerank` 标记，和开了的那份混成同一类。
+            stage = "recall-parallel-termmap" + ("-rerank" if term_rerank != "none" else "")
         elif not result["expanded"]:
             stage = ""
         elif parallel:
@@ -855,6 +863,13 @@ def report(result: dict, k: int) -> str:
                 "重排查询是术语串；`rerank` 基线行仍读原话、候选池也不含术语。"
                 "两者之差同时含「池子变了」与「重排查询变了」两件事——要拆开，对照本轮"
                 "不带 `--term-rerank` 的那份报告（只有池子变）。"
+            )
+        elif meta.get("rerank") == "append":
+            lines.append(
+                "- **重排读的是「原话 + 术语串」**：术语只做加法，原话那一段原封不动。"
+                "选它是因为纯术语串会拿掉原话信号——2026-10-29 在 v2 词表覆盖的 15 题上实测，"
+                "原话 11/15、纯术语串 12/15、原话+术语串 14/15，三道原本已排第 1 的题"
+                "正是被纯术语串打出去的。`rerank` 基线行仍读原话、候选池也不含术语。"
             )
         else:
             lines.append(
@@ -1084,11 +1099,17 @@ def _report_path(result: dict, dataset_path: Path) -> Path:
         # 少写一个，不同配置的报告就会互相覆盖——而它们在文件系统里长得一模一样。
         meta = result.get("term_map") or {}
         weight = result.get("rewrite_weight")
-        suffix = f"-termmap-{meta.get('form', 'terms')}"
+        # **词表身份也要进名字**。只写"用了词表"不写"哪一份"，换一份词表重跑就覆盖了
+        # 上一份的报告——而 v1(8 条) 与 v2(28 条) 的结论恰好相反，正是最该并存的两份。
+        # 用文件名（不含扩展名）而不是条数：条数会变，名字跟着条数走等于没写。
+        stem = Path(meta.get("path") or "map").stem
+        suffix = f"-termmap-{stem}-{meta.get('form', 'terms')}"
         if weight is not None:
             suffix += f"-w{weight:g}".replace(".", "")
         if meta.get("rerank") == "terms":
             suffix += "-rerank"
+        elif meta.get("rerank") == "append":
+            suffix += "-rerankappend"
         used_rewrite = True
     elif stage == "recall-parallel":
         suffix = "-expand-parallel"
@@ -1170,10 +1191,15 @@ def main() -> int:
     )
     parser.add_argument(
         "--term-rerank",
-        action="store_true",
+        nargs="?",
+        const="terms",
+        default="none",
+        choices=("terms", "append"),
         help=(
-            "重排也读规范术语串（默认读原话）。第四十一轮实测：gold 在池内时，"
-            "读口语问句排 19/20/5/7/12 名，读术语串排 3/1/1/1/1"
+            "重排读什么串（默认读原话）。terms=纯术语串，append=原话+术语串。"
+            "第四十一轮实测：gold 在池内时，读口语问句排 19/20/5/7/12 名，"
+            "读术语串排 3/1/1/1/1；但 2026-10-29 在 15 题上实测，纯术语串会把"
+            "三道原本已排第 1 的题打出去（11/15 → 12/15），原话+术语串是 14/15"
         ),
     )
     parser.add_argument(
@@ -1235,10 +1261,13 @@ def main() -> int:
             "请加上 hybrid_parallel,rerank_parallel",
             file=sys.stderr,
         )
-    if args.term_rerank and not args.term_map:
+    # `term_rerank` 是三态字符串，"none" 也是真值——真值判断会让没开词表的那次
+    # 也走进这条校验，报一个驴唇不对马嘴的错（2026-10-29 实测：`--modes` 非法时
+    # 报的是 "--term-rerank 需要同时给 --term-map"）。
+    if args.term_rerank != "none" and not args.term_map:
         print("--term-rerank 需要同时给 --term-map", file=sys.stderr)
         return 2
-    if args.term_rerank and args.expand_rerank:
+    if args.term_rerank != "none" and args.expand_rerank:
         print(
             "--term-rerank 与 --expand-rerank 互斥：两者都改重排查询，"
             "同时给就分不清重排读的是术语还是 LLM 扩展串",
