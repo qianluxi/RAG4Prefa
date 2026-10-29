@@ -728,7 +728,12 @@ async function ask() {
           `候选 ${data.candidates} · ${data.filter_desc || "全库"} · ` +
           (data.terms && data.terms.length ? `术语通道 ${data.terms.join("、")} · ` : "") +
           `embed ${data.timings.embed_ms}ms / dense ${data.timings.dense_ms}ms / bm25 ${data.timings.sparse_ms}ms` +
-          (data.rerank_error ? ` · 重排失败：${data.rerank_error}` : "");
+          (data.rerank_error ? ` · 重排失败：${data.rerank_error}` : "") +
+          // 拒答必须在状态栏说清楚理由：只把提示词塞进回答里，用户会以为"模型不想答"，
+          // 而实际是检索层判定库里没有对应资料。
+          (data.refusal && data.refusal.refuse
+            ? ` · 资料不足已拒答：${data.refusal.reasons.join("；")}`
+            : "");
       } else if (event === "token") {
         if (!firstToken) { firstToken = true; thinking.remove(); }
         answer += data.text || "";

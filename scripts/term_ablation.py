@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import importlib.util
 import statistics
 import sys
@@ -286,6 +287,48 @@ def _fmt(value: float) -> str:
     return f"{value:.3f}"
 
 
+def _file_sha(path: Path) -> str:
+    """文件内容指纹（CRLF 归一化）。
+
+    换行必须归一化：Windows 工作区是 CRLF、`eol=lf` 只作用于提交进去的内容，
+    不归一化的话同一份代码在两台机器上算出不同的 sha（这个坑 P0-2 踩过一次）。
+    """
+    blob = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(blob).hexdigest()[:12]
+
+
+def experiment_identity(ev, dataset: Path, term_map_path: Path) -> dict:
+    """这次实验的完整身份：生产代码 + **实验脚本自己** + 词表 + 数据。
+
+    通用评测指纹（`eval._source_fingerprint`）只覆盖 `rag4prefa/**` 与 `scripts/eval.py`，
+    而这个消融的测量逻辑在 `scripts/term_ablation.py` 里——只报前者会出现"生产代码一致，
+    实验脚本换了"的报告，两份数字却看着可比。词表与数据同理：同一句 term_rewrite_weight
+    配两个词表版本，结果不是同一件事。
+    """
+    code = ev._code_state()
+    return {
+        "commit": code.get("commit"),
+        "src_sha": code.get("source_sha") or code.get("src_sha"),
+        "dirty": code.get("dirty"),
+        "script_sha": _file_sha(Path(__file__)),
+        "term_map": term_map_path.name,
+        "term_map_sha": _file_sha(term_map_path),
+        "dataset": dataset.name,
+        "dataset_sha": _file_sha(dataset),
+    }
+
+
+def render_identity(identity: dict) -> str:
+    return (
+        "### 实验身份\n\n"
+        f"- 代码：`{identity['commit'] or '未知'}` · 源码 sha `{identity['src_sha'] or '未记录'}`"
+        f"（{'工作区有未提交改动' if identity['dirty'] else '工作区干净'}）\n"
+        f"- 实验脚本 `scripts/term_ablation.py` sha `{identity['script_sha']}`\n"
+        f"- 词表：`{identity['term_map']}` sha `{identity['term_map_sha']}`\n"
+        f"- 数据：`{identity['dataset']}` sha `{identity['dataset_sha']}`\n"
+    )
+
+
 def render(result: dict) -> str:
     lines: list[str] = []
     covered = summarise(result, group="covered")
@@ -439,6 +482,8 @@ async def main() -> int:
             "",
             f"数据：`{args.dataset.name}`　词表：`{args.term_map.name}`　"
             f"top-k={args.top_k}　池深={','.join(map(str, depths))}　重复={args.repeat}",
+            "",
+            render_identity(experiment_identity(ev, args.dataset, args.term_map)),
             "",
         ]
         args.save.write_text("\n".join(header) + body + "\n", encoding="utf-8", newline="\n")
