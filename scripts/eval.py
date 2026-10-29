@@ -393,6 +393,11 @@ def _fingerprint_files(root: Path, rels: Sequence[str]) -> tuple[str, int]:
             # 被 `git ls-files` 列出来但盘上没了（手动删过）。跳过而不是抛错：指纹
             # 的职责是给出身份，不是校验工作区完整性——那是 `git status` 的活。
             continue
+        # 换行归一：本仓库 `.gitattributes` 是 `eol=lf`，但 Windows 上 `core.autocrlf`
+        # 会把工作区写成 CRLF（实测 `scripts/eval.py` 1445 行全是 CRLF）。不归一的
+        # 话，同一份代码在 Linux 上算出另一个哈希，"可复算"当场失效。指纹认的是内容，
+        # 不是磁盘格式。
+        blob = blob.replace(b"\r\n", b"\n")
         # 路径也进哈希：`a.py` 与 `b.py` 互换内容必须得到不同指纹，否则"哪份代码
         # 跑的"又说不清了。
         digest.update(rel.replace("\\", "/").encode("utf-8"))

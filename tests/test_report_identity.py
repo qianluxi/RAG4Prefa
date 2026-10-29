@@ -147,6 +147,22 @@ def test_dirty_state_keeps_full_file_name(tmp_path: Path) -> None:
     assert state["dirty_count"] == 1
 
 
+def test_line_endings_do_not_change_sha(tmp_path: Path) -> None:
+    """LF 与 CRLF 必须同指纹。
+
+    本仓库 `.gitattributes` 写的是 `eol=lf`，但 Windows 上 `core.autocrlf=true` 会把
+    工作区落成 CRLF（实测 `scripts/eval.py` 1445 行全是 CRLF）。不归一化，同一份代码
+    在 Linux 上算出另一个哈希——"报告里的 sha 可被复算"这句话当场失效，而它正是加
+    指纹的全部理由。
+    """
+    _write(tmp_path, "rag4prefa/ask.py", "a = 1\nb = 2\n")
+    (tmp_path / "rag4prefa" / "ask.py").write_bytes(b"a = 1\r\nb = 2\r\n")
+    crlf, _ = ev._fingerprint_files(tmp_path, ["rag4prefa/ask.py"])
+    (tmp_path / "rag4prefa" / "ask.py").write_bytes(b"a = 1\nb = 2\n")
+    lf, _ = ev._fingerprint_files(tmp_path, ["rag4prefa/ask.py"])
+    assert crlf == lf
+
+
 def test_real_repo_records_source_sha() -> None:
     """本仓库里必须真的给出指纹（12 位十六进制），否则报告上那行永远是空的。"""
     state = ev._code_state()
