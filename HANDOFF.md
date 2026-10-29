@@ -2801,8 +2801,9 @@ python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --modes rerank,re
 
 **一、先在缓存上扫，不急着改代码**
 
-81 题（口语 50 + 基础 31）的 dense/sparse top-50 先落盘（`data/_fuse_cache.py`），
-之后任意策略都是纯 CPU（`data/_fuse_scan.py`）。扫了 20 多种：
+81 题（口语 50 + 基础 31）的 dense/sparse top-50 先落盘，之后任意策略都是纯 CPU。
+仓库里留下的是 `scripts/diagnose_fusion.py`（只保留 rrf / zscore 两条常用对照 + 缓存复用；
+当时那 20 多种策略是一次性探针，没入库）。扫过的策略：
 
 | 策略 | 口语 R@5 | 基础 R@5 | 说明 |
 |---|---|---|---|
@@ -2883,7 +2884,18 @@ python scripts/eval.py --dataset eval/dataset.jsonl \
 
 报告：`eval/reports/dataset-5d9cf3ff-20261029-208ec157-fusion{zscore,rrf}.md`、
 `eval/reports/dataset.paraphrase-3da85a91-20261029-208ec157-fusion{zscore,rrf}.md`。
-池深 25 的重排对照由 `data/_pool25_rerank.py` 产出（不走 eval 脚本，因为它固定用 50 深池）。
+默认池深（25）的重排对照走 `scripts/diagnose_fusion.py --pool 25 --rerank`
+（`eval.py` 固定用 50 深池，看不到这一段）。
+
+**写这个诊断脚本时踩了两个坑，都是"对照必须与被对照的链路用同一套算术"：**
+
+1. 不能借 `ev.dense_hits` 取候选——它会丢掉 `chunks` 表里查不到的 id，而 `ask.retrieve`
+   用的是原始 pairs。差一条候选就换人。
+2. 融合排序**不能加 `kv[0]` 做 tie-break**。`ask._to_hits` 用的是稳定排序，同分保持插入序
+   （稠密那一路先出现）；而 `1/61` 恰好是「dense 第 1」与「sparse 第 1」最容易撞上的分数。
+   加了按 id 排，口语整行就从 0.460 变 0.440——差别全在这一个同分上。
+
+修完之后脚本与 `eval.py` 的 `hybrid` 行逐题一致（基础 24/31 = 0.774、口语 23/50 = 0.460）。
 
 **验证**：528 → 537 passed（新增 `tests/test_fusion.py` 9 条），6 条变异全部捕获
 （去掉本路标准化 / 恢复负分 / 全同分那一路照样投票 / 不退回名次法 / 权重失效 /
