@@ -112,6 +112,24 @@ def _hit(ranks: list[int | None], top_k: int) -> bool:
     return votes * 2 >= len(ranks)
 
 
+async def _rerank_full(services, query: str, pool, *, attempts: int = 3):
+    """重排整池，返回全序。
+
+    一轮要调几百次远程服务，偶发一次 5xx 不该让整轮作废（那是二十分钟）。
+    但**不吞掉失败**：重试到第 3 次仍失败就抛——那是环境问题，继续跑下去
+    得到的是"某一格少了几题"的均值，报告上完全看不出来。
+    """
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return await services.reranker.rerank(query, pool, len(pool))
+        except Exception as exc:  # noqa: BLE001 - 远程服务的异常类型不统一
+            last = exc
+            await asyncio.sleep(1.0 * (attempt + 1))
+    assert last is not None
+    raise last
+
+
 async def _retrieve_pool(services, question: str, filt, rewrites, deep: int, weight: float):
     hits, _, _ = await ask.retrieve(
         services.conn,
@@ -137,13 +155,14 @@ async def measure(
     top_k: int = 5,
     depths: tuple[int, ...] = (25, 50),
     repeat: int = 3,
+    progress: bool = False,
 ) -> dict:
     """逐题跑四格，返回原样的 rank 记录（聚合留给 `summarise`）。"""
     deep = max(depths)
     weight = services.settings.term_rewrite_weight
     records: list[dict] = []
 
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
         question = str(row.get("question") or "").strip()
         if not question:
             continue
@@ -188,12 +207,17 @@ async def measure(
                 for _ in range(repeat):
                     # 传 len(pool) 让重排返回**全序**，否则只能看到前 k 名，
                     # 池深 25 与 50 就没法从同一次调用里派生。
-                    full = await services.reranker.rerank(query, pools[pid], len(pools[pid]))
+                    full = await _rerank_full(services, query, pools[pid])
                     per_depth = _ranks_at_depths(full, pools[pid], gold, depths)
                     for depth, rank in per_depth.items():
                         runs[depth].append(rank)
                 cells[key] = runs
 
+        if progress:
+            # 一轮要调几百次远程重排，没有进度就只能盯着空日志猜它是不是卡住了。
+            # 打到 stderr，不污染 stdout 的 Markdown。
+            mark = "命中" if rewrites else "未命中"
+            print(f"[{index}/{len(rows)}] {mark} {question[:28]}", file=sys.stderr, flush=True)
         records.append(
             {
                 "question": question,
@@ -396,7 +420,8 @@ async def main() -> int:
         rows = rows[: args.limit]
     depths = tuple(sorted({int(d) for d in args.depths.split(",") if d.strip()}))
     result = await measure(
-        services, ev, rows, term_map, top_k=args.top_k, depths=depths, repeat=args.repeat
+        services, ev, rows, term_map,
+        top_k=args.top_k, depths=depths, repeat=args.repeat, progress=True,
     )
 
     body = render(result)

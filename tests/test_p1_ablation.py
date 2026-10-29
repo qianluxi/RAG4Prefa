@@ -19,6 +19,8 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from rag4prefa import repo
 from rag4prefa.adapters.vectors import NumpyStore, VectorItem
 from rag4prefa.domain import Chunk, Filter
@@ -333,3 +335,33 @@ def test_render_handles_uncovered_only(conn, settings) -> None:
     text = _abl.render(result)
     assert "A. 命中词表的题" not in text
     assert "B. 全部题" in text
+
+
+def test_rerank_retries_then_gives_up_loudly() -> None:
+    """偶发失败重试，连续失败必须抛——不能静默返回空池。
+
+    静默返回空池的后果不是报错，是"某一格少了几题"：均值照算，报告上两个数看起来
+    都正常。一轮要二十多分钟，重试是为了不白跑；抛是为了不产出假数。
+    """
+
+    class _Flaky:
+        def __init__(self, fail_times: int) -> None:
+            self.fail_times = fail_times
+            self.calls = 0
+
+        async def rerank(self, query: str, hits, top_k: int):  # noqa: ANN001, ARG002
+            self.calls += 1
+            if self.calls <= self.fail_times:
+                raise RuntimeError("remote 502")
+            return list(hits)[:top_k]
+
+    pool = [SimpleNamespace(chunk_id=f"c{i}", text=str(i)) for i in range(5)]
+    flaky = _Flaky(fail_times=2)
+    got = asyncio.run(_abl._rerank_full(SimpleNamespace(reranker=flaky), "q", pool))
+    assert len(got) == 5
+    assert flaky.calls == 3
+
+    dead = _Flaky(fail_times=99)
+    with pytest.raises(RuntimeError):
+        asyncio.run(_abl._rerank_full(SimpleNamespace(reranker=dead), "q", pool))
+    assert dead.calls == 3
