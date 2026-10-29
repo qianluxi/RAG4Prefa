@@ -226,7 +226,7 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 569 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
+pytest -q                                  # 591 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
 python scripts/snapshot_corpus.py          # 先记下"此刻库里有什么"
 python scripts/eval.py --dataset eval/dataset.jsonl --save
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --save
@@ -238,8 +238,17 @@ python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
   --term-map rag4prefa/terms/public_to_standard.v3.json --term-form joined --term-rerank append \
   --modes hybrid,hybrid_parallel,rerank,rerank_parallel --save
-# 词表误触发审计（离线）：负例闸门 + 三个数据集的触发率
+# 词表误触发审计（离线）：负例闸门 + 各数据集的触发率
 python scripts/audit_term_misfire.py rag4prefa/terms/public_to_standard.v3.json
+# 词表收益拆成两件事（2×2 固定池消融）：多召回一路候选 vs 换掉重排查询
+python scripts/term_ablation.py --repeat 3 --depths 25,50
+# 两批独立题集（写题时不看检索结果）：A 抽条文→写问句，B 写问句→找条文
+python scripts/eval.py --dataset eval/dataset.independent.jsonl \
+  --term-map rag4prefa/terms/public_to_standard.v3.json --term-rerank append \
+  --modes dense,hybrid,rerank,hybrid_parallel,rerank_parallel --save
+python scripts/eval.py --dataset eval/dataset.independent-b.jsonl \
+  --term-map rag4prefa/terms/public_to_standard.v3.json --term-rerank append \
+  --modes dense,hybrid,rerank,hybrid_parallel,rerank_parallel --save
 ```
 
 生产链路上同一个开关叫 `R4P_TERM_MAP`（留空 = 关闭），形态与重排查询由
@@ -474,6 +483,29 @@ v3 从三个地方收紧，每条都能逐题复核：
 「板拼」这种非加工过的搭配写进词表），专业问法集 6 → **3** 题，库外集不变。冻在
 `eval/termmap-misfire-20261029.md`，闸门是 `eval/term-negatives.jsonl`（7 条负例，
 拿 v2 跑会抓出 3 条违规、v3 全过）与 `scripts/audit_term_misfire.py`。
+
+### 泛化检验：41 题里触发 1 题
+
+v3 修的是"误触发不该发生的发生了"；另一件事是"该触发的没触发"。为此另做两批题，
+**写题时不看检索结果**：
+
+- **A 批**（27 题，`eval/dataset.independent.jsonl`）：固定种子抽条文，再读正文写问句。
+  问题是我读过条文，写出来的"口语"一定带着条文的词——这批题基线 0.815，太容易。
+- **B 批**（14 题，`eval/dataset.independent-b.jsonl`）：先写 40 条口语问句（没查库），
+  再用规范术语全文找条文（子串匹配，不用向量/BM25）。40 条留下 14 条，其余照实丢弃。
+
+| 题集 | 题数 | 基线 `rerank` | 词表触发 |
+|---|---|---|---|
+| A 批 | 27 | 0.815 | 1 |
+| B 批 | 14 | **0.500** | **0** |
+
+两批合计触发 1/41，而按语义**本该命中**的有 9 题。**题越难越需要它，触发越少**——
+B 批 0.500 一次没出手，A 批 0.815 反倒动手 1 次。差在词形不在语义：「有味道上来」不是
+「返味」，「看到水印」不是「渗漏」，「补多少」不是「补贴」。误触发 0（唯一那次触发是对的）。
+
+结论：词表在真实口语上的期望收益接近 0，每次触发还多付一次 embedding 往返，
+**所以 `R4P_TERM_MAP` 默认留空**。冻在 `eval/termmap-independent-20261029.md`。
+不改词表去凑这批题——v1→v2 已经演过一次"照着题调词表、换批题又归零"。
 
 v1 / v2 **不再是推荐用法**，保留只为复现旧报告：它们各有 2 条映射标了
 `single_char_evidence: true`——那是"我知道这条在拿语素当词用"的技术债登记，v3 一条都没有
