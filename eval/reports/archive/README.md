@@ -35,3 +35,27 @@
 `scripts/eval.py` 现在把「语料快照 + 数据集哈希与题数 + 代码版本 + 工作区是否干净 + 生成时间」写进报告头部，
 文件名带日期与语料指纹（`<数据集>-<日期>-<ids_sha 前 8 位>.md`）。语料一变，`--save` 生成的就是另一个文件，
 不会覆盖上一份，也不会让两份不同语料的数字共用一个名字。
+
+## 2026-10-29 第二批：`*.as-of-<提交>-dirty`
+
+专家复审 P0-2 指出：报告头写着「代码 `3c77c36`（有未提交改动）」，等于这批报告
+的代码身份是空的——`rev-parse` 在脏工作区里描述的不是跑出这组数字的那份代码。
+按要求从干净提交重跑关键实验后，旧文件按原样归档到这里，后缀 `-dirty` 标明它
+当时的身份缺口。
+
+**为什么仍要留**：它们是"zscore 融合还没提交时是什么样"的原始记录；且新旧两份若
+数字不同，差额本身就是重排服务漂移的度量（见 HANDOFF 关于 `dense_rerank` 0.839→0.806
+的记录）。归档不改一个字节。
+
+对应关系：
+
+| 归档文件 | 旧报告里的代码行 | 现在去哪了 |
+|---|---|---|
+| `dataset-5d9cf3ff-…-fusion{rrf,zscore}.as-of-3c77c36-dirty.*` | `3c77c36`（有未提交改动） | `eval/reports/` 同名文件（干净提交重跑） |
+| `dataset-5d9cf3ff-…-termmap-public_to_standard.v2-terms-w05-rerank{,append}-fusionzscore.as-of-18a00d3-dirty.*` | `18a00d3` | 同上 |
+| `dataset.paraphrase-3da85a91-…-fusion{rrf,zscore}.as-of-3c77c36-dirty.*` | `3c77c36` | 同上 |
+| `dataset.paraphrase-3da85a91-…-termmap-public_to_standard.v2-joined-w05-rerankappend-fusionzscore.as-of-7ddaf11-dirty.*` | `7ddaf11` | 同上 |
+| `dataset.paraphrase-3da85a91-…-termmap-public_to_standard{,.v2}-terms-w05-rerankappend-fusionzscore.as-of-18a00d3-dirty.*` | `18a00d3` | 同上 |
+
+没重跑的 11 份（`expand-parallel-*`、`termmap-terms-w0{3,5}`、`termmap-joined-w1-rerank`
+等）都是已被证伪的旧实验线，结论早已写进 HANDOFF，不占用评测额度。

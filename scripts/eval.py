@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import statistics
@@ -370,11 +371,76 @@ def evaluate(
     )
 
 
+# 只有"改了它、数字就可能变"的源码进指纹。这不是图省事：指纹一旦对无关改动敏感
+# （改个 README、加个一次性诊断脚本都变），人就会开始无视它——而它存在的唯一目的
+# 是回答"这两份报告能不能直接比"。词表的 `.json` 必须在内：词表路径只记了文件名，
+# 原地改几条映射时文件名一个字都不变。
+_FINGERPRINT_ROOTS = ("rag4prefa", "scripts/eval.py")
+_FINGERPRINT_SUFFIXES = frozenset({".py", ".json"})
+
+
+def _fingerprint_files(root: Path, rels: Sequence[str]) -> tuple[str, int]:
+    """把一批相对路径的**内容**揉成一个短哈希，返回 (sha, 计入的文件数)。"""
+    digest = hashlib.sha256()
+    count = 0
+    for rel in sorted(rels):
+        path = root / rel
+        if path.suffix not in _FINGERPRINT_SUFFIXES:
+            continue
+        try:
+            blob = path.read_bytes()
+        except OSError:
+            # 被 `git ls-files` 列出来但盘上没了（手动删过）。跳过而不是抛错：指纹
+            # 的职责是给出身份，不是校验工作区完整性——那是 `git status` 的活。
+            continue
+        # 路径也进哈希：`a.py` 与 `b.py` 互换内容必须得到不同指纹，否则"哪份代码
+        # 跑的"又说不清了。
+        digest.update(rel.replace("\\", "/").encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(blob).digest())
+        count += 1
+    return digest.hexdigest()[:12], count
+
+
+def _source_fingerprint() -> dict:
+    """影响检索结果的源码指纹（内容哈希）。
+
+    为什么不能只记 `rev-parse`：工作区一脏，那个提交号就是一句谎话，而报告恰恰
+    最常在"改完还没提交"的时候跑——2026-10-29 有 20 份报告都标着"有未提交改动"，
+    等于这 20 份的代码身份是空的。
+
+    为什么不用 `git diff`：diff 只说"跟某个提交比变过"，不说"变成什么"。两份报告
+    都标"有改动"时，diff 救不了你——它们的改动可能压根不是同一处。内容哈希可判等：
+    **同 `src_sha` ⇒ 影响数字的源码逐字节相同**。
+
+    取不到就返回空字典：没装 git、不在仓库里跑，都不该让评估失败。
+    """
+    try:
+        listed = subprocess.run(
+            [
+                "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                "--", *_FINGERPRINT_ROOTS,
+            ],
+            cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    # `--others` 一并收：新写了一个模块但还没 `git add`，那时的指纹必须已经变。
+    rels = [item for item in listed.split("\0") if item]
+    if not rels:
+        return {}
+    src_sha, src_files = _fingerprint_files(ROOT, rels)
+    return {"src_sha": src_sha, "src_files": src_files}
+
+
 def _code_state() -> dict:
     """跑这组数字时代码处在哪个版本。
 
     报告只写"指标 + 参数"是不够的：同一个库、同一份数据集，改过检索融合或提示词之后
     数字会变，而报告本身看不出来。有这条，"这两份报告为什么不一样"才有一个可查的答案。
+
+    三样东西分工不同，缺一不可：`commit` 说"基于哪个提交"，`src_sha` 说"内容到底是
+    什么"（脏工作区里唯一可信的那条），`dirty_files` 说"差在哪"。
 
     取不到就返回空字典——没装 git、不在仓库里跑，都不该让评估失败。
     """
@@ -393,12 +459,22 @@ def _code_state() -> dict:
                 ".", ":(exclude)eval/reports",
             ],
             cwd=ROOT, capture_output=True, text=True, timeout=5, check=False,
-        ).stdout.strip()
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return {}
     if not commit:
         return {}
-    return {"commit": commit, "dirty": bool(dirty)}
+    # 只去尾部换行：整段 `.strip()` 会把首行的状态位前导空格吃掉（` M a.py` → `M a.py`），
+    # 之后按固定列切路径就少一个字——`scripts/eval.py` 变成 `cripts/eval.py`。
+    dirty = dirty.rstrip("\n")
+    state: dict = {"commit": commit, "dirty": bool(dirty)}
+    # 文件名一起记：指纹回答"变没变"，文件名回答"变在哪"。前者能判等，后者能定位。
+    files = [line[3:].strip() for line in dirty.splitlines() if line.strip()]
+    if files:
+        state["dirty_files"] = files[:8]
+        state["dirty_count"] = len(files)
+    state.update(_source_fingerprint())
+    return state
 
 
 def _run_context(
@@ -841,8 +917,22 @@ def report(result: dict, k: int) -> str:
         code = result.get("code") or {}
         tail = ""
         if code.get("commit"):
-            state = "有未提交改动" if code.get("dirty") else "工作区干净"
-            tail = f" · 代码 `{code['commit']}`（{state}）"
+            bits = [f"代码 `{code['commit']}`"]
+            # 源码指纹不是"多记一条"：脏工作区里 `commit` 是猜的，它才是事实。
+            if code.get("src_sha"):
+                bits.append(
+                    f"源码 sha `{code['src_sha']}`（{code.get('src_files', 0)} 个文件）"
+                )
+            tail = " · " + " · ".join(bits)
+            if code.get("dirty"):
+                names = (code.get("dirty_files") or [])[:4]
+                shown = "、".join(names) or "见 git status"
+                total = code.get("dirty_count", len(names))
+                if total > len(names):
+                    shown += f" 等 {total} 个文件"
+                tail += f"（有未提交改动：{shown}）"
+            else:
+                tail += "（工作区干净）"
         lines.append(f"- 生成于 {result['generated_at']}{tail}")
     if result.get("rewrite_source") == "term-map":
         meta = result.get("term_map") or {}
@@ -1143,6 +1233,11 @@ def main() -> int:
     parser.add_argument("--modes", default="dense,dense_rerank,sparse,hybrid,rerank")
     parser.add_argument("--out", default="")
     parser.add_argument(
+        "--print-fingerprint",
+        action="store_true",
+        help="只打印当前的代码身份（commit / 源码 sha / 脏文件）后退出，用于复算报告",
+    )
+    parser.add_argument(
         "--save", action="store_true",
         help="写入 eval/reports/，文件名带日期与语料指纹（推荐，取代手动 --out）",
     )
@@ -1223,6 +1318,11 @@ def main() -> int:
         help="把逐题结果（扩展串、各召回方式的 gold 排名与 top-k）写成 JSONL",
     )
     args = parser.parse_args()
+
+    if args.print_fingerprint:
+        # 报告里印的 `src_sha` 必须能被别人当场复算出来，否则它只是另一个要信的字符串。
+        print(json.dumps(_code_state(), ensure_ascii=False, indent=2))
+        return 0
 
     if args.expand_rerank and not (args.expand or args.expand_from):
         print(
