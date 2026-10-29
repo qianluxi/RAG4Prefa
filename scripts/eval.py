@@ -426,6 +426,8 @@ def _run_context(
         # 曾经 recall_k=50 而融合后只剩 25 条，报告上却看不出这个差。
         "candidate_k": _hybrid_pool_size(k) if k else None,
         "rrf_k": settings.rrf_k,
+        # 融合方式决定"两路怎么排先后"，换它等于换排序行为。
+        "fusion": settings.fusion,
         "rerank_model": settings.rerank_model if rerank_on else "",
         # 语料身份跟指标一起走。换成"当时库里有多少片段"之后，
         # "两份报告能不能比"就从靠回忆变成了一次字符串比较。
@@ -682,9 +684,13 @@ def run(
     diagnostics_path: Path | None = None, expand_from: Path | None = None,
     parallel: bool = False, rewrite_weight: float = 0.5,
     term_map_path: Path | None = None, term_form: str = "terms",
-    term_rerank: bool = False,
+    term_rerank: bool = False, fusion: str = "",
 ) -> dict:
     services = build_services()
+    if fusion:
+        # 只在本次评估里换坐标系，不写回 .env：对照实验要能一键跑回旧行为，
+        # 而"改配置再跑"会让两次运行之间多一个容易忘的步骤。
+        services.settings = services.settings.model_copy(update={"fusion": fusion})
     try:
         # 评估数字只有在"索引已被证明是归档这一版"时才有意义：拿一份内容过期的索引
         # 算出来的 Recall 会非常像真的，只是它衡量的是另一批向量。
@@ -807,7 +813,8 @@ def report(result: dict, k: int) -> str:
         lines.append(
             f"- 坐标系：embedding `{ctx['embedding_model']}`（{ctx['embedding_dim']} 维）· "
             f"chunk {ctx['chunk_min_tokens']}~{ctx['chunk_max_tokens']} token · "
-            f"recall_k={ctx['recall_k']} · rrf_k={ctx['rrf_k']} · 重排 {rerank}{pool}"
+            f"recall_k={ctx['recall_k']} · rrf_k={ctx['rrf_k']} · "
+            f"融合 {ctx.get('fusion', 'rrf')} · 重排 {rerank}{pool}"
         )
         corpus = ctx.get("corpus") or {}
         if corpus:
@@ -1099,6 +1106,12 @@ def _report_path(result: dict, dataset_path: Path) -> Path:
     parallel = any(str(m).endswith("_parallel") for m in (result.get("modes") or {}))
     if parallel and not used_rewrite:
         suffix += "-parallel"
+    # 融合方式是排序行为的一部分：同一天、同一语料、同一数据集，zscore 与 rrf
+    # 两份报告不能同名，否则对照实验只剩最后跑的那一组。
+    # **两种都写进名字**（默认值也不例外）：只给非默认值加后缀，意味着"哪一天默认
+    # 值变了，旧报告就被新报告顶掉"——那正是上一轮 dataset_sha 踩过的同一个坑。
+    fusion = (result.get("context") or {}).get("fusion") or "rrf"
+    suffix += f"-fusion{fusion}"
     return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{data}-{stamp}-{tag}{suffix}.md"
 
 
@@ -1168,6 +1181,15 @@ def main() -> int:
         default="terms",
         choices=("terms", "joined"),
         help="词表注入形态：terms=每个术语一条通道（默认）；joined=拼成一串",
+    )
+    parser.add_argument(
+        "--fusion",
+        default="",
+        choices=("", "zscore", "rrf"),
+        help=(
+            "两路候选的融合方式（默认取配置，zscore）。rrf 是旧行为，"
+            "用于在同一天、同一份数据上跑对照；报告文件名会带上 -fusionrrf"
+        ),
     )
     parser.add_argument(
         "--diagnostics",
@@ -1260,6 +1282,7 @@ def main() -> int:
             term_map_path=Path(args.term_map) if args.term_map else None,
             term_form=args.term_form,
             term_rerank=args.term_rerank,
+            fusion=args.fusion,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

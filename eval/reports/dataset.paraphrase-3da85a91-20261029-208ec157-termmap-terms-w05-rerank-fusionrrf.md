@@ -12,7 +12,7 @@
 - 术语一律作为**独立通道**注入：原话那一路的排序与候选一条都没被改动，`dense`/`sparse`/`hybrid`/`rerank` 四行与不开词表时逐字一致，只有 `*_parallel` 两行反映词表的净效果。
 - **重排读的是规范术语串**（不是原话）：`rerank_parallel` 的候选池含术语通道、重排查询是术语串；`rerank` 基线行仍读原话、候选池也不含术语。两者之差同时含「池子变了」与「重排查询变了」两件事——要拆开，对照本轮不带 `--term-rerank` 的那份报告（只有池子变）。
 - **42 题的词表一条都没命中**（装配式装修到底是个啥？和传统装修有啥不一样？、我家厨房想换新，大概要花多少钱？、老房子翻新能补多少钱？…）：这些题与不开词表时完全一样，属于「词表没覆盖」，**不是**「词表给了词也没用」。
-- 逐题证据：`eval/reports/dataset.paraphrase-20261029-208ec157-termmap-terms-w05-rerank.jsonl`
+- 逐题证据：`eval/reports/dataset.paraphrase-3da85a91-20261029-208ec157-termmap-terms-w05-rerank-fusionrrf.jsonl`
 
 | 召回方式 | 有效样本 | Recall@5 | MRR | nDCG@5 | 平均耗时 |
 |---|---|---|---|---|---|

@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     recall_k: int = 50
     top_k: int = 8
     rrf_k: int = 60
+    # 稠密与稀疏两路候选怎么合成一套顺序（见 `ask.fuse_scores`）。
+    #
+    #   zscore（默认）——各自在本路内部标准化后加权求和。两路候选几乎不相交时
+    #                    （口语问句在规范文本上做 BM25 就是这种情形），等权 RRF 会
+    #                    把展示位对半分，让单路强命中输给双路弱命中。
+    #   rrf          ——经典 Reciprocal Rank Fusion，只用名次。保留为可回退项。
+    #
+    # 换它等于换排序行为，已标注在评估报告的上下文里（`fusion` 字段），
+    # 两份报告的数字不能跨这个字段直接比大小。
+    fusion: Literal["zscore", "rrf"] = "zscore"
     chunk_max_tokens: int = 480
     chunk_min_tokens: int = 80
 

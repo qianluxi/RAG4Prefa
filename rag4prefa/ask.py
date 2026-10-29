@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -54,6 +55,71 @@ def rrf(
 ) -> dict[str, float]:
     """Reciprocal Rank Fusion：只用名次，不用各自分数量纲，天然免疫"分数不可比"。"""
     return rrf_multi(((dense, 1.0), (sparse, 1.0)), k=k)
+
+
+# 一路候选的分数方差低于这个数，就认为它"所有条目同分"，无法表达谁更靠前。
+_FLAT_STD = 1e-12
+
+
+def fuse_scores(
+    runs: Sequence[tuple[Sequence[tuple[str, float]], float]],
+    *,
+    mode: str = "zscore",
+    k: int = 60,
+) -> dict[str, float]:
+    """把多路 (排序列表, 权重) 合成一张分数表；`mode` 决定用什么刻度衡量"有多靠前"。
+
+    - `rrf`：只用名次（见 `rrf_multi`）。免疫"两路分数不可比"，**代价是默认两路
+      质量相当**——它给每一路的头部都留展示位。
+    - `zscore`（默认）：各自在**本路内部**标准化后加权求和，等于按"这一路认为它
+      有多突出"来分配话语权。
+
+    为什么换掉等权 RRF（2026-10-29，口语集扩到 50 题才看清）：50 题里 17 题的 gold
+    只有稠密这一路找得到，BM25 那边回的是另一批不相干的片段；两路几乎不相交时，
+    名次求和退化成"把展示位对半分"——dense 的第 k 名被挤到第 2k 名。单题实测
+    「卫生间地面要不要往地漏那边找坡」：gold 在 dense 第 1、BM25 不进前 50、融合后
+    第 22。算术上 `1/61≈0.0164` 打不过 `1/91+1/90≈0.0220`：**单路强命中被双路弱命中
+    压过**。结果就是 `hybrid 0.440` 反而低于纯稠密的 `0.600`。
+    换 zscore 后两套题集同时改善：口语 0.440→0.640、基础 0.774→0.871，MRR
+    0.313→0.389、0.576→0.688，且逐题没有"救一题丢一题"的交换（口语丢 1、基础丢 0）。
+
+    **低于本路均值的候选只给 0，不给负分。** 负分意味着"本路排第 50"比"本路根本
+    没命中"更差；在稠密 + BM25 两路上这点无所谓，但并行改写通道会因此把原话的候选
+    压到改写候选之后，破坏"改写只能加、不能减"这条不变量（第四十轮的核心结论）。
+    实测两种写法在 81 题上指标完全相同（0.640/0.871，MRR 0.389/0.688），
+    那就选不会破坏不变量的那个。
+
+    **一路分数全同（std≈0）时不参与融合**：这时它只能说明"这些片段被命中了"，
+    说不出谁更靠前，硬给一份分等于拿列表顺序伪造名次。若所有路都这样（例如 BM25
+    一条都没命中、或全部同分），退回名次法——顺序仍然确定，结果不会为空。
+
+    `weight` 的语义与 `rrf_multi` 一致：原话 1.0，改写通道按 `rewrite_weight` 折。
+    """
+    if mode == "rrf":
+        return rrf_multi(runs, k=k)
+    if mode != "zscore":
+        raise ValueError(f"未知的融合方式：{mode}（可选 zscore / rrf）")
+    scores: dict[str, float] = {}
+    contributing = 0
+    for ranked, weight in runs:
+        if not ranked:
+            continue
+        values = [score for _, score in ranked]
+        mean = sum(values) / len(values)
+        std = math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+        if std <= _FLAT_STD:
+            # 这一路分数全同：说不出谁更靠前，**但它的候选不能整路丢掉**——
+            # 那是这路召回的全部产出。以 0 分入表，让它仍可被另一路或重排救回来。
+            for chunk_id, _ in ranked:
+                scores.setdefault(chunk_id, 0.0)
+            continue
+        for chunk_id, score in ranked:
+            standout = max((score - mean) / std, 0.0)
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + weight * standout
+        contributing += 1
+    if not contributing:
+        return rrf_multi(runs, k=k)
+    return scores
 
 
 def _to_hits(conn: sqlite3.Connection, scores: dict[str, float], limit: int) -> list[Hit]:
@@ -220,11 +286,15 @@ async def retrieve(
     ):
         runs.append((dense_run, weight))
         runs.append((sparse_run, weight))
-    fused = rrf_multi(runs, k=settings.rrf_k)
+    fused = fuse_scores(runs, mode=settings.fusion, k=settings.rrf_k)
     hits = _to_hits(conn, fused, limit=pool)
 
     # 原始分按**主通道**登记，方便前端/评估观察召回来源。改写通道的分数只参与融合，
     # 不覆盖这里的语义——"这条是不是原话召回的"才是这一栏要回答的问题。
+    #
+    # `hit.score` 是**融合分**（zscore 模式下可能为负），只用来定顺序，不是相似度：
+    # 它不跨查询可比，也不能解读成"相关程度"。要看相似度用 `dense_score`，
+    # 要看重排判断用 `rerank_score`。
     dense_map = dict(dense_runs[0])
     sparse_map = dict(sparse_runs[0])
     for hit in hits:
