@@ -726,6 +726,7 @@ async function ask() {
         thinking.remove();
         $("status").textContent =
           `候选 ${data.candidates} · ${data.filter_desc || "全库"} · ` +
+          (data.terms && data.terms.length ? `术语通道 ${data.terms.join("、")} · ` : "") +
           `embed ${data.timings.embed_ms}ms / dense ${data.timings.dense_ms}ms / bm25 ${data.timings.sparse_ms}ms` +
           (data.rerank_error ? ` · 重排失败：${data.rerank_error}` : "");
       } else if (event === "token") {

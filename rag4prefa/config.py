@@ -92,6 +92,31 @@ class Settings(BaseSettings):
     rerank_api_key: str = ""
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
+    # ── 受控词表（可选，默认关闭）──────────────────────────
+    #
+    # 口语问句卡住的往往不是语义相似度，而是**词不是条文里的那个搭配**：「会不会掉下来」
+    # 查不到，条文原话「专用连接件」一查就进第 2 名。这一层把公众说法映射成规范术语，
+    # 命中的术语作为**独立通道**参与融合（原话那一路一条都不动），并让重排也读到它。
+    #
+    # 留空即关闭，行为与没有这一层时完全一致。开关打开后每次问答多一次 embedding
+    # 往返（一条术语通道），这是收益之外必须一起看的成本。
+    term_map: str = ""
+    # 术语注入形态：`joined` = 所有命中术语拼成一串（默认），`terms` = 每个术语一条通道。
+    # 取 joined 是因为两者**结果相同**（2026-10-29，15 题、重排读术语串时逐题 gold 名次
+    # 一字不差）而 joined 少 N−1 次远程 embedding。形态只在"重排读原话"时才有差别：
+    # 那时拼串会把 BM25 的单个精确搭配稀释掉。
+    term_map_form: Literal["terms", "joined"] = "joined"
+    # 重排读哪个串：
+    #   append（默认）—— 原话 + 术语串，术语只做加法；
+    #   terms          —— 只读术语串；
+    #   none           —— 只读原话。
+    # **这里的默认值与评估脚本的默认值（`none`）不同，是有意的**：评估的默认值定义
+    # "完全不做改写"的对照组，生产的默认值定义"开了词表就用验过的那个形态"。
+    # 依据见 `ask.build_rerank_query`：纯术语串会把三道原本已排第 1 的题打出去。
+    term_rerank: Literal["none", "terms", "append"] = "append"
+    # 术语通道的融合权重（原话恒为 1.0）。取评估时用的那个值，别在部署里另调一套。
+    term_rewrite_weight: float = Field(default=0.5, gt=0, le=1)
+
     # 向量后端：auto 先试 Milvus，不可用则退到 numpy（会在 /health 与启动日志中说明）
     vector_backend: Literal["auto", "milvus", "numpy"] = "auto"
     milvus_uri: str = "data/vectors.db"

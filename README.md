@@ -226,7 +226,7 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 525 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
+pytest -q                                  # 553 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
 python scripts/snapshot_corpus.py          # 先记下"此刻库里有什么"
 python scripts/eval.py --dataset eval/dataset.jsonl --save
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --save
@@ -234,11 +234,15 @@ python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --save
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
   --expand-from eval/expansions/paraphrase-20261028.jsonl --expand-parallel \
   --modes dense,sparse,hybrid,rerank,hybrid_parallel,rerank_parallel --save
-# 受控词表（公众表达→规范用语）：术语作独立通道 + 重排也读术语串
+# 受控词表（公众表达→规范用语）：术语作独立通道 + 重排读「原话 + 术语串」
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
-  --term-map rag4prefa/terms/public_to_standard.json --term-rerank --rewrite-weight 1.0 \
-  --modes dense,sparse,hybrid,rerank,hybrid_parallel,rerank_parallel --save
+  --term-map rag4prefa/terms/public_to_standard.v2.json --term-form joined --term-rerank append \
+  --modes hybrid,hybrid_parallel,rerank,rerank_parallel --save
 ```
+
+生产链路上同一个开关叫 `R4P_TERM_MAP`（留空 = 关闭），形态与重排查询由
+`R4P_TERM_MAP_FORM` / `R4P_TERM_RERANK` 决定，默认值与评估里验过的组合一致
+（`joined` + `append`）。见下文「受控词表接进生产链路」。
 
 **评估数字只有在语料身份确定时才有意义，所以先出快照。** `snapshot_corpus.py` 从数据库导出
 `eval/corpus-snapshot.json`：文档数、片段数、全量 `chunk_id` 与整体指纹，不依赖源文件
@@ -388,6 +392,47 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`r
 
 `chunk_id` 是**内容寻址**的（`doc_id + 章节路径 + 正文哈希`），不是位置序号：同一 id 必然是同一段正文。
 这是"先写索引、后切事实"能安全的前提——改一段不会让后面所有片段换号，也不会出现"新向量配旧正文"。
+
+## 口语问句的术语通道（可选，默认关闭）
+
+公众说法与条文用词常常不是一回事：「墙上挂电视和吊柜会不会掉下来」在语料里查不到，
+而条文原话「墙面悬挂较重物体」「专用连接件」一查就进前 5。这一层是一张**人工维护、
+每条带出处**的查找表（`rag4prefa/terms/`），把口语说法映射成规范术语，命中后以两条
+通道进入检索：
+
+- **召回**：术语串作为**独立通道**参与融合，原话那一路一条都不动。拼进原话的那种写法
+  已被证伪（0.400 → 0.467，5 道目标题一道没救回）：原话的排序跟着变，术语反倒成了干扰词。
+- **重排**：重排器读「原话 + 术语串」。只读术语串会打坏**本来已排第 1** 的题——15 题实测
+  原话 11/15、纯术语串 12/15、原话 + 术语串 14/15。
+
+开关（默认全关；留空即与没有这一层时完全一致）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `R4P_TERM_MAP` | 空（关闭） | 词表 JSON 路径 |
+| `R4P_TERM_MAP_FORM` | `joined` | 术语拼成一串；`terms` = 每个词一条通道 |
+| `R4P_TERM_RERANK` | `append` | 重排读「原话 + 术语」；`terms` 只读术语；`none` 只读原话 |
+| `R4P_TERM_REWRITE_WEIGHT` | 0.5 | 术语通道的融合权重（原话恒为 1.0） |
+
+2026-10-29 在 50 题口语集上量过（报告 `eval/reports/…-termmap-public_to_standard.v2-joined-w05-rerankappend-fusionzscore.md`）：
+
+| 召回方式 | 不开词表 | 开词表 |
+|---|---|---|
+| `hybrid`（融合候选） | 0.640 | 0.620 |
+| `rerank`（融合 + 重排） | 0.680 | **0.760** |
+
+收益**严格等于被覆盖的题**：28 条词覆盖 15/50，覆盖组 0.667 → 0.933（赢 4 输 0），
+未覆盖的 35 题名次全同；`hybrid` 那行 -0.020 是一题的量级（单次运行有 ±1 题地板）。
+`joined` 与 `terms` 两种形态在同一天各跑一遍：**Recall 逐行相同**，名次上 2 题前移、
+1 题后移，所以生产取 `joined`（少 N−1 次 embedding 往返）——术语串在问句之间高度重复，
+第二次起命中 `embed_cache`。
+
+两个边界要写清楚：①**它只覆盖口语说法**，专业问法集上未命中就等于没有这个功能，收益为 0；
+②它是按问法索引的**查找表**，不是知识层——条数翻 3.5 倍净增益没有增加，泛化仍未证明
+（见下文「已知局限」）。运行 `/api/health` 能看到开关状态与命中条数，`/api/chat` 的
+`meta` 事件带 `terms` 与 `term_entries`（命中哪条、被哪几个词触发），界面状态栏会显示
+「术语通道 …」。配了路径却没把词表交给检索会直接报错，坏词表则降级并写进健康检查——
+这两件事都不允许静默发生。
 
 ## 多用户与 API Key
 
@@ -630,7 +675,9 @@ RAG 系统里这是最坏的一类失败——它不崩溃，只是胡说。降�
 
   **这条结论的边界必须写清楚**：8 条规则里有 5 条是看着这 15 题的失败写的，所以它证明的是
   "给对词这条链能通"（可行性），**不是**"词表能泛化"。真正的检验要等一份不参照测试结果的
-  词表。另外词表**尚未接入生产链路**：它现在是评估侧的实验开关。
+  词表。真正的检验要等一份不参照测试结果的
+  词表。（词表已在 2026-10-29 接进生产链路，开关 `R4P_TERM_MAP` 默认关闭，见上文
+  「口语问句的术语通道」；这里记的是它作为评估开关时的第一版结论。）
 
   口语集扩到 50 题之后，这条的边界被量化了（`eval/paraphrase-50-20261029.md`）：
 
@@ -646,8 +693,8 @@ RAG 系统里这是最坏的一类失败——它不崩溃，只是胡说。降�
   所以当前的结论是"机制可行、尚未证明可推广"，下一步该写一份**不看测试集**的词表再来测。
   这组数字取自等权 RRF 时期（`fusion=rrf`）。融合换成 zscore 之后同口径基线是 0.680，
   v1 用 `append` 形态重跑得到 **0.680 → 0.780**（覆盖的 8 题全部进前 5，0 题变差）；
-  同一口径下 v2（28 条）是 0.680 → 0.760——见下一条。词表仍是评估侧开关，
-  不跟生产链路的融合方式绑定。
+  同一口径下 v2（28 条）是 0.680 → 0.760——见下一条。这一行在评估里是独立通道，
+  与生产链路的融合方式无关；生产接入后走的是同一个 `retrieve`，融合方式自然跟着 `R4P_FUSION`。
 
 - **词表 v2（`public_to_standard.v2.json`，28 条）是按条文建的，覆盖翻倍但增益没有增加；有收获
   的是「怎么用」，不是「做多大」。** 28 条里 23 条按语料抽出的规范用语 + 该领域日常说法写

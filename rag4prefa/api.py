@@ -107,6 +107,9 @@ async def _chat_stream(services: Services, req: ChatRequest) -> AsyncIterator[st
             filt=effective,
             top_k=req.top_k,
             use_rerank=req.rerank,
+            # 词表由装配层读一次（`build_services`），这里只是透传：请求级每次去
+            # 解析 JSON 既慢，也让"读到一半的文件"变成每个请求各自的风险。
+            term_map=services.term_map,
         ):
             yield _sse(event, data)
     except (EmbeddingError, LLMError, IndexMismatch, BackendUnavailable) as exc:
@@ -736,6 +739,7 @@ def create_app(services: Services | None = None) -> FastAPI:
                 question=req.question,
                 filt=effective,
                 top_k=req.top_k,
+                term_map=services.term_map,
             )
         except (EmbeddingError, LLMError, IndexMismatch) as exc:
             raise HTTPException(503, str(exc)) from exc

@@ -13,6 +13,7 @@ from . import repo
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
 from .adapters.rerank import NoopReranker, RemoteReranker, Reranker
+from .adapters.term_map import TermMap, load_term_map
 from .adapters.vectors import (
     BackendUnavailable,
     MilvusStore,
@@ -69,6 +70,11 @@ class Services:
     # 这个视图是按哪份凭据拍出来的快照。`user_label` 只记用户名（任何人都非空，
     # 匿名也算 "anonymous"），判断"花谁的钱"必须看这里——见 `llm_billable`。
     user_creds: UserCredentials | None = None
+    # 受控词表（公众表达 → 规范用语）。装配时读**一次**：每次问答都去解析一遍 JSON，
+    # 等于把"文件改了一半"的风险摊到每个请求上。`None` = 未配置或加载失败，
+    # 两者的区别在 `term_map_error` 里，不能都当成"没配"。
+    term_map: TermMap | None = None
+    term_map_error: str | None = None
     # 视图不拥有连接：一次请求结束若能关掉全局 SQLite 连接，下一个请求就全崩
     owns_conn: bool = True
     # 请求级视图指回根服务。后端指针（store / fell_back）只能由根服务改：
@@ -530,6 +536,20 @@ class Services:
             # 没配重排服务时 reranker 是 Noop：勾了"启用重排"也什么都不做。
             # 前端必须知道这件事，否则那个开关就是一个安静的谎。
             "rerank_configured": not isinstance(self.reranker, NoopReranker),
+            # 受控词表：开没开、几条、什么形态、坏了没有。
+            # 只报 `enabled` 不报 `error`，"配了但没生效"就完全看不出来——
+            # 表现是"界面一切正常，只有口语问句拿不到术语通道"。
+            "term_map": {
+                "enabled": self.term_map is not None,
+                "path": self.settings.term_map,
+                "entries": len(self.term_map) if self.term_map is not None else 0,
+                "form": self.settings.term_map_form,
+                # 没启用时报 `none`：这时重排读哪个串这件事根本不存在，
+                # 报 `append` 会让人以为它在生效。
+                "rerank": self.settings.term_rerank if self.term_map is not None else "none",
+                "weight": self.settings.term_rewrite_weight,
+                "error": self.term_map_error,
+            },
             # 关掉回落时，不带头里的 Key 就调不了检索与问答。前端要据此把"用自己的 Key"
             # 从"可选"改成"必填"，而不是让用户点一次失败一次。
             "server_key_fallback": self.settings.allow_server_key_fallback,
@@ -673,6 +693,21 @@ def build_services(
 
     reranker: Reranker = RemoteReranker(settings) if settings.rerank_url else NoopReranker()
 
+    # 词表读一次就够。坏词表**不让服务起不来**（它是可选增强项，一个写错的 JSON
+    # 不该把检索整个堵死），但也绝不静默：原因进 notes 与 `/api/health` 的
+    # `term_map.error`，`term_map` 留 None 让检索退回"没有这一层"。
+    # 两件事必须同时成立——只降级不报错，等于让人以为词表在生效。
+    term_map: TermMap | None = None
+    term_map_error: str | None = None
+    try:
+        term_map = load_term_map(settings.term_map or None)
+    except (OSError, ValueError) as exc:
+        term_map_error = f"{type(exc).__name__}: {exc}"
+        notes.append(
+            f"受控词表未能加载（{term_map_error}），本次按「不启用词表」运行："
+            "检索仍然可用，但口语问句拿不到术语通道"
+        )
+
     services = Services(
         settings=settings,
         conn=conn,
@@ -682,6 +717,8 @@ def build_services(
         reranker=reranker,
         notes=notes,
         fell_back=fell_back,
+        term_map=term_map,
+        term_map_error=term_map_error,
     )
     # 打开 ≠ 确认：能在集合打开只说明它存在，说明不了它装的是归档这一套。
     # 这一步在需要时会在维护锁里从归档重建，然后才把后端登记进 meta。

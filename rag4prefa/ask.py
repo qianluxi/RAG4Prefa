@@ -3,6 +3,7 @@
 关键修正（对照原系统）：
 - 关键词参与**召回**（BM25），不再是在 Top-K 之后做子串过滤；
 - 稠密与稀疏结果用 RRF 融合，而不是各取一半拼起来；
+- 口语问句可以多挂一条**术语通道**（受控词表 → 规范用语），原话那一路不动；
 - 生成走 token 流，客户端首字延迟≈模型首 token 延迟。
 """
 
@@ -20,6 +21,7 @@ from .adapters.embed import Embedder
 from .adapters.llm import LLM
 from .adapters.query_expand import QueryExpander
 from .adapters.rerank import NoopReranker, Reranker
+from .adapters.term_map import TermMap
 from .adapters.vectors import VectorStore
 from .config import Settings
 from .consistency import IndexMismatch
@@ -120,6 +122,63 @@ def fuse_scores(
     if not contributing:
         return rrf_multi(runs, k=k)
     return scores
+
+
+def term_channels(
+    term_map: TermMap | None, question: str, *, form: str = "joined"
+) -> tuple[tuple[str, ...], list[str]]:
+    """词表命中 → (检索用的改写串, 命中的术语)。
+
+    两件事分开返回，因为去向不同：改写串交给 `retrieve` 当**独立通道**（原话那一路
+    一条都不动），术语列表给重排拼查询、给前端解释"这题为什么注入了这几个词"。
+
+    没命中时返回空元组与空列表，**不返回原话**——把原话当术语塞回去，"词表没覆盖"
+    就会被记成"词表给了词"，两种结论正好相反。
+
+    形态（`terms`/`joined`）的合法性交给 `TermMap.rewrite` 判定，这里不另写一份：
+    两份判据迟早会分家，而分家的表现是"命令行收 `terms`、生产收 `joined` 之外的拼法"。
+    """
+    if term_map is None:
+        return (), []
+    terms = term_map.match(question)
+    if not terms:
+        return (), []
+    return tuple(term_map.rewrite(question, form=form)), terms
+
+
+def build_rerank_query(question: str, terms: Sequence[str], *, mode: str = "append") -> str:
+    """重排读哪个串。
+
+    - `none`：只读原话（等于没有词表这一层）；
+    - `terms`：只读术语串。**不要用它当默认值**——2026-10-29 在 v2 词表覆盖的 15 题上
+      实测：原话 11/15、纯术语串 12/15、原话 + 术语串 14/15。纯术语串会把**原本已经
+      排第 1** 的题打出去，机制很直白：那几题重排本来就读得懂口语，换串等于拿掉信号；
+    - `append`（默认）：原话 + 术语串，术语只做加法。
+
+    没命中术语时三种形态都退回原话——重排看到的东西不能因为"词表没覆盖"而变。
+    """
+    if mode == "none" or not terms:
+        return question
+    joined = " ".join(terms)
+    if mode == "terms":
+        return joined
+    if mode == "append":
+        return f"{question} {joined}"
+    raise ValueError(f"未知的重排串形态：{mode}（可选 none / terms / append）")
+
+
+def _require_term_map_wired(term_map: TermMap | None, settings: Settings) -> None:
+    """配了词表却没把词表对象传进来，是装配漏了，不是"这次不用"。
+
+    `R4P_TERM_MAP` 只在装配时读一次（`build_services`），调用方负责把它传进来。
+    漏传时若静默当"没有词表"，界面、日志、指标一切正常，只有口语问句悄悄拿不到
+    术语通道——这类失效没有任何一处会报出来，所以宁可在请求上直接失败。
+    """
+    if term_map is None and settings.term_map.strip():
+        raise ValueError(
+            "配置了 R4P_TERM_MAP，但这次调用没有拿到词表对象：装配漏传了"
+            "（调用方应传 services.term_map）。不在这里静默退回“不用词表”。"
+        )
 
 
 def _to_hits(conn: sqlite3.Connection, scores: dict[str, float], limit: int) -> list[Hit]:
@@ -326,6 +385,7 @@ async def stream_answer(
     filt: Filter,
     top_k: int | None = None,
     use_rerank: bool | None = None,
+    term_map: TermMap | None = None,
 ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     top_k = top_k or settings.top_k
     # None 表示"跟随服务端配置"：装了真实重排就重排，Noop 就当没这回事。
@@ -336,14 +396,27 @@ async def stream_answer(
     # 术语扩展是实验开关，默认不启用：首版对照实验（口语集）在 hybrid/rerank 上
     # 无正收益（详见 HANDOFF 第三十八轮），默认开启只会让每次问答多一次 LLM 调用
     # 却拿不到好处。要开请在调用点显式传 expander。
+    #
+    # 受控词表是另一回事：它不调 LLM、命中可肉眼复核，2026-10-29 接入前已在两套
+    # 题集上量过净效果。`term_map=None`（默认）表示不启用，行为与没有这一层时一致。
+    _require_term_map_wired(term_map, settings)
+    rewrites, terms = term_channels(term_map, question, form=settings.term_map_form)
     hits, effective, timings = await retrieve(
-        conn, store, embedder, settings, question=question, filt=filt
+        conn,
+        store,
+        embedder,
+        settings,
+        question=question,
+        filt=filt,
+        rewrites=rewrites,
+        rewrite_weight=settings.term_rewrite_weight,
     )
 
     rerank_error: str | None = None
     if do_rerank and hits:
         try:
-            hits = await reranker.rerank(question, hits, top_k)
+            query = build_rerank_query(question, terms, mode=settings.term_rerank)
+            hits = await reranker.rerank(query, hits, top_k)
         except Exception as exc:  # 重排是增强项：失败要告诉调用方，但别中断回答
             rerank_error = f"{type(exc).__name__}: {exc}"
     final = hits[:top_k]
@@ -356,6 +429,10 @@ async def stream_answer(
             "candidates": len(hits),
             "timings": timings,
             "rerank_error": rerank_error,
+            # 注入了哪几个术语、以及**为什么**注入。没有这两栏，"这题答案为什么变了"
+            # 在界面上无从解释；而这一层唯一的承诺就是可审计。
+            "terms": terms,
+            "term_entries": term_map.explain(question) if term_map is not None else [],
         },
     )
 
@@ -405,6 +482,7 @@ async def search(
     expander: QueryExpander | None = None,
     rewrites: Sequence[str] = (),
     rewrite_weight: float = 0.5,
+    term_map: TermMap | None = None,
 ) -> tuple[list[Hit], Filter, dict[str, float]]:
     """检索（可选重排），返回前 `top_k` 条。
 
@@ -414,8 +492,18 @@ async def search(
 
     `rewrites` 是并行改写通道（见 `retrieve`），默认空。**生产链路不注入**：
     首版扩展实验是负结果，要开必须由调用方显式传，并自行承担多一路 embedding 的延迟。
+
+    `term_map` 是受控词表（公众表达 → 规范用语）。它走的是同一条并行通道机制，
+    但术语是人写的、命中可复核，所以默认由装配层注入（`services.term_map`）；
+    是否启用完全取决于 `R4P_TERM_MAP` 有没有配。
     """
     limit = top_k or settings.top_k
+    _require_term_map_wired(term_map, settings)
+    term_rewrites, terms = term_channels(term_map, question, form=settings.term_map_form)
+    if rewrites and term_rewrites:
+        raise ValueError(
+            "同时给了 rewrites 与命中的词表术语：两套改写串混在一起，收益无法归因到任何一方"
+        )
     hits, effective, timings = await retrieve(
         conn,
         store,
@@ -424,14 +512,18 @@ async def search(
         question=question,
         filt=filt,
         expander=expander,
-        rewrites=rewrites,
-        rewrite_weight=rewrite_weight,
+        rewrites=rewrites or term_rewrites,
+        # 词表通道用配置里的权重；显式给了 rewrites 就按调用方给的权重走
+        # （那是有明确意图的实验，不该被配置里的数悄悄改掉）。
+        rewrite_weight=rewrite_weight if rewrites else settings.term_rewrite_weight,
     )
     do_rerank = (
         rerank_available(reranker) if use_rerank is None else use_rerank
     ) and reranker is not None
     if do_rerank and hits:
-        hits = await reranker.rerank(question, hits, limit)
+        hits = await reranker.rerank(
+            build_rerank_query(question, terms, mode=settings.term_rerank), hits, limit
+        )
     return hits[:limit], effective, timings
 
 

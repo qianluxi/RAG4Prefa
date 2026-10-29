@@ -18,6 +18,9 @@ class _FakeServices:
     conn = object()
     store = object()
     settings = object()
+    # `ask.search` 会读它（词表命中时多挂一条术语通道）。桩必须照实提供，
+    # 少了它 CLI 会 AttributeError——那说明"生产装配少一个字段"，不是测试该绕开的事。
+    term_map = None
     closed = False
 
     def require_embedder(self):

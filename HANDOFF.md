@@ -67,36 +67,37 @@ cd "F:/project/课题/RAG4Prefa"
 
 ---
 
-## 3. 代码地图（8 566 行 Python + 1307 行单页 HTML + 8 369 行测试，均按非空行计）
+## 3. 代码地图（9 548 行 Python + 1 319 行单页 HTML + 10 712 行测试，均按非空行计）
 
 行数为**非空行**（`grep -cv '^[[:space:]]*$'`），这样口径唯一、可以随时重算核对。
 
 ```
 rag4prefa/
-├── config.py     115    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读；含 `allow_server_key_fallback` 公网开关
-├── domain.py      98    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
-├── db.py         130    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache / ocr_cache）
-├── repo.py       941    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
-├── consistency.py 427   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
-├── concurrency.py 291   **写入协调**：维护锁、写事务串行、工作租约（判断别的进程还活着吗）
-├── ingest.py     920    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex；OCR 装配与缓存也在这层
-├── chunking.py    93    按标题树切块；chunk_id 内容寻址（同 id 必同正文）
-├── tokens.py      40    中英混排的 token 估算（非真实 tokenizer）
-├── ask.py        216    混合召回 → RRF 融合 → 可选重排 → 流式生成；含索引代次确认
-├── filters.py     88    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
-├── prompts.py     28    系统提示词与引用格式
-├── admin.py      159    项目/文档的查询与级联删除；含清空整库（先清索引后清事实）
-├── services.py   612    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图
-├── credentials.py 348   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
-├── api.py        725    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度；含逐文件删除与清空
-├── ocr_setup.py     51  **扫描件识别的实际参数**（端点/模型/Key/并发）与"现在能不能用"；免费档已实测否决
-├── snapshot.py    144   **语料快照**：从库里导出文档数/片段数/全量 id 与指纹，给评测报告一个可追溯的"当时有什么"
+├── config.py        152    pydantic-settings，全部配置以 R4P_ 前缀从 .env 读；含 `allow_server_key_fallback` 公网开关、`fusion`、受控词表四个开关
+├── domain.py        119    Chunk / Section / Hit / Filter / JobState，纯数据，无依赖
+├── db.py            151    SQLite schema（projects / documents / chunks / chunks_fts / vectors / jobs / meta / embed_cache / ocr_cache）
+├── repo.py          974    **全部 SQL 都在这里**，没有别处写 SQL；含索引代次（index_generation）
+├── consistency.py   427   **索引一致性**：状态诊断、阻断判定、逐 id 核对（verify）、切换标记
+├── concurrency.py   291   **写入协调**：维护锁、写事务串行、工作租约（判断别的进程还活着吗）
+├── ingest.py        986    解析 → 分块 → 向量化 → 写索引 → 切事实；含 rebuild_store / reindex；OCR 装配与缓存也在这层
+├── chunking.py      144    按标题树切块；chunk_id 内容寻址（同 id 必同正文）
+├── tokens.py         40    中英混排的 token 估算（非真实 tokenizer）
+├── ask.py           465    混合召回 → 本路标准化融合 → 可选重排 → 流式生成；术语通道与重排查询的拼法也在这层
+├── filters.py        88    自然语言问题 → Filter（规则法，可单测，无 LLM 调用）
+├── prompts.py        30    系统提示词与引用格式
+├── admin.py         159    项目/文档的查询与级联删除；含清空整库（先清索引后清事实）
+├── services.py      658    组件装配；Milvus 不可用时回退 numpy；`for_credentials()` 出按用户视图；词表在装配时读一次
+├── credentials.py   360   **按用户解析 Key 与对话模型**：请求头 → 凭据池；报错根因分级
+├── api.py           781    FastAPI 路由（只做协议转换，不含业务逻辑）；`svc_billable()` 拦匿名额度；含逐文件删除与清空
+├── ocr_setup.py      51  **扫描件识别的实际参数**（端点/模型/Key/并发）与"现在能不能用"；免费档已实测否决
+├── snapshot.py      171   **语料快照**：从库里导出文档数/片段数/全量 id 与指纹，给评测报告一个可追溯的"当时有什么"
 ├── processcontrol.py 168 **停服**：netstat 认 PID + `/api/health` 认身份，认不出就不杀
-├── cli.py        476    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / delete-doc / clear / verify
-└── adapters/    1958    embed / llm / ocr / vectors / rerank / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
+├── cli.py           506    init / serve / stop / doctor / ingest / reindex / rebuild / ask / projects / delete / delete-doc / clear / verify
+└── adapters/       2825    embed / llm / ocr / vectors / rerank / term_map / query_expand / parsers（docx + pdf + 共用的标题规则）—— 外部依赖都关在这里
 ```
 
-`scripts/` 另有 687 行（`eval.py` 452 + `relabel_eval.py` 163 + `snapshot_corpus.py` 72），合计非空 9 253 行（含 scripts 687）——`rag4prefa/` 本身是 8 566 行。
+`scripts/` 另有 3 100 行（`eval.py` 1 222 + `relabel_eval.py` 183 + `snapshot_corpus.py` 72 +
+审计/诊断/抽取脚本），合计非空 12 648 行——`rag4prefa/` 本身是 9 548 行。
 
 解析层三个文件的分工，改动前先看清：
 
@@ -113,8 +114,8 @@ rag4prefa/
   system）。它只负责「这一页的图 → Markdown」；「哪几页要识别」「Markdown 怎么折成事件流」
   都在 `pdf.py`；「用哪把 Key、能不能用」在 `ocr_setup.py`，两者不混。
 
-前端只有一个文件 `rag4prefa/web/index.html`（1182 行，原生 JS，无构建步骤）。
-`tests/` 392 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
+前端只有一个文件 `rag4prefa/web/index.html`（1 319 行，原生 JS，无构建步骤）。
+`tests/` 553 项，**全部离线**（FakeEmbedder 确定性假向量 + 本地假 OpenAI 服务 + 临时 Milvus/numpy），
 不花一分钱 API 费。其中 `test_real_sdk_chain.py` 走真实 openai SDK 与 SSE，专门防止「假向量绕过了缓存/网络」这类漏检；
 `test_api_credentials.py` 让假服务记录 `Authorization`，用来证明"用户的 Key 真的被拿去调了厂商接口"，
 而不是"接口返回了 200 就以为配对了"；
@@ -2963,6 +2964,60 @@ python scripts/eval.py --dataset eval/dataset.jsonl \
 专业问法集）；②`public_side` 那 5 条 `recalled` 说明「选题来源」才是瓶颈——真正的盲性
 设计是按文档分半构建再交叉评测；③匹配方式从子串换成可解释的语义匹配（这是"查找表→
 知识层"唯一的路，但会引入新的不可解释性，要单独一轮）。
+
+**下一步（已部分执行）**：①已做（见第十版）；②③仍待。
+
+---
+
+#### 第十版：把 `append` 接进生产链路，并顺手证伪了「`joined` 与 `terms` 一字不差」（2026-10-29）
+
+第九版留的账是"`append` 在评估里净正（4 赢 0 输）、不伤专业问法集，该接进生产链路"。
+这一轮只做这一件事，另加一条对**默认值**的当场复核。
+
+**接法只有一条规矩：禁止在 `retrieve` 里隐式注入。**
+
+评估脚本的基线行（`hybrid` / `rerank`）要求"完全不做改写"，它们也调 `retrieve`。若把它
+塞进 `retrieve` 按配置自动生效，那么 `.env` 里一开词表，**所有基线行都会悄悄多一路通道**，
+报告里两行的差值就不再是单个变量——第三十八轮读错 0.400→0.467 就是这种形态。
+所以注入点放在两个**生产入口**（`stream_answer` / `search`），由它们把词表当参数往
+下传：`term_channels()` 产出改写串与术语列表，改写串进 `rewrites`（原话那一路不动），
+术语列表给 `build_rerank_query()` 拼「原话 + 术语」。
+
+**配了却没传，必须报错。** `R4P_TERM_MAP` 只在装配时读一次（`build_services` →
+`Services.term_map`），调用方漏传时若静默当"没有词表"，界面、日志、指标全都正常，只有
+口语问句悄悄拿不到术语通道——这类失效没有任何一处会报出来。所以 `_require_term_map_wired`
+在请求上直接失败。**坏词表则相反**：不让服务起不来（它是可选增强项），但降级必须可见——
+`term_map_error` 进 `/api/health` 与 notes，`enabled=false`、`rerank=none`。
+
+**默认值当场复核：`joined` 真的和 `terms` 一样吗？**
+
+第九版在 15 题（v1 词表）上量到"开了 `--term-rerank` 之后两种形态逐题一字不差"，据此定了
+生产默认 `joined`（少 N−1 次 embedding 往返）。但那是 15 题 + 8 条词，而 v2 的 50 题报告
+用的是 `terms`。默认值不能靠一条老结论，于是同一天把 50 题用 `joined` 重跑一遍
+（`…-termmap-public_to_standard.v2-joined-w05-rerankappend-fusionzscore.md`，16:05；`terms`
+那份是 15:28 跑的）：
+
+| 行 | `terms` | `joined` | 逐题名次变化 |
+|---|---|---|---|
+| `hybrid`（基线，不含术语） | 0.640 | 0.640 | **0 题** |
+| `hybrid_parallel` | 0.620 | 0.620 | 2 题（3→2、3→2，都变好） |
+| `rerank`（基线，不含术语） | 0.680 | 0.680 | **0 题** |
+| `rerank_parallel` | 0.760 | 0.760 | 1 题（1→2，仍在 top-5） |
+
+**结论要按"覆盖"和"名次"分开说**：两种形态的 Recall 逐行相同，名次上 2 题前移 1 题后移
+（MRR 0.596→0.586、nDCG 0.637→0.630，一题的量级）。所以"一字不差"在 50 题上不成立，
+但差别落在 ±1 题的噪声地板内、且**没有一题跨 top-5**——不足以推翻"取 `joined` 省往返"
+这个选择，足以把第九版那句"完全相同"改写成"Recall 相同、名次 1~2 题抖动"。
+两条基线行 0 题变化这一点更重要：它证明**原话通道确实一条都没被动过**，这是整层设计的
+唯一承诺。
+
+**代价**：每题多一次 embedding（术语串在问句间高度重复，第二次起命中 `embed_cache`；
+报告里 `hybrid_parallel` 平均 286 ms 是首次无缓存的那一次）。收益仍严格等于被覆盖的题：
+15/50 覆盖、覆盖组 0.667 → 0.933、未覆盖 35 题名次全同。**默认仍然关着**（`R4P_TERM_MAP`
+留空），因为 35/50 命中率意味着它对多数问句什么也不做，而每次问答都要为覆盖的题付一次往返。
+
+**验证**：539 → 553 passed（新增 `tests/test_term_map_production.py` 14 条：通道数、重排查询、
+未覆盖不多开通道、漏传必炸、坏词表降级可见、两个 HTTP 入口都真的把词表传下去），`ruff` 干净。
 
 ---
 

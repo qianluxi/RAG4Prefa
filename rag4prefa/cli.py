@@ -281,6 +281,9 @@ def cmd_ask(args: argparse.Namespace) -> int:
                 # 命令行这边自己截一次再去重排，就只剩 top_k 条候选可挑。
                 reranker=getattr(services, "reranker", None),
                 use_rerank=asked_rerank,
+                # 与 API 同一条链路：词表命中时多一条术语通道、重排读「原话 + 术语」。
+                # CLI 与 API 分叉的那种"命令行结果对、界面结果不对"，最难查。
+                term_map=services.term_map,
             )
         )
         do_rerank = ask.rerank_available(
