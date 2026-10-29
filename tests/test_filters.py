@@ -31,6 +31,44 @@ def test_single_year() -> None:
     assert (filt.year_from, filt.year_to) == (2021, 2021)
 
 
+def test_target_year_is_not_a_document_year() -> None:
+    """政策目标年份不是资料年份。
+
+    「到2027年，老旧住宅电梯要怎么处理？」的正文在 2024 年的文件里。按年份筛会把
+    gold 判成「不在本题筛选范围」——这是检索前的静默否决，召回、重排、词表都救不回。
+    """
+    for question in (
+        "到2027年，老旧住宅电梯要怎么处理？",
+        "2027年底前要完成多少户改造？",
+        "比2020年增长了百分之多少？",
+        "到2027年标准体系要基本建成吗？",  # 紧跟「标准」也不当资料年份
+        "到2027年的文件覆盖率要达到多少？",  # 紧跟「的文件」也不当资料年份
+    ):
+        filt = parse_filter(question, PROJECTS)
+        assert (filt.year_from, filt.year_to) == (None, None), question
+
+
+def test_document_year_still_filters() -> None:
+    """明确指向资料年份的写法不能被上面那条规则误伤。"""
+    assert parse_filter("2021年发布的文件里怎么规定的？", PROJECTS).year_from == 2021
+    assert parse_filter("2020年版规范怎么写的？", PROJECTS).year_from == 2020
+    assert parse_filter("2020年文件里有没有提？", PROJECTS).year_from == 2020
+    assert parse_filter("2021年的方案", PROJECTS).year_from == 2021
+
+
+def test_target_year_next_to_document_year() -> None:
+    """同一句里既有目标年又有资料年时，只认资料年。"""
+    filt = parse_filter("到2027年，相比2021年发布的文件有什么变化？", PROJECTS)
+    assert (filt.year_from, filt.year_to) == (2021, 2021)
+
+    filt = parse_filter("2021年和2023年的文件有什么不同？", PROJECTS)
+    assert (filt.year_from, filt.year_to) == (2021, 2023)
+
+
+def test_since_year() -> None:
+    assert parse_filter("2019年以来有哪些文件？", PROJECTS).year_from == 2019
+
+
 def test_quoted_keyword() -> None:
     filt = parse_filter("关于“缓粘结预应力”的条文", PROJECTS)
     assert filt.keyword == "缓粘结预应力"
