@@ -226,10 +226,14 @@ SSE 事件：`meta`（生效条件、候选数、各阶段耗时）→ `token`* 
 ## 测试与评估
 
 ```bash
-pytest -q                                  # 484 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
+pytest -q                                  # 508 项，全部离线；其中解析器金丝雀要本地语料（CI 上跳过）
 python scripts/snapshot_corpus.py          # 先记下"此刻库里有什么"
 python scripts/eval.py --dataset eval/dataset.jsonl --save
 python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl --save
+# 并行改写通道的对照（冻结扩展串，权重视为一个自变量）：
+python scripts/eval.py --dataset eval/dataset.paraphrase.jsonl \
+  --expand-from eval/expansions/paraphrase-20261028.jsonl --expand-parallel \
+  --modes dense,sparse,hybrid,rerank,hybrid_parallel,rerank_parallel --save
 ```
 
 **评估数字只有在语料身份确定时才有意义，所以先出快照。** `snapshot_corpus.py` 从数据库导出
@@ -318,8 +322,10 @@ id 就全换，旧标注会静默失效（评估照样跑完，只是 Recall 莫
 CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`ruff check rag4prefa tests scripts`
 → `pytest -q`。全部离线，不需要任何 Key。
 
-`scripts/eval.py` 输出四组对照——`dense`（纯向量）、`sparse`（纯 BM25）、`hybrid`（向量 + BM25 + RRF）、
-`rerank`（混合 + 重排）——这是"混合检索和重排各自带来多少收益"的量化依据。
+`scripts/eval.py` 默认输出五行对照——`dense`（纯向量）、`dense_rerank`（纯向量 + 重排）、
+`sparse`（纯 BM25）、`hybrid`（向量 + BM25 + RRF）、`rerank`（混合 + 重排）——这是
+"混合检索和重排各自带来多少收益"的量化依据。另外两行 `hybrid_parallel` / `rerank_parallel`
+是并行改写通道，**默认不跑**，要用 `--modes` 显式点名。
 **没配 `R4P_RERANK_URL` 时报告会显式写「未启用重排」**，而不是让 `rerank` 一栏悄悄等于 `hybrid`
 （那样读者会把两行差异当成重排的收益；曾经就因为两行用了不同深度的候选池，差出过一个 +0.033）。
 
@@ -573,6 +579,21 @@ RAG 系统里这是最坏的一类失败——它不崩溃，只是胡说。降�
   用同一组扩展串比较「重排读原话」与「重排也读扩展串」（加 `--expand-rerank`），
   逐题 gold 排名完全一致：**扩展改善不了重排判断**。扩展因此**默认不参与生产链路**，
   只作为 `retrieve()`/`search()` 的可选参数与评估的实验开关保留。
+- **并行改写通道（`--expand-parallel`）解决了稀释，但没跨过鸿沟**。原话独立查一路、
+  改写串各查一路，按权重融合（`rewrites` + `rewrite_weight`，原话恒为 1.0），
+  基线行（dense/sparse/hybrid/rerank）与不改写时**逐字一致**——变量终于只有"有没改写"一个。
+  三个权重 0.3/0.5/1.0 下：`hybrid` 0.333 → `hybrid_parallel` 0.400 / 0.333 / 0.333，
+  涨的那一次只多救回 **1 题**（吊顶装灯风机，拼串版也能救回）；`rerank_parallel`
+  与 `rerank` 完全相同。**5 道词表鸿沟题仍 0 救回。**
+  逐通道归因给出了原因：4 道题的 gold 在改写池里（15~35 名），4 道题**两路都没有**。
+  后者是关键——用规范原文的搭配（「专用连接件」「不含电器设备」「参照执行」
+  「维修更换」「隐蔽工程验收」）单独查，gold 排 **1/1/5/6/6**；而 LLM 给的近义概念
+  （「锚固」「照明灯具」「既有建筑」「更换」「检验批」）最好也只有 12~36 名。
+  **差距不在检索算法，在术语从哪来**：LLM 擅长把口语归到哪一类意图，不擅长说出
+  条文里的那个固定搭配。下一步是受控的「公众表达 → 规范用语」对照表，而不是继续
+  调权重、池深或换模型。注意这条链路**不能真并发**：所有读路径共用一条 sqlite 连接，
+  多路并发会 `InterfaceError` 且只丢一路（报告上表现为"有效样本 14/15"），
+  所以"并行"只指候选来源并行，代价是每多一路多一次 embedding 往返。
 - 单进程设计（SQLite + 进程内任务）。要多副本时把 SQLite 换成 Postgres、任务换队列，接口层无需改动。
 - **并发**：同一个 `sqlite3.Connection` 被请求与后台入库线程共用（`check_same_thread=False`），
   没有额外的写锁。单用户没问题，多人并发写之前应先改成每线程独立连接。

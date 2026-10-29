@@ -251,10 +251,12 @@ def test_rerank_and_hybrid_share_one_candidate_pool(monkeypatch: pytest.MonkeyPa
     ]
 
     async def fake_retrieve(
-        conn, store, embedder, settings, *, question, filt, recall_k, candidate_k=None
+        conn, store, embedder, settings, *, question, filt, recall_k, candidate_k=None,
+        rewrites=(), rewrite_weight=0.5,
     ):
         # 两个深度都要记：2026-10-28 之前这里只收 recall_k，于是"声明 50、实得 25"
         # 这个 bug 被假实现挡住了——假实现按 recall_k 直接切片，看起来一直是对的。
+        # `rewrites` 也必须收：签名对不上会直接 TypeError，而不是悄悄忽略改写。
         seen.append((recall_k, candidate_k))
         return pool[: (candidate_k or recall_k)], [], {}
 

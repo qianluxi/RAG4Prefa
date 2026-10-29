@@ -28,8 +28,11 @@ import math
 import statistics
 import subprocess
 import sys
+import time
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -38,7 +41,12 @@ from rag4prefa.adapters.query_expand import build_expander  # noqa: E402
 from rag4prefa.domain import Filter, Hit  # noqa: E402
 from rag4prefa.services import build_services  # noqa: E402
 
-MODES = ("dense", "dense_rerank", "sparse", "hybrid", "rerank")
+MODES = (
+    "dense", "dense_rerank", "sparse", "hybrid", "rerank",
+    # 上面五行是"不改写"的基线；下面两行是并行改写通道（原话独立 + 改写按权重融合）。
+    # 默认不跑，需要时用 `--modes ...,hybrid_parallel,rerank_parallel` 显式点名。
+    "hybrid_parallel", "rerank_parallel",
+)
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -123,6 +131,23 @@ def ndcg_at_k(rels: list[float], k: int, total: int) -> float:
 # ── 召回方式 ───────────────────────────────────────────────
 
 
+class _RecallOptions(NamedTuple):
+    """一次召回的可选项。
+
+    打包成一个参数而不是逐个列成关键字参数：七种召回方式签名必须一致，
+    而多数 handler 只用其中一两个。逐个列出会让每个定义都超出行长，也意味着
+    以后加一个选项要改七处（总有一处会忘）。
+
+    用 `NamedTuple` 而不是 `dataclass`：测试通过 `importlib` 加载本脚本时模块
+    并不在 `sys.modules` 里，`dataclass` 装饰器取 `cls.__module__` 会直接抛
+    AttributeError（加载即失败，一条用例都跑不起来）。
+    """
+
+    rerank_query: str | None = None
+    rewrites: tuple[str, ...] = ()
+    rewrite_weight: float = 0.5
+
+
 async def dense_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
     embedder = services.require_embedder()
     vector = await asyncio.to_thread(embedder.embed_one, question)
@@ -160,12 +185,18 @@ def _hybrid_pool_size(k: int) -> int:
     return max(k * 5, 50)
 
 
-async def hybrid_pool(services, question: str, filt: Filter, k: int) -> list[Hit]:
+async def hybrid_pool(
+    services, question: str, filt: Filter, k: int,
+    *, rewrites: Sequence[str] = (), rewrite_weight: float = 0.5,
+) -> list[Hit]:
     """取深度 = `_hybrid_pool_size(k)` 的融合候选池。
 
     `recall_k` 与 `candidate_k` 必须**同时**给足：前者决定两个通道各取多少，
     后者决定融合后保留多少。只给前者时会被 `ask.retrieve` 的默认截断砍回一半，
     而报告上写的池深仍是 50。
+
+    `rewrites` 非空时走并行通道（原话独立保留 + 改写各一路，按 `rewrite_weight`
+    融合）。**基线 `hybrid`/`rerank` 两行永远不传它**——那是"不做改写"的对照组。
     """
     pool = _hybrid_pool_size(k)
     hits, _, _ = await ask.retrieve(
@@ -177,23 +208,34 @@ async def hybrid_pool(services, question: str, filt: Filter, k: int) -> list[Hit
         filt=filt,
         recall_k=pool,
         candidate_k=pool,
+        rewrites=rewrites,
+        rewrite_weight=rewrite_weight,
     )
     return hits
 
 
-async def hybrid_hits(services, question: str, filt: Filter, k: int) -> list[Hit]:
-    return (await hybrid_pool(services, question, filt, k))[:k]
+async def hybrid_hits(
+    services, question: str, filt: Filter, k: int,
+    *, rewrites: Sequence[str] = (), rewrite_weight: float = 0.5,
+) -> list[Hit]:
+    pool = await hybrid_pool(
+        services, question, filt, k, rewrites=rewrites, rewrite_weight=rewrite_weight
+    )
+    return pool[:k]
 
 
 async def rerank_hits(
-    services, question: str, filt: Filter, k: int, *, rerank_query: str | None = None
+    services, question: str, filt: Filter, k: int, *, rerank_query: str | None = None,
+    rewrites: Sequence[str] = (), rewrite_weight: float = 0.5,
 ) -> list[Hit]:
-    """候选池与 hybrid 完全一致：两行之间唯一的变量是"有没有重排"。
+    """候选池与同名 `hybrid` 行完全一致：两行之间唯一的变量是"有没有重排"。
 
     `rerank_query` 单独给：术语扩展只改召回查询时，重排仍必须读原话，
     否则"改写让候选变了"与"改写让重排判断变了"两件事混在一个差值里。
     """
-    candidates = await hybrid_pool(services, question, filt, k)
+    candidates = await hybrid_pool(
+        services, question, filt, k, rewrites=rewrites, rewrite_weight=rewrite_weight
+    )
     return await services.reranker.rerank(rerank_query or question, candidates, k)
 
 
@@ -212,24 +254,50 @@ async def dense_rerank_hits(
     return await services.reranker.rerank(rerank_query or question, candidates, k)
 
 
-async def _dense_mode(services, question, filt, k, keyword, *, rerank_query=None):  # noqa: ARG001
+async def _dense_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
     return await dense_hits(services, question, filt, k)
 
 
-async def _dense_rerank_mode(services, question, filt, k, keyword, *, rerank_query=None):
-    return await dense_rerank_hits(services, question, filt, k, rerank_query=rerank_query)
+async def _dense_rerank_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
+    return await dense_rerank_hits(
+        services, question, filt, k, rerank_query=opts.rerank_query
+    )
 
 
-async def _sparse_mode(services, question, filt, k, keyword, *, rerank_query=None):  # noqa: ARG001
+async def _sparse_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
     return await sparse_hits(services, question, filt, k, keyword)
 
 
-async def _hybrid_mode(services, question, filt, k, keyword, *, rerank_query=None):  # noqa: ARG001
+async def _hybrid_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
+    # 基线行：**故意忽略 opts.rewrites**。它就是"不做改写"的那一列，
+    # 跟随改写会让 hybrid 与 hybrid_parallel 变成同一行，对照也就不存在了。
     return await hybrid_hits(services, question, filt, k)
 
 
-async def _rerank_mode(services, question, filt, k, keyword, *, rerank_query=None):  # noqa: ARG001
-    return await rerank_hits(services, question, filt, k, rerank_query=rerank_query)
+async def _rerank_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
+    return await rerank_hits(
+        services, question, filt, k, rerank_query=opts.rerank_query
+    )
+
+
+async def _hybrid_parallel_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
+    """实验 B：原话 + 改写串各自独立检索，按权重融合。"""
+    return await hybrid_hits(
+        services, question, filt, k,
+        rewrites=opts.rewrites, rewrite_weight=opts.rewrite_weight,
+    )
+
+
+async def _rerank_parallel_mode(services, question, filt, k, keyword, opts):  # noqa: ARG001
+    return await rerank_hits(
+        services,
+        question,
+        filt,
+        k,
+        rerank_query=opts.rerank_query,
+        rewrites=opts.rewrites,
+        rewrite_weight=opts.rewrite_weight,
+    )
 
 
 # 显式分派表，而不是 if/elif 加一个兜底 return：兜底分支会让"加了一种方式但忘了写实现"
@@ -241,21 +309,31 @@ _HANDLERS = {
     "sparse": _sparse_mode,
     "hybrid": _hybrid_mode,
     "rerank": _rerank_mode,
+    "hybrid_parallel": _hybrid_parallel_mode,
+    "rerank_parallel": _rerank_parallel_mode,
 }
 
 
 async def retrieve_for(
     services, mode: str, question: str, filt: Filter, k: int, keyword: str | None,
-    *, rerank_query: str | None = None,
+    *, rerank_query: str | None = None, rewrites: Sequence[str] = (),
+    rewrite_weight: float = 0.5,
 ) -> list[Hit]:
     """`question` 是**召回**用的串（术语扩展开启时是扩展串）；`rerank_query` 是重排
-    读的串，不传就与召回相同。两者分开，是为了让"扩展只改召回"成为可测的事实。"""
+    读的串，不传就与召回相同。两者分开，是为了让"扩展只改召回"成为可测的事实。
+
+    并行模式下 `question` 恒为原话、改写串走 `rewrites`：原话那一路的排名与候选
+    一条都不会被改动，改写只能往里加东西（这正是拼串做不到的）。
+    """
     handler = _HANDLERS.get(mode)
     if handler is None:  # pragma: no cover - 参数校验在 main() 里先拦一道
         raise ValueError(f"未知的召回方式：{mode}")
-    return await handler(
-        services, question, filt, k, keyword, rerank_query=rerank_query
+    opts = _RecallOptions(
+        rerank_query=rerank_query,
+        rewrites=tuple(rewrites),
+        rewrite_weight=rewrite_weight,
     )
+    return await handler(services, question, filt, k, keyword, opts)
 
 
 # ── 主流程 ─────────────────────────────────────────────────
@@ -264,12 +342,14 @@ async def retrieve_for(
 def evaluate(
     services, rows: list[dict], k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
-    expander=None, expand_rerank: bool = False,
+    expander=None, expand_rerank: bool = False, parallel: bool = False,
+    rewrite_weight: float = 0.5,
 ) -> dict:
     return asyncio.run(
         _evaluate(
             services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
-            expander=expander, expand_rerank=expand_rerank,
+            expander=expander, expand_rerank=expand_rerank, parallel=parallel,
+            rewrite_weight=rewrite_weight,
         )
     )
 
@@ -345,7 +425,8 @@ def _run_context(
 async def _evaluate(
     services, rows: list[dict], k: int, modes: list[str],
     snapshot_path: Path | None = None, refuse_rows: list[dict] | None = None,
-    expander=None, expand_rerank: bool = False,
+    expander=None, expand_rerank: bool = False, parallel: bool = False,
+    rewrite_weight: float = 0.5,
 ) -> dict:
     metrics: dict[str, dict[str, list[float]]] = {
         m: {"recall": [], "mrr": [], "ndcg": []} for m in modes
@@ -360,6 +441,10 @@ async def _evaluate(
     warnings: list[str] = []
     skipped: list[str] = []
     diagnostics: list[dict] = []
+    # 每种召回方式的端到端耗时。不看这一栏，"多救回一题"可能只是"多花一倍时间"的
+    # 副产品，而报告上两行数字看起来一样漂亮。
+    timings: dict[str, list[float]] = {m: [] for m in modes}
+    expand_fallbacks: list[str] = []
 
     for row in rows:
         question = str(row.get("question") or "").strip()
@@ -381,23 +466,47 @@ async def _evaluate(
         # 扩展默认**只作用于召回**，重排仍读原话（对照实验 B）：否则 rerank 那一行的
         # 变化里同时混着"候选集变了"和"重排判断变了"两个原因，谁也说不清收益来自哪。
         # 想研究"扩展词是否也改善重排判断"（实验 C）要显式 `expand_rerank=True`。
+        #
+        # `parallel=True` 把扩展串从"拼进原话"改成"独立通道"：召回串仍是原话，
+        # 扩展串走 rewrites。这时 dense/sparse/hybrid/rerank 四行与不跑的基线**逐字一致**，
+        # 只有 `*_parallel` 两行不同——对照才只差一个变量。
         search_question = question
         if expander is not None and expander.available:
             search_question = expander.expand(question)
+        if expander is not None and search_question.strip() == question.strip():
+            # 扩不出来时 QueryExpander 会降级回原话。这类题**不能混进扩展组**：
+            # 均值上它们与"没开扩展"完全一样，读者会以为扩展在这一题上试过了。
+            expand_fallbacks.append(question)
         rerank_query = search_question if expand_rerank else question
+        rewrites: tuple[str, ...] = ()
+        recall_query = question
+        if parallel:
+            if search_question.strip() != question:
+                rewrites = (search_question,)
+        else:
+            recall_query = search_question
 
-        per_row = {"question": question, "search_question": search_question, "modes": {}}
+        per_row = {
+            "question": question,
+            "search_question": search_question,
+            "rewrites": list(rewrites),
+            "modes": {},
+        }
         for mode in modes:
+            started = time.perf_counter()
             try:
                 hits = await retrieve_for(
-                    services, mode, search_question, effective, k, effective.keyword,
-                    rerank_query=rerank_query,
+                    services, mode, recall_query, effective, k, effective.keyword,
+                    rerank_query=rerank_query, rewrites=rewrites,
+                    rewrite_weight=rewrite_weight,
                 )
             except consistency.IndexMismatch:
                 raise  # 配置问题，不是单条样本的问题
             except Exception as exc:  # 单条失败不该中断整轮评估
                 warnings.append(f"{question}（{mode}）：{type(exc).__name__}: {exc}")
                 continue
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            timings[mode].append(elapsed_ms)
             rels = [1.0 if h.chunk_id in gold else 0.0 for h in hits]
             metrics[mode]["recall"].append(recall_at_k(hits, gold, k))
             metrics[mode]["mrr"].append(mrr(rels))
@@ -409,6 +518,12 @@ async def _evaluate(
             per_row["modes"][mode] = {
                 "first_gold_rank": first,
                 "hits": [h.chunk_id for h in hits[:k]],
+                # 无关结果比例 = 1 − P@k。改写救回一题的同时塞进更多无关片段时，
+                # Recall 会好看、用户拿到的答案却更差——这一栏就是为那种情况留的。
+                "precision": (sum(rels) / len(rels)) if rels else None,
+                # 端到端每题耗时（含远程 embedding/重排）。多一路改写就多一次往返，
+                # 那条路的成本必须和收益一起看，否则"能救回一题"可能只是变慢的代价。
+                "ms": elapsed_ms,
             }
         diagnostics.append(per_row)
 
@@ -448,6 +563,23 @@ async def _evaluate(
         "samples": len(rows) - len(skipped),
         "skipped": skipped,
         "warnings": warnings,
+        # 耗时只到"量级"这一级：它取决于当时的远端服务，不是检索算法的性质。
+        # 但少了它，"多救回一题"与"多花一倍时间"就没法一起判断。
+        "timings": {
+            m: {
+                "n": len(values),
+                "mean_ms": round(statistics.mean(values), 1) if values else None,
+                "p90_ms": (
+                    round(sorted(values)[min(int(len(values) * 0.9), len(values) - 1)], 1)
+                    if values
+                    else None
+                ),
+            }
+            for m, values in timings.items()
+        },
+        # 扩展没产出一律降级回原话。把这些题单独列出来，否则它们在均值里
+        # 与"没开扩展"毫无区别，读的人会以为扩展在这一题上也被检验过了。
+        "expand_fallbacks": expand_fallbacks,
         # 逐题证据：均值的来源。`--diagnostics` 把它落成 JSONL，
         # 让"哪道题被救回、哪道题被挤掉"可以事后核对，而不是只有一句结论。
         "diagnostics": diagnostics,
@@ -509,6 +641,7 @@ def run(
     snapshot_path: Path | None = None, refuse_path: Path | None = None,
     expand: bool = False, expand_rerank: bool = False,
     diagnostics_path: Path | None = None, expand_from: Path | None = None,
+    parallel: bool = False, rewrite_weight: float = 0.5,
 ) -> dict:
     services = build_services()
     try:
@@ -543,17 +676,29 @@ def run(
             expander = build_expander(services.settings, getattr(services, "llm", None))
         result = evaluate(
             services, rows, k, modes, snapshot_path, refuse_rows=refuse_rows,
-            expander=expander, expand_rerank=expand_rerank,
+            expander=expander, expand_rerank=expand_rerank, parallel=parallel,
+            rewrite_weight=rewrite_weight,
         )
         result["refuse_dataset"] = str(refuse_path) if refuse_rows else ""
         result["dataset"] = str(dataset_path)
         result["expanded"] = bool(expander is not None and expander.available)
         result["expand_source"] = str(expand_from) if expand_from is not None else ""
+        result["rewrite_weight"] = rewrite_weight if (parallel and result["expanded"]) else None
         # 扩展作用在哪一段，必须跟着数字走：只写在命令行参数里，
         # 报告读者会以为 rerank 那行的变化也是"召回变好"带来的。
-        result["expand_stage"] = (
-            ("rerank" if expand_rerank else "recall") if result["expanded"] else ""
-        )
+        # 三种形态互不兼容，所以是一个值而不是三个布尔：
+        #   recall          拼串（首版，已证伪）
+        #   recall-parallel 并行通道（原话独立保留）
+        #   rerank          连重排也读扩展串（实验 C）
+        if not result["expanded"]:
+            stage = ""
+        elif parallel:
+            stage = "recall-parallel"
+        elif expand_rerank:
+            stage = "rerank"
+        else:
+            stage = "recall"
+        result["expand_stage"] = stage
         # 数据集的身份与语料身份同等重要：`eval/dataset.jsonl` 这一个路径
         # 曾经先后对应过 30 题和 25 题两个版本，报告看不出来。
         result["dataset_sha"], result["dataset_rows"] = snapshot.dataset_digest(dataset_path)
@@ -623,13 +768,34 @@ def report(result: dict, k: int) -> str:
                 "口语问句先扩成「原话 + 术语」，重排也用扩展串。"
                 "此配置下 rerank 那行的变化同时包含“候选集变化”与“重排判断变化”。"
             )
+        elif stage == "recall-parallel":
+            weight = result.get("rewrite_weight")
+            lines.append(
+                "- **召回阶段使用了并行改写通道**：原话仍独立查一路，改写串各查一路，"
+                f"按权重 {weight}（原话恒为 1.0）融合。"
+                "**原话通道的排序与候选一条都没被改动**，改写只能往池子里加东西；"
+                "因此 `hybrid`/`dense` 等基线行与不改写时逐字一致，"
+                "只有 `*_parallel` 两行反映改写的净效果。重排仍读原话。"
+            )
         else:
             lines.append(
                 "- **召回阶段使用了 LLM 术语扩展**：口语问句先扩成「原话 + 术语」再检索；"
                 "**重排仍读原话**，因此 rerank 那行的差值只反映“候选集变化”。"
             )
+    elif any(str(m).endswith("_parallel") for m in modes):
+        lines.append(
+            "- 本次跑了 `*_parallel` 两行但**没有提供改写串**：它们与对应的 "
+            "`hybrid`/`rerank` 数值应当完全一致，作用只是验证并行通路本身没走岔。"
+        )
     if result.get("diagnostics_path"):
         lines.append(f"- 逐题证据：`{result['diagnostics_path']}`")
+    fallbacks = result.get("expand_fallbacks") or []
+    if fallbacks:
+        lines.append(
+            f"- **{len(fallbacks)} 题扩展失败、已降级回原话**（{ '、'.join(fallbacks[:3]) }"
+            f"{'…' if len(fallbacks) > 3 else ''}）：这些题在扩展组里与不扩展时完全一样，"
+            "不能算作\"扩展无效\"的证据。"
+        )
     if result.get("expand_source"):
         lines.append(
             f"- 扩展串来自 `{result['expand_source']}`（固定复用，未重新调用 LLM）"
@@ -648,19 +814,27 @@ def report(result: dict, k: int) -> str:
         )
     lines += [
         "",
-        f"| 召回方式 | 有效样本 | Recall@{k} | MRR | nDCG@{k} |",
-        "|---|---|---|---|---|",
+        f"| 召回方式 | 有效样本 | Recall@{k} | MRR | nDCG@{k} | 平均耗时 |",
+        "|---|---|---|---|---|---|",
     ]
+    timings = result.get("timings") or {}
     for mode, values in modes.items():
+        ms = (timings.get(mode) or {}).get("mean_ms")
+        cell = f"{ms:.0f} ms" if ms is not None else "-"
         if not values["recall"]:
-            lines.append(f"| {mode} | 0 | - | - | - |")
+            lines.append(f"| {mode} | 0 | - | - | - | {cell} |")
             continue
         lines.append(
             f"| {mode} | {evaluated.get(mode, 0)} | "
             f"{statistics.mean(values['recall']):.3f} | "
             f"{statistics.mean(values['mrr']):.3f} | "
-            f"{statistics.mean(values['ndcg']):.3f} |"
+            f"{statistics.mean(values['ndcg']):.3f} | {cell} |"
         )
+    lines.append(
+        "\n> 「平均耗时」是每题端到端（含远程 embedding 与重排），"
+        "只反映**同一份报告内**的相对关系：多一路改写就多一次 embedding 往返，"
+        "跨天比较没有意义。"
+    )
     # 样本数不一致时，横向比较不严谨——必须写出来，而不是靠读者自己数
     if len(set(evaluated.values())) > 1:
         lines.append(
@@ -708,6 +882,20 @@ def report(result: dict, k: int) -> str:
         hybrid_mean, rerank_mean = _mean("hybrid"), _mean("rerank")
         if hybrid_mean is not None and rerank_mean is not None:
             lines.append(f"开重排相对 hybrid：Recall@{k} {rerank_mean - hybrid_mean:+.3f}")
+
+    # 并行改写通道的净效果，必须**贴着同名基线**报，不能报"相对 dense"：
+    # 与 dense 比会把"融合"和"改写"两个变量一起算进去，而那正是第三十八轮
+    # 读错 0.400→0.467 的方式。
+    for label, base, treated in (
+        ("并行改写（融合候选）", "hybrid", "hybrid_parallel"),
+        ("并行改写（融合 + 重排）", "rerank", "rerank_parallel"),
+    ):
+        base_mean, treated_mean = _mean(base), _mean(treated)
+        if base_mean is None or treated_mean is None:
+            continue
+        lines.append(
+            f"{label}相对 {base}：Recall@{k} {treated_mean - base_mean:+.3f}"
+        )
     refuse = result.get("refuse") or {}
     detail = result.get("refuse_detail") or []
     if detail:
@@ -771,14 +959,25 @@ def _report_path(result: dict, dataset_path: Path) -> Path:
     tag = (corpus.get("ids_sha") or "nosnapshot")[:8]
     # 带术语扩展与不带是两种不同的检索配置，必须分开命名：
     # 否则 `--expand` 的对照实验会覆盖掉同一语料、同一数据集的基线报告。
-    # "只扩召回"与"连重排一起扩"又是两个实验，报告也不能同名。
+    # "只扩召回"「并行通道」与"连重排一起扩"是三个实验，报告也不能同名。
     stage = result.get("expand_stage") or ""
+    suffix = ""
     if stage == "rerank":
         suffix = "-expand-rerank"
+    elif stage == "recall-parallel":
+        suffix = "-expand-parallel"
+        # 权重是并行通道的**自变量**，不同权重的数字不能落在同一个文件里：
+        # 覆盖之后只剩最后一组，"调过权重"这件事就再也查不出来了。
+        weight = result.get("rewrite_weight")
+        if weight is not None:
+            suffix += f"-w{weight:g}".replace(".", "")
     elif stage:
         suffix = "-expand"
-    else:
-        suffix = ""
+    # `hybrid_parallel` 两行在**没开扩展**时与 baseline 数值相同，但报告的坐标系
+    # （跑的哪几行）不一样，也不能互相覆盖——所以按"跑了哪些行"再补一个后缀。
+    parallel = any(str(m).endswith("_parallel") for m in (result.get("modes") or {}))
+    if parallel and stage != "recall-parallel":
+        suffix += "-parallel"
     return ROOT / "eval" / "reports" / f"{dataset_path.stem}-{stamp}-{tag}{suffix}.md"
 
 
@@ -814,6 +1013,20 @@ def main() -> int:
         help="复用一份诊断 JSONL 里的扩展串（不调 LLM；用于让多次实验共用同一组扩展词）",
     )
     parser.add_argument(
+        "--expand-parallel",
+        action="store_true",
+        help=(
+            "把扩展串当**独立通道**：原话仍独立检索，改写串各查一路后加权融合"
+            "（实验 B 的正确形态；需要同时给 --expand 或 --expand-from）"
+        ),
+    )
+    parser.add_argument(
+        "--rewrite-weight",
+        type=float,
+        default=0.5,
+        help="并行改写通道的融合权重（原话恒为 1.0），取值范围 (0, 1]",
+    )
+    parser.add_argument(
         "--diagnostics",
         default="",
         help="把逐题结果（扩展串、各召回方式的 gold 排名与 top-k）写成 JSONL",
@@ -825,6 +1038,25 @@ def main() -> int:
             "--expand-rerank 需要同时给 --expand（或用 --expand-from 复用扩展串）",
             file=sys.stderr,
         )
+        return 2
+    # 并行模式下重排**恒读原话**——那是实验 B 的定义。允许两者同给会让报告无法
+    # 说明 rerank 那一行到底读的是哪个串，不如直接拒绝。
+    if args.expand_parallel and args.expand_rerank:
+        print(
+            "--expand-parallel 与 --expand-rerank 互斥："
+            "并行模式定义为“改写只改召回，重排读原话”",
+            file=sys.stderr,
+        )
+        return 2
+    if args.expand_parallel and not (args.expand or args.expand_from):
+        print(
+            "--expand-parallel 需要同时给 --expand（或用 --expand-from 复用扩展串），"
+            "否则没有改写串，并行模式与基线完全相同",
+            file=sys.stderr,
+        )
+        return 2
+    if not 0.0 < args.rewrite_weight <= 1.0:
+        print("--rewrite-weight 必须在 (0, 1] 内", file=sys.stderr)
         return 2
 
     if args.top_k < 1:
@@ -855,6 +1087,8 @@ def main() -> int:
             expand_rerank=args.expand_rerank,
             diagnostics_path=Path(args.diagnostics) if args.diagnostics else None,
             expand_from=Path(args.expand_from) if args.expand_from else None,
+            parallel=args.expand_parallel,
+            rewrite_weight=args.rewrite_weight,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

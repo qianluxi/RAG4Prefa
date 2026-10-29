@@ -27,6 +27,25 @@ from .filters import describe, parse_filter
 from .prompts import SYSTEM_ANSWER, build_answer_prompt
 
 
+def rrf_multi(
+    runs: Sequence[tuple[Sequence[tuple[str, float]], float]],
+    *,
+    k: int = 60,
+) -> dict[str, float]:
+    """带权重的多通道 RRF：每个 (排序列表, 权重) 按名次累加 `weight/(k+rank+1)`。
+
+    权重不是"顺手加的调参旋钮"，它是并行检索能不能成立的关键。同权（改写通道与
+    原话通道都是 1.0）意味着改写词与原话平起平坐，干扰词照样能把正确片段顶下去——
+    那就是首版「原话 + 术语拼成一个串」的老问题换了个写法。原话通道必须更重，
+    改写只负责**补充**候选，不负责重排既有候选。
+    """
+    scores: dict[str, float] = {}
+    for ranked, weight in runs:
+        for rank, (chunk_id, _) in enumerate(ranked):
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (k + rank + 1)
+    return scores
+
+
 def rrf(
     dense: Sequence[tuple[str, float]],
     sparse: Sequence[tuple[str, float]],
@@ -34,11 +53,7 @@ def rrf(
     k: int = 60,
 ) -> dict[str, float]:
     """Reciprocal Rank Fusion：只用名次，不用各自分数量纲，天然免疫"分数不可比"。"""
-    scores: dict[str, float] = {}
-    for ranked in (dense, sparse):
-        for rank, (chunk_id, _) in enumerate(ranked):
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
-    return scores
+    return rrf_multi(((dense, 1.0), (sparse, 1.0)), k=k)
 
 
 def _to_hits(conn: sqlite3.Connection, scores: dict[str, float], limit: int) -> list[Hit]:
@@ -86,6 +101,8 @@ async def retrieve(
     recall_k: int | None = None,
     candidate_k: int | None = None,
     expander: QueryExpander | None = None,
+    rewrites: Sequence[str] = (),
+    rewrite_weight: float = 0.5,
 ) -> tuple[list[Hit], Filter, dict[str, float]]:
     """返回 (融合后的候选, 实际生效的筛选条件, 各阶段耗时)。
 
@@ -98,7 +115,27 @@ async def retrieve(
     25 条。生产问答只取前 top_k 条，少一点无所谓；但评估里 `hybrid` 与 `rerank` 都
     声明"50 深的池子"，实际是 25，两行数字的差值就不再只等于"有没有重排"这一个变量
     （2026-10-28 专家复审 P1）。`candidate_k=None` 保留旧行为，生产链路不受影响。
+
+    查询有**两种**用法，互斥：
+
+    - `expander`：把口语问句拼成「原话 + 术语」一个串再查（首版做法）；
+    - `rewrites`：原话仍然独立查一路，改写串各自查一路，结果按权重融合。
+
+    后者才是"扩展不改变原有排序"的正解。拼串的问题不是"丢了原话"——原话还在串里，
+    但整串文本变了，向量与 BM25 的排序都跟着变，原来命中的片段可能被新加的干扰词
+    挤出去（实测 0.400→0.467，5 道目标题一道没救回）。把它当独立通道，原话那一路的
+    名次与候选就一条都不会动，改写顶多往池子里加东西。
     """
+    # 形参校验放在最前面：两个都用上不会报错、只会算出一组没人能解释的数，
+    # 这种"能跑但无意义"的组合必须在花钱调接口之前就拒绝。
+    if rewrites and expander is not None and expander.available:
+        raise ValueError(
+            "rewrites 与 expander 不能同时给：前者是并行通道（原话独立保留），"
+            "后者是把术语拼进原话。两种形态混在一起，结果无法归因。"
+        )
+    if not 0.0 < rewrite_weight <= 1.0:
+        raise ValueError(f"rewrite_weight 必须在 (0, 1] 内，收到 {rewrite_weight}")
+
     recall = recall_k or settings.recall_k
     pool = candidate_k if candidate_k is not None else max(recall // 2, settings.top_k * 3)
     timings: dict[str, float] = {}
@@ -115,46 +152,81 @@ async def retrieve(
         conn, embedder.model, store.dim, store_count=store.count()
     )
 
-    # 查询术语扩展：把口语问句扩成「原话 + 术语」，喂给 BM25 与向量两个通道。
-    # 这是可选项——没传 expander（或 expander 不可用）时，query 就是原话，行为与
-    # 加扩展之前完全一致。扩展失败在 expander 内部已降级回原话。
-    #
-    # 但"保留原话"只保证"扩不出来时退回原话"，**不保证"扩出来不会更差"**：
-    # 拼接改变的是整串文本，向量与 BM25 的排序都会跟着变，原来命中的片段也可能被
-    # 新加的干扰词挤出去。首版对照实验正是这样拿到 0.400→0.467、却一道目标题都没
-    # 救回（HANDOFF 第三十八轮）。要"原来的排序一定不变"，只能把原话当作**独立通道**
-    # 并行检索再融合，而不是拼成一个串。
-    expanded = question
+    primary = question
     if expander is not None and expander.available:
         t0 = time.perf_counter()
-        expanded = await asyncio.to_thread(expander.expand, question)
+        primary = await asyncio.to_thread(expander.expand, question)
         timings["expand_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
+    # 通道表：主查询恒重 1.0，改写串各按 rewrite_weight。
+    # 空串与重复串不能算一个通道——多算一次就是给它加权，而且是悄悄加权。
+    channels: list[tuple[str, float]] = [(primary, 1.0)]
+    seen = {primary}
+    for item in rewrites:
+        text = (item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            channels.append((text, rewrite_weight))
+
     t0 = time.perf_counter()
-    vector = await asyncio.to_thread(embedder.embed_one, expanded)
+    # **三处检索都必须串行，一个 gather 也不能用。** 这不是保守，是这条链路上
+    # 所有读路径共用**一条** sqlite 连接：
+    #
+    # - `Embedder.embed_one` 会读写 `embed_cache`（SELECT + INSERT OR REPLACE + commit）；
+    # - `NumpyStore.search` 先 `_refresh_if_stale` 读代次与归档行；
+    # - `repo.fts_search` 本身就是 SQL。
+    #
+    # 同一时刻多线程碰同一个 connection 会抛
+    # `InterfaceError: bad parameter or other API misuse`；写路径并发还可能悄悄丢一次
+    # commit。实测代价很直观：口语集 15 题里随机中 1 题，报告上只表现为
+    # "`hybrid_parallel` 有效样本 14/15"——均值照算，读者根本不会注意到。
+    #
+    # 于是"并行改写"这个名字说的是**候选来源并行**，不是执行并行：多一路改写就多一次
+    # 远程 embedding 往返，延迟线性增长。这个成本必须记在结论里（延迟是这条路
+    # 能不能上生产的门槛），而不是假装并发掉了。
+    vectors = [await asyncio.to_thread(embedder.embed_one, text) for text, _ in channels]
     timings["embed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     _ensure_same_index(conn, version, "计算查询向量期间")
 
     t0 = time.perf_counter()
-    dense = await asyncio.to_thread(lambda: store.search(vector, limit=recall, filt=filt))
+    dense_runs: list[Sequence[tuple[str, float]]] = []
+    for vec in vectors:
+        dense_runs.append(
+            await asyncio.to_thread(lambda v=vec: store.search(v, limit=recall, filt=filt))
+        )
     timings["dense_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     # 切换也可能正好落在 search 里面：那条路径已经通过了上一次确认，
     # 结果里却可能混着两代索引的分数，只能丢掉重来。
     _ensure_same_index(conn, version, "检索期间")
 
     t0 = time.perf_counter()
-    sparse_query = f"{expanded} {filt.keyword}" if filt.keyword else expanded
-    sparse = await asyncio.to_thread(
-        lambda: repo.fts_search(conn, sparse_query, limit=recall, filt=filt)
-    )
+    sparse_runs: list[Sequence[tuple[str, float]]] = []
+    for text, _ in channels:
+        sparse_query = f"{text} {filt.keyword}" if filt.keyword else text
+        # BM25 走同一条 sqlite 连接，因此串行：并发读写同一个 connection 在 WAL 下
+        # 多半能跑，但"多半"不是可以把正确性押上去的理由。
+        sparse_runs.append(
+            await asyncio.to_thread(
+                lambda sq=sparse_query: repo.fts_search(conn, sq, limit=recall, filt=filt)
+            )
+        )
     timings["sparse_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
-    fused = rrf(dense, sparse, k=settings.rrf_k)
+    runs: list[tuple[Sequence[tuple[str, float]], float]] = []
+    # strict=True：这三个列表都由 `channels` 派生，长度不等就是代码写错了。
+    # 默认的静默截断会把它变成一个"少算了一路通道"的分数表，算得出来但不对。
+    for (_, weight), dense_run, sparse_run in zip(
+        channels, dense_runs, sparse_runs, strict=True
+    ):
+        runs.append((dense_run, weight))
+        runs.append((sparse_run, weight))
+    fused = rrf_multi(runs, k=settings.rrf_k)
     hits = _to_hits(conn, fused, limit=pool)
 
-    # 把两路原始分补回结果，方便前端/评估观察召回来源
-    dense_map = dict(dense)
-    sparse_map = dict(sparse)
+    # 原始分按**主通道**登记，方便前端/评估观察召回来源。改写通道的分数只参与融合，
+    # 不覆盖这里的语义——"这条是不是原话召回的"才是这一栏要回答的问题。
+    dense_map = dict(dense_runs[0])
+    sparse_map = dict(sparse_runs[0])
     for hit in hits:
         hit.dense_score = dense_map.get(hit.chunk_id)
         hit.sparse_score = sparse_map.get(hit.chunk_id)
@@ -261,16 +333,29 @@ async def search(
     reranker: Reranker | None = None,
     use_rerank: bool | None = None,
     expander: QueryExpander | None = None,
+    rewrites: Sequence[str] = (),
+    rewrite_weight: float = 0.5,
 ) -> tuple[list[Hit], Filter, dict[str, float]]:
     """检索（可选重排），返回前 `top_k` 条。
 
     **顺序铁律：先重排、后截断。** 先截断再重排等于让重排在一小撮候选里挑，
     调用记录、分数、日志一样不少，召回却一点不变好——这种"看起来生效"的写法
     比不重排更糟，因为它会让人以为知道了重排的效果。
+
+    `rewrites` 是并行改写通道（见 `retrieve`），默认空。**生产链路不注入**：
+    首版扩展实验是负结果，要开必须由调用方显式传，并自行承担多一路 embedding 的延迟。
     """
     limit = top_k or settings.top_k
     hits, effective, timings = await retrieve(
-        conn, store, embedder, settings, question=question, filt=filt, expander=expander
+        conn,
+        store,
+        embedder,
+        settings,
+        question=question,
+        filt=filt,
+        expander=expander,
+        rewrites=rewrites,
+        rewrite_weight=rewrite_weight,
     )
     do_rerank = (
         rerank_available(reranker) if use_rerank is None else use_rerank
