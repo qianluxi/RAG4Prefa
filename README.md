@@ -336,10 +336,23 @@ id 就全换，旧标注会静默失效（评估照样跑完，只是 Recall 莫
 `snapshot.locate_corpus_file()`（原名两份时它报错而不是挑一份），否则语料一分类，整套用例就
 整体静默跳过（2026-10-28 实际踩到）。
 
-报告头部现在固定包含：坐标系（模型/维度/chunk 参数/`recall_k`/`rrf_k`/重排）、语料快照与
-`ids_sha`、数据集哈希与题数、生成时间、代码提交与工作区状态。**这六项任一不同，前后两份就不可比。**
-`--save` 按 `<数据集>-<日期>-<ids_sha 前 8 位>.md` 命名，同名即同语料。历史报告在
-`eval/reports/archive/`，保留是为了留下"当时的结论是什么"，不再当基线。
+报告头部现在固定包含：坐标系（模型/维度/chunk 参数/`recall_k`/`rrf_k`/融合方式/重排）、语料快照与
+`ids_sha`、数据集哈希与题数、生成时间、代码提交、**源码指纹**、工作区状态。**这些项任一不同，
+前后两份就不可比。**
+
+源码指纹（`源码 sha 9cb5bf5ad67c（39 个文件）`）是对 `rag4prefa/**` 与 `scripts/eval.py` 里
+`.py`/`.json` 的**内容哈希**，不是 `git diff`。理由很实际：报告最常在"改完还没提交"的时候跑，
+那时 `commit` 是猜的；而 `diff` 只说"跟某个提交比变过"、不说"变成什么"，两份都标着"有改动"时
+救不了你。内容哈希可判等——**同 `src_sha` ⇒ 影响数字的源码逐字节相同**。词表的 `.json` 也在内，
+因为文件名里只有词表的名字，原地改几条映射时名字一个字都不变。想复算报告上那个 sha：
+
+```bash
+python scripts/eval.py --print-fingerprint   # 打印 commit / src_sha / 脏文件
+```
+
+`--save` 按 `<数据集>-<日期>-<ids_sha 前 8 位>-fusion{rrf|zscore}…md` 命名，同名即同语料同配置。
+历史报告在 `eval/reports/archive/`，保留是为了留下"当时的结论是什么"，不再当基线；其中
+`*.as-of-<提交>-dirty.*` 是"代码身份缺失"的批次（2026-10-29 从干净提交重跑后归档）。
 
 CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同一组命令：`ruff check rag4prefa tests scripts`
 → `pytest -q`。全部离线，不需要任何 Key。
