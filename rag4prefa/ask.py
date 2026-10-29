@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from . import consistency, repo
+from . import consistency, repo, sufficiency
 from .adapters.embed import Embedder
 from .adapters.llm import LLM
 from .adapters.query_expand import QueryExpander
@@ -421,6 +421,19 @@ async def stream_answer(
             rerank_error = f"{type(exc).__name__}: {exc}"
     final = hits[:top_k]
 
+    # 证据闸门：判据与门槛见 `sufficiency.judge`。`warn` 只写进 meta，回答照旧——
+    # 那是在生产上量误拒率用的形态，不是"先开着看看"的借口：默认 on 是因为
+    # 这条判据只在能说出具体理由时才动手（地域/空结果/分数地板）。
+    verdict = None
+    if settings.refuse_mode != "off":
+        verdict = sufficiency.judge(
+            conn,
+            question,
+            final,
+            min_rerank=settings.refuse_min_rerank,
+            min_dense=settings.refuse_min_dense,
+        )
+
     yield (
         "meta",
         {
@@ -433,12 +446,23 @@ async def stream_answer(
             # 在界面上无从解释；而这一层唯一的承诺就是可审计。
             "terms": terms,
             "term_entries": term_map.explain(question) if term_map is not None else [],
+            # 拒答判断全过程（含**没**触发的信号），否则"为什么这次没拒"无从复盘。
+            "refusal": verdict.as_dict() if verdict is not None else None,
+            "refuse_mode": settings.refuse_mode,
         },
     )
 
     if not final:
         yield "citations", []
         yield "token", {"text": "在当前检索范围内没有找到相关资料。可以放宽项目或年份条件后重试。"}
+        yield "done", {"elapsed_ms": round((time.perf_counter() - started) * 1000)}
+        return
+
+    if verdict is not None and verdict.refuse and settings.refuse_mode == "on":
+        # 不把候选送进大模型。候选本身仍然回传给前端（`citations` 为空但 meta 有
+        # `candidates` 数），因为"哪些片段被当成了证据"是排查这类问题的第一手材料。
+        yield "citations", []
+        yield "token", {"text": sufficiency.explain(verdict)}
         yield "done", {"elapsed_ms": round((time.perf_counter() - started) * 1000)}
         return
 

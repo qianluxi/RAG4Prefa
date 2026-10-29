@@ -534,9 +534,34 @@ def fts_search(
     return [(r["chunk_id"], -float(r["rank"])) for r in rows]
 
 
+def documents_mentioning(conn: sqlite3.Connection, needle: str) -> int:
+    """有多少份文档的**文件名**里出现 `needle`。
+
+    只服务一类判断：「库里有没有这个地域/这个主题的资料」。判据是文件名而不是正文，
+    因为正文里出现地名往往是顺带一提——参编单位名单、企业简介（"承建了北京 APEC
+    峰会"）、区域规划里的"接轨上海"。实测本库 75 份文件、2560 个片段：正文提到"北京"
+    的片段有 17 条，但没有一份文件是北京的资料。用正文判断，库外问题会被当成"库里有"。
+
+    用 `instr` 而不是 `LIKE`：`LIKE` 的 `%`/`_` 会被当成通配符，而文件名里带下划线
+    是常态（`03_浙江省…`），算错的方向还是"看起来有"。
+    """
+    if not needle:
+        return 0
+    row = conn.execute(
+        "SELECT COUNT(*) FROM documents WHERE instr(filename, ?) > 0", (needle,)
+    ).fetchone()
+    return int(row[0])
+
+
+def chunks_mentioning(conn: sqlite3.Connection, needle: str) -> int:
+    """有多少个片段正文里出现 `needle`（只给诊断用，不参与拒答判断）。"""
+    if not needle:
+        return 0
+    row = conn.execute("SELECT COUNT(*) FROM chunks WHERE instr(text, ?) > 0", (needle,)).fetchone()
+    return int(row[0])
+
+
 # ── 向量归档（与后端无关的持久记录）────────────────────────
-
-
 def archive_vectors(
     conn: sqlite3.Connection,
     rows: Iterable[tuple[str, str, str, int | None, int, str, bytes]],

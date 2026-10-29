@@ -550,6 +550,15 @@ class Services:
                 "weight": self.settings.term_rewrite_weight,
                 "error": self.term_map_error,
             },
+            # 证据闸门：模式与两个门槛。
+            #
+            # 门槛报出来是因为"开着但门槛是 0"等于没开——`mode=on` 只说明代码会跑这段，
+            # 不说明它真的会拒任何东西。排查"为什么库外问题照样回答了"时，第一眼看这里。
+            "refusal": {
+                "mode": self.settings.refuse_mode,
+                "min_rerank": self.settings.refuse_min_rerank,
+                "min_dense": self.settings.refuse_min_dense,
+            },
             # 关掉回落时，不带头里的 Key 就调不了检索与问答。前端要据此把"用自己的 Key"
             # 从"可选"改成"必填"，而不是让用户点一次失败一次。
             "server_key_fallback": self.settings.allow_server_key_fallback,

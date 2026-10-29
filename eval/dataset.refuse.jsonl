@@ -1,10 +1,29 @@
 // 库外集：这些问题在库里**没有**对应语料。
-// 当前系统没有拒答阈值，它必然会被强行召回 top-k——本组量的就是「该说不知道时说了什么」。
-// 不计 Recall（没有 gold），单独统计召回非空率与最高分。
-// 第 6 条来自口语题 #10：语料只有「怎么判断空气质量合格」，没有「等多少天」，原问法用它测 Recall 是错的。
-{"question": "上海对新建民用建筑的装配式实施范围是怎么规定的？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
-{"question": "北京市装配化装修的补贴标准是多少？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
-{"question": "日本 SI 住宅体系的部品化率要求是多少？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
-{"question": "江苏省装配式建筑评价标准的装配率怎么算？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
-{"question": "深圳市装配化装修试点企业有哪些？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
-{"question": "装修完多久能住进去？", "expect": "refuse", "filter": {"projects": ["装配式内装"]}}
+// 当前系统不给库外问题拒答时，它必然被强行召回 top-k——本组量的就是「该说不知道时说了什么」。
+// 不计 Recall（没有 gold），单独统计召回非空率、最高分，以及证据闸门的拒答率。
+//
+// 四类，各自治的是不同的失败（2026-10-29 按专家复审要求扩写）：
+//   geo           跨地域：问的是别的省市/境外，语料只有浙江。
+//   time          跨时间：问的是语料年份之前的文件。
+//   missing_topic 库里没有这个主题：资质、培训、碳排放这类，语料里没有对应章节。
+//   near_topic    主题相近但答不了：语料有相关章节，缺的正是被问的那个事实。
+// 分类不是为了好看：闸门对不同类的效力差得很远（地域类有确定性判据，主题类没有），
+// 混成一个总数会把这个差别藏起来。
+//
+// 「装修完多久能住进去」来自口语题 #10：语料只有「怎么判断空气质量合格」，
+// 没有「等多少天」，原问法用它测 Recall 是错的。
+{"question": "上海对新建民用建筑的装配式实施范围是怎么规定的？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
+{"question": "北京市装配化装修的补贴标准是多少？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
+{"question": "日本 SI 住宅体系的部品化率要求是多少？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
+{"question": "江苏省装配式建筑评价标准的装配率怎么算？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
+{"question": "深圳市装配化装修试点企业有哪些？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
+{"question": "广东省对装配式装修有哪些补贴？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
+{"question": "成都市装配式装修的验收规定是什么？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
+{"question": "2019年浙江省装配式装修的政策要求是什么？", "expect": "refuse", "category": "time", "filter": {"projects": ["装配式内装"]}}
+{"question": "2020年发布的装配式内装修标准有哪些变化？", "expect": "refuse", "category": "time", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配式装修的消防验收由哪个部门负责？", "expect": "refuse", "category": "missing_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配式装修工人的培训证书怎么考？", "expect": "refuse", "category": "missing_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配式装修的碳排放怎么核算？", "expect": "refuse", "category": "missing_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装修完多久能住进去？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配式装修比传统装修便宜多少？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "浙江装配式装修试点一共完成了多少万平方米？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}

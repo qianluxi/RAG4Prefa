@@ -14,7 +14,7 @@ from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import admin, ask, concurrency, consistency, ingest, repo
+from . import admin, ask, concurrency, consistency, ingest, repo, sufficiency
 from .adapters.embed import Embedder, EmbeddingError
 from .adapters.llm import LLM, LLMError
 from .adapters.ocr import VlmOcr
@@ -743,9 +743,21 @@ def create_app(services: Services | None = None) -> FastAPI:
             )
         except (EmbeddingError, LLMError, IndexMismatch) as exc:
             raise HTTPException(503, str(exc)) from exc
+        verdict = None
+        if services.settings.refuse_mode != "off":
+            # 检索接口不拒答（用户要的是"库里最像的几条"），但把判断一并带回去：
+            # 前端据此提示"资料可能不足"，排查时也不必再跑一遍问答才知道结论。
+            verdict = sufficiency.judge(
+                services.conn,
+                req.question,
+                hits,
+                min_rerank=services.settings.refuse_min_rerank,
+                min_dense=services.settings.refuse_min_dense,
+            )
         return {
             "filter": applied.model_dump(exclude_none=True),
             "timings": timings,
+            "refusal": verdict.as_dict() if verdict is not None else None,
             "results": [h.model_dump() for h in hits],
         }
 

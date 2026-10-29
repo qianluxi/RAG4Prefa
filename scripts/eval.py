@@ -37,7 +37,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rag4prefa import ask, consistency, repo, snapshot  # noqa: E402
+from rag4prefa import ask, consistency, repo, snapshot, sufficiency  # noqa: E402
 from rag4prefa.adapters.query_expand import build_expander  # noqa: E402
 from rag4prefa.adapters.term_map import load_term_map  # noqa: E402
 from rag4prefa.domain import Filter, Hit  # noqa: E402
@@ -533,7 +533,15 @@ async def _evaluate(
     }
     # 库外问题单独记账：它们没有 gold，进不了 Recall；而"召回到了什么"本身是结论——
     # 系统当前没有拒答阈值，任何问题都会拿到 top-k，这组题量的就是这件事。
-    refuse: dict[str, dict] = {m: {"n": 0, "nonempty": 0, "top1": []} for m in modes}
+    # 库外集除了"召回到什么"，还要记"闸门拦下多少"。
+    # `by_category` 分开记是因为闸门对不同类效力差得很远：地域类有确定性判据，
+    # 主题缺失类没有。混成一个总数会把这个差别藏起来。
+    refuse: dict[str, dict] = {
+        m: {"n": 0, "nonempty": 0, "top1": [], "refused": 0, "by_category": {}} for m in modes
+    }
+    # 库内题被闸门拒掉的数量。误拒是这一层的主要风险：拒掉一道本来答得出的题，
+    # 代价比"库外题照答"更大——用户问的东西明明在库里。
+    false_refuse: dict[str, int] = {m: 0 for m in modes}
     refuse_detail: list[dict] = []
     # 每种召回方式实际评估了多少题，必须各自记账：某一方法在部分样本上失败时，
     # 用"总有效题数"代表所有方法，会让不同方法的均值建立在不同题目集合上，不可比。
@@ -641,6 +649,14 @@ async def _evaluate(
             # 逐题留证：只报均值时，"涨了 +0.067 到底是救回了哪道题"无从回答。
             # 记第一条 gold 的排名与 top-k 的 id 列表，够回答"是不是这道题"。
             first = next((i for i, r in enumerate(rels, start=1) if r > 0), None)
+            if gold:
+                gate = sufficiency.judge(
+                    services.conn, question, hits[:k],
+                    min_rerank=services.settings.refuse_min_rerank,
+                    min_dense=services.settings.refuse_min_dense,
+                )
+                if gate.refuse:
+                    false_refuse[mode] += 1
             per_row["modes"][mode] = {
                 "first_gold_rank": first,
                 "hits": [h.chunk_id for h in hits[:k]],
@@ -679,12 +695,31 @@ async def _evaluate(
                     "title": hits[0].title,
                     "score": hits[0].score,
                 }
-        refuse_detail.append({"question": question, "tops": tops})
+            gate = sufficiency.judge(
+                services.conn, question, hits[:k],
+                min_rerank=services.settings.refuse_min_rerank,
+                min_dense=services.settings.refuse_min_dense,
+            )
+            category = str(row.get("category") or "未分类")
+            slot = refuse[mode]["by_category"].setdefault(category, {"n": 0, "refused": 0})
+            slot["n"] += 1
+            if gate.refuse:
+                refuse[mode]["refused"] += 1
+                slot["refused"] += 1
+            tops[f"{mode}#refusal"] = {
+                "refuse": gate.refuse,
+                "reasons": gate.reasons,
+                "signals": [x.name for x in gate.signals],
+            }
+        refuse_detail.append(
+            {"question": question, "category": row.get("category") or "未分类", "tops": tops}
+        )
 
     return {
         "modes": metrics,
         "evaluated": evaluated,
         "refuse": refuse,
+        "false_refuse": false_refuse,
         "refuse_detail": refuse_detail,
         "samples": len(rows) - len(skipped),
         "skipped": skipped,
@@ -1116,45 +1151,79 @@ def report(result: dict, k: int) -> str:
         )
     refuse = result.get("refuse") or {}
     detail = result.get("refuse_detail") or []
+    false_refuse = result.get("false_refuse") or {}
     if detail:
         lines.append("")
         lines.append("## 库外问题（语料里没有答案）")
         lines.append("")
-        lines.append("| 召回方式 | 题数 | 召回非空 | top1 分数 |")
-        lines.append("|---|---|---|---|")
+        lines.append("| 召回方式 | 题数 | 召回非空 | top1 均分 | 闸门拒答 | 分类别（拒/题） |")
+        lines.append("|---|---|---|---|---|---|")
         for mode, stat in refuse.items():
             total = stat.get("n") or 0
             if not total:
-                lines.append(f"| {mode} | 0 | - | - |")
+                lines.append(f"| {mode} | 0 | - | - | - | - |")
                 continue
             mean = statistics.mean(stat["top1"]) if stat["top1"] else None
             score = f"{mean:.3f}" if mean is not None else "-"
-            lines.append(f"| {mode} | {total} | {stat['nonempty']}/{total} | {score} |")
+            by_cat = stat.get("by_category") or {}
+            cats = " · ".join(
+                f"{name} {slot['refused']}/{slot['n']}" for name, slot in sorted(by_cat.items())
+            )
+            lines.append(
+                f"| {mode} | {total} | {stat['nonempty']}/{total} | {score} | "
+                f"{stat.get('refused', 0)}/{total} | {cats} |"
+            )
         lines.append("")
         lines.append(
-            "> 这组问题在语料里**没有**对应内容。当前系统没有拒答阈值：任何问题都会返回 top-k，"
-            "所以「召回非空 100%」说明的不是检索好，而是它不会说「不知道」。"
-            "这组数字是课题方向①的起点，不是这一版的缺陷。"
+            "> 两列是**两件事**：召回非空说明它总能找到「最像的一条」（top1 分数见下），"
+            "闸门拒答说明它知道自己没有。加这一层之前只有前者。"
+        )
+        lines.append("")
+        lines.append(
+            "> 分类别一栏才是这一层真正的形状：地域类有确定性判据（库里有没有关于它的文件），"
+            "主题缺失类没有——判「这段话是否支持这个结论」需要语义蕴含，规则做不到。"
+            "把两类混成一个总数，等于用地域类的成绩替主题类背书。"
         )
         # 分数不是一个尺度：余弦 ∈ [0,1]、BM25 无上界、RRF 只有几十分之一。
         # 不写这句，读者会对着一张表把 16.271 与 0.032 当成"BM25 更有信心"。
         lines.append("")
         lines.append(
             "> top1 分数**量纲不同**：dense 是余弦相似度、sparse 是 BM25 原始分、"
-            "hybrid/rerank 是 RRF 融合分。只能在同一行内比较题目之间，"
+            "hybrid 是融合分（RRF 或 zscore 合成）、rerank 是重排分。只能在同一行内比较题目之间，"
             "不能跨行比高低——BM25 的 16 分不代表它比余弦 0.03 更有把握。"
         )
         lines.append("")
-        pick = "hybrid" if "hybrid" in refuse else next(iter(refuse), "")
-        lines.append(f"逐题 top1（按 {pick}）：")
+
+        gate_mode = "rerank" if "rerank" in refuse else next(iter(refuse), "")
+        if false_refuse:
+            lines.append("### 误拒（库内题被闸门挡下）")
+            lines.append("")
+            lines.append("| 召回方式 | 有效题数 | 误拒 |")
+            lines.append("|---|---|---|")
+            for mode, count in false_refuse.items():
+                total = (result.get("evaluated") or {}).get(mode) or 0
+                lines.append(f"| {mode} | {total} | {count} |")
+            lines.append("")
+            lines.append(
+                "> 误拒比漏拒更贵：用户问的东西明明在库里。上面这张表只要不是 0，"
+                "就该先看是哪几道题、闸门报了哪条理由，再决定动门槛还是动判据。"
+            )
+            lines.append("")
+
+        lines.append(f"逐题（闸门按 {gate_mode}）：")
         for item in detail:
-            top = (item.get("tops") or {}).get(pick) or {}
+            gate = (item.get("tops") or {}).get(f"{gate_mode}#refusal") or {}
+            top = (item.get("tops") or {}).get(gate_mode) or {}
             got = (
                 f"`{top['filename']} · {top['title']}`（{top['score']:.3f}）"
                 if top
                 else "无召回"
             )
-            lines.append(f"- {item['question']} → {got}")
+            mark = "拒" if gate.get("refuse") else "答"
+            why = "；".join(gate.get("reasons") or []) or "—"
+            category = item.get("category", "未分类")
+            lines.append(f"- [{category}] **{mark}** {item['question']} → {got}")
+            lines.append(f"  - 理由：{why}")
 
     if len(result["warnings"]) == 0 and not result["skipped"]:
         return "\n".join(lines)
