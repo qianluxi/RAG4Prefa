@@ -2,7 +2,7 @@
 // 当前系统不给库外问题拒答时，它必然被强行召回 top-k——本组量的就是「该说不知道时说了什么」。
 // 不计 Recall（没有 gold），单独统计召回非空率、最高分，以及证据闸门的拒答率。
 //
-// 四类，各自治的是不同的失败（2026-10-29 按专家复审要求扩写）：
+// 四类，各自治的是不同的失败：
 //   geo           跨地域：问的是别的省市/境外，语料只有浙江。
 //   time          跨时间：问的是语料年份之前的文件。
 //   missing_topic 库里没有这个主题：资质、培训、碳排放这类，语料里没有对应章节。
@@ -10,8 +10,14 @@
 // 分类不是为了好看：闸门对不同类的效力差得很远（地域类有确定性判据，主题类没有），
 // 混成一个总数会把这个差别藏起来。
 //
-// 「装修完多久能住进去」来自口语题 #10：语料只有「怎么判断空气质量合格」，
-// 没有「等多少天」，原问法用它测 Recall 是错的。
+// near_topic 是这一层真正的目标，2026-10-30 扩到 21 题（另有 7 题 geo + 2 time + 3 missing，共 33 题）。
+// 写法与核验见 `eval/refuse-near-topic-protocol.md`：写了 34 条，按「属性缺口」出题、
+// 定稿前不看检索，再用 `scripts/find_gold_by_text.py` 做**子串**核验（不走向量、不走 BM25），
+// 确认答案的关键取值在全文里找不到才留下。核验剔掉 12 条其实答得出的（保修 5 年、
+// 撞击声、VOC 限量、试点企业 12 家等）——留着会把"答得出"记成"该拒"。
+// 第 13 条是**判官反过来抓出来的**：「能少产生多少建筑垃圾」我按「吨/建筑垃圾减量」
+// 找没找到，但语料写的是「现场固废物减少了 70%」——同义词没覆盖，子串法 0 命中
+// ≠ 库里没有。该题已移出本集，过程记在 `eval/refuse-near-topic-protocol.md`。
 {"question": "上海对新建民用建筑的装配式实施范围是怎么规定的？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
 {"question": "北京市装配化装修的补贴标准是多少？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
 {"question": "日本 SI 住宅体系的部品化率要求是多少？", "expect": "refuse", "category": "geo", "filter": {"projects": ["装配式内装"]}}
@@ -24,6 +30,24 @@
 {"question": "装配式装修的消防验收由哪个部门负责？", "expect": "refuse", "category": "missing_topic", "filter": {"projects": ["装配式内装"]}}
 {"question": "装配式装修工人的培训证书怎么考？", "expect": "refuse", "category": "missing_topic", "filter": {"projects": ["装配式内装"]}}
 {"question": "装配式装修的碳排放怎么核算？", "expect": "refuse", "category": "missing_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配化装修的工人一天工钱是多少？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配化装修工程开票的增值税税率是多少？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "承接装配化装修施工需要什么等级的资质？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配式装修做完以后甲醛检测该找哪家机构？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配化装修项目的保险费率是多少？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "浙江搞装配化装修试点一共带动了多少人就业？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配化装修的吊顶龙骨用哪个品牌的？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "一套一百平的房子做装配化装修要多少天完工？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配化装修的房子冬天取暖能省多少电费？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配式装修的墙板接缝开裂了找谁投诉？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配式内装有没有对应的国际标准？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "浙江各市装配化装修试点考核排名第一的是哪个市？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配式内装的模块化率怎么算？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "绍兴的装配化装修试点有没有贷款贴息？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配化装修工人的社保由谁来缴？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "浙江省装配化装修现在的产业规模有多少产值？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "浙江省装配化装修试点的财政资金一共投了多少？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "做装配化装修能不能用住房公积金贷款？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配化装修的工人一天能装多少平方米？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
+{"question": "装配化装修项目的施工员上岗要考什么证？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
 {"question": "装修完多久能住进去？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
-{"question": "装配式装修比传统装修便宜多少？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
-{"question": "浙江装配式装修试点一共完成了多少万平方米？", "expect": "refuse", "category": "near_topic", "filter": {"projects": ["装配式内装"]}}
