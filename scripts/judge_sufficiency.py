@@ -164,6 +164,9 @@ async def measure(work: list[dict], *, mode: str, k: int, cache_path: Path,
     if not services.llm:
         raise SystemExit("未配置大模型服务（R4P_LLM_API_KEY），判官无法实测")
     system = prompts.JUDGE_PROMPTS[judge]
+    # 缓存 key 必须带模型：魔搭与硅基流动上有同名模型，行为并不相同（一个默认不思考、
+    # 一个默认思考）。只按「判官版本 + k」做 key，换服务商后会静默读到上一家的结论。
+    model = services.settings.llm_model
     verdict_path = verdict_path or Path("eval/reports/judge-verdicts.json")
     ev = _eval_module()
     cache = {} if rebuild else load_cache(cache_path)
@@ -210,12 +213,13 @@ async def measure(work: list[dict], *, mode: str, k: int, cache_path: Path,
             "reason": reply.reason,
             "attempts": reply.attempts,
         }
-        save_cache(verdict_path, verdicts, {"judge": judge, "k": k, "partial": True})
+        save_cache(verdict_path, verdicts,
+                       {"judge": judge, "model": model, "k": k, "partial": True})
 
     async def one(entry: dict) -> dict:
         nonlocal done
         item, top, gate = entry["item"], entry["top"], entry["gate"]
-        key = f"{judge}|{k}|{item['question']}"
+        key = f"{judge}|{model}|{k}|{item['question']}"
         error = ""
         if key in verdicts:
             d = verdicts[key]
@@ -267,9 +271,10 @@ async def measure(work: list[dict], *, mode: str, k: int, cache_path: Path,
     for fut in asyncio.as_completed(tasks):
         results.append(await fut)
     results.sort(key=lambda r: r.pop("_index"))
-    save_cache(verdict_path, verdicts, {"judge": judge, "k": k, "partial": False})
+    save_cache(verdict_path, verdicts,
+                   {"judge": judge, "model": model, "k": k, "partial": False})
     return {"results": results, "fetched": fetched, "mode": mode, "k": k,
-            "cache": str(cache_path), "judge": judge,
+            "cache": str(cache_path), "judge": judge, "model": model,
             "errors": sum(1 for r in results if r["judge_error"])}
 
 
@@ -315,7 +320,8 @@ def render(out: dict, summary: dict) -> str:
         "判官的假设是：给模型看同一批片段，问它「这些够不够回答问题」，它判得出「主题相同但缺事实」。",
         "要验证的就两件事——**该拒的拦住多少**，**库内题误伤多少**。",
         "",
-        f"口径：判官 `{out.get('judge', 'v1')}`、召回方式 `{out['mode']}`、`k={out['k']}`"
+        f"口径：判官 `{out.get('judge', 'v1')}`、模型 `{out.get('model', '未记录')}`、"
+        f"召回方式 `{out['mode']}`、`k={out['k']}`"
         "（与 `eval.py` 误拒统计同口径），"
         "规则闸门与判官看的是同一批片段（候选已冻结，见 §五）。",
         "",

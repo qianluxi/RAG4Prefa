@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     llm_model: str = "Qwen/Qwen3.5-35B-A3B"
     llm_temperature: float = 0.2
     llm_max_tokens: int = 2048
+    # 思考开关：None = 不向服务端发这个字段。
+    #
+    # 之所以要显式三态而不是 True/False，是因为两个服务商对同一个模型名的默认行为不同：
+    #   · 魔搭 API-Inference 上的 Qwen3.5-35B-A3B 默认**不思考**，传未知 body 字段还可能 400；
+    #   · 硅基流动上的同名模型默认**开思考**——判官要求严格两行输出，200 token 会全被
+    #     思维链吃掉（`completion_tokens=202 / reasoning_tokens=200`，content 为空），
+    #     且单次 105 秒。不关掉，整轮评测会表现为"模型不听话"，实际是没关思考。
+    # 所以默认 None（两边都不传），换到硅基流动时才显式设 false。
+    llm_enable_thinking: bool | None = None
 
     # ── OCR（可选，默认关闭）──────────────────────────────
     #
@@ -173,6 +182,19 @@ class Settings(BaseSettings):
     #   - 没配、且是单机演示（fallback=true）→ 不校验：那时打开页面的人就是主人，
     #     强行要求口令只会让本地开发多一步。
     admin_token: str = ""
+
+    @field_validator("llm_enable_thinking", mode="before")
+    @classmethod
+    def _blank_thinking_as_none(cls, value: object) -> object:
+        """`.env` 里这一行留空要当"没配"，不能报校验错。
+
+        从 `.env.example` 复制过来的文件常常保留 `R4P_LLM_ENABLE_THINKING=` 这一行，
+        而 pydantic 对 `bool | None` 收到空串会直接抛 ValidationError——启动失败，
+        报错还指向一个与问题无关的字段。这里把空串/占位词统一收敛成 None。
+        """
+        if isinstance(value, str) and value.strip().lower() in ("", "none", "null", "unset"):
+            return None
+        return value
 
     @computed_field  # type: ignore[prop-decorator]
     @property

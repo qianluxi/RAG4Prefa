@@ -28,6 +28,20 @@ class LLM:
             base_url=settings.llm_base_url, api_key=settings.llm_api_key, timeout=120.0
         )
 
+    def _thinking(self) -> dict:
+        """思考开关：只在显式配置时才把字段发给服务端。
+
+        不设默认值是有原因的——同一个模型名在两个平台上默认行为不同：魔搭的
+        Qwen3.5-35B-A3B 默认不思考，硅基流动的同名模型默认思考。后者在判官这种
+        要求严格两行输出的场景里会把 200 token 全花在思维链上（正文为空、单次
+        105 秒），表现成"模型不听话"，实际是没关思考。反过来，给不认识这个字段
+        的服务端乱发 body 字段又可能 400，所以 `None` 时一个字节都不多发。
+        """
+        enabled = self._settings.llm_enable_thinking
+        if enabled is None:
+            return {}
+        return {"extra_body": {"enable_thinking": enabled}}
+
     async def stream(self, system: str, user: str) -> AsyncIterator[str]:
         stream = await self._async.chat.completions.create(
             model=self._settings.llm_model,
@@ -35,6 +49,7 @@ class LLM:
             temperature=self._settings.llm_temperature,
             max_tokens=self._settings.llm_max_tokens,
             stream=True,
+            **self._thinking(),
         )
         async for chunk in stream:
             if not chunk.choices:
@@ -50,6 +65,7 @@ class LLM:
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=self._settings.llm_temperature,
             max_tokens=max_tokens or self._settings.llm_max_tokens,
+            **self._thinking(),
         )
         return resp.choices[0].message.content or ""
 
@@ -64,6 +80,7 @@ class LLM:
             messages=[{"role": "user", "content": "只回复 OK"}],
             temperature=0,
             max_tokens=16,
+            **self._thinking(),
         )
         return (resp.choices[0].message.content or "").strip()
 
