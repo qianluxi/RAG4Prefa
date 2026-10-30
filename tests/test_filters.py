@@ -84,3 +84,40 @@ def test_request_filter_wins_over_parsed() -> None:
     merged = request.merge(parsed)
     assert merged.projects == ["广州项目"]  # 请求显式指定优先
     assert merged.year_from == 2020  # 未指定的部分由问题解析补齐
+
+
+# ── 年份区间：资料年 vs 任务期 ──────────────────────────────
+
+
+def test_year_range_as_task_period_is_not_a_document_year() -> None:
+    """专家复审给的原句：2021—2023 是改造任务的时间区间，不是文件年份。
+
+    区间此前是无条件命中的，于是这句话会把检索范围缩成 2021-2023 发的文件——
+    而问的是"这三年干得怎么样"，检索前的静默否决，后面怎么排都救不回来。
+    """
+    filt = parse_filter("到2027年，2021—2023年间老旧小区改造任务进展如何？", PROJECTS)
+    assert (filt.year_from, filt.year_to) == (None, None)
+
+
+def test_year_range_followed_by_period_words_is_ignored() -> None:
+    for question in (
+        "2021—2023年间完成的改造有多少？",
+        "2021年至2023年期间的政策有什么变化？",
+        "2021-2023年内开工的项目进展如何？",
+        "2021—2023年期间完成的改造有哪些？",
+    ):
+        filt = parse_filter(question, PROJECTS)
+        assert (filt.year_from, filt.year_to) == (None, None), question
+
+
+def test_year_range_with_document_marker_still_filters() -> None:
+    """放宽不等于放弃：明确在说"哪几年的文件"时照旧筛选。
+
+    只写"任务期不筛"的话，把 `_range_span` 改成恒返回 None 也能全绿——那等于把一个
+    能用的过滤维度删掉了。
+    """
+    assert parse_filter("2021—2023年的文件怎么规定？", PROJECTS).year_from == 2021
+    assert parse_filter("2021—2023年的文件怎么规定？", PROJECTS).year_to == 2023
+    assert parse_filter("2020-2023年的超限报告", PROJECTS).year_to == 2023
+    # 区间后面直接接资料名词、没有"的"，也按资料年处理（历史行为，未变）。
+    assert parse_filter("2021-2023年装配式装修政策有哪些？", PROJECTS).year_from == 2021

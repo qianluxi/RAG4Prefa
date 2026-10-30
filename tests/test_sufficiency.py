@@ -268,3 +268,74 @@ def test_geo_gate_uses_filename_coverage_not_body(conn) -> None:
         corpus_mentions=_mentions({"北京": 0}),  # 文件名口径：没有北京的文件
     )
     assert verdict.refuse is True
+
+
+# ── 地域层级：省级文件覆盖省内城市 ──────────────────────────
+
+HANGZHOU = "杭州的装配式内装修施工有什么要求？"
+
+
+def test_city_covered_by_province_file_does_not_refuse(conn) -> None:
+    """库里只有浙江省的地方标准、文件名里没有"杭州"——省级标准适用于省内城市，不能拒。
+
+    这是专家复审第四节点的误拒：拿"文件名必须出现城市名"当判据，会把"有省标可查"
+    的问题判成"库里没有杭州的资料"。误拒比漏拒更贵。
+    """
+    verdict = sufficiency.judge(
+        conn, HANGZHOU, [_hit()],
+        corpus_mentions=_mentions({"杭州": 0, "浙江": 22}),
+    )
+    assert verdict.refuse is False
+    # 不拒，但要把"这是省级口径"说出来：答案能被读成杭州市自己的规定才是真问题。
+    names = {s.name: s for s in verdict.signals}
+    assert set(names) == {"geo_upper_level"}
+    assert names["geo_upper_level"].blocking is False
+    assert "浙江" in names["geo_upper_level"].detail
+
+
+def test_city_with_own_files_has_no_geo_signal(conn) -> None:
+    verdict = sufficiency.judge(
+        conn, HANGZHOU, [_hit()], corpus_mentions=_mentions({"杭州": 3, "浙江": 22})
+    )
+    assert verdict.refuse is False
+    assert verdict.signals == []
+
+
+def test_city_without_province_files_still_refuses(conn) -> None:
+    """省里也没有这个市的资料 → 照旧拒。放宽只允许"上一级真的有文件"这一种情形。"""
+    verdict = sufficiency.judge(
+        conn, "成都的装配式装修验收规定是什么？", [_hit()],
+        corpus_mentions=_mentions({"成都": 0, "四川": 0}),
+    )
+    assert verdict.refuse is True
+    assert [s.name for s in verdict.signals] == ["geo_absent"]
+
+
+def test_municipality_has_no_upper_level_coverage(conn) -> None:
+    """直辖市不挂在"全国"上：库里有国家标准，不等于有北京的申报口径。
+
+    这条是 7/7 地域拒答的护栏——把直辖市挂到全国，"北京市的补贴标准"就会因为库里有
+    GB 标准而放行，那一类拒答会全塌。
+    """
+    verdict = sufficiency.judge(
+        conn, "北京市装配化装修的补贴标准是多少？", [_hit()],
+        corpus_mentions=_mentions({"北京": 0, "全国": 40, "国家": 40}),
+    )
+    assert verdict.refuse is True
+    assert [s.name for s in verdict.signals] == ["geo_absent"]
+    assert sufficiency.coverage_place("北京") is None
+
+
+def test_place_hierarchy_covers_the_cities_actually_in_the_corpus() -> None:
+    """表要对得上语料的实际覆盖面，否则"省覆盖市"只是纸上的一句话。
+
+    只写"杭州归浙江"这一条，把 `PROVINCE_OF` 删到只剩一条也能全绿；这里对着
+    `PLACES` 里的浙江城市逐个数。
+    """
+    for city in ("杭州", "宁波", "温州", "绍兴", "湖州", "嘉兴", "金华", "台州",
+                 "丽水", "衢州", "舟山"):
+        assert sufficiency.coverage_place(city) == "浙江", city
+    # 省级自己不需要上级；表里写 `"浙江": "浙江"` 只是为了自解释，取值时必须当成"无上级"。
+    assert sufficiency.coverage_place("浙江") is None
+    # 境外体系没有上级可言。
+    assert sufficiency.coverage_place("日本") is None

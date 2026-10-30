@@ -15,6 +15,11 @@ from collections.abc import Sequence
 from .domain import Filter
 
 _RANGE = re.compile(r"(20\d{2})\s*(?:[-~－—至到]|年\s*[-~至到])\s*(20\d{2})\s*年?")
+# 年份区间后面紧跟这些词时，说的是**任务期**而不是资料年：
+# 「2021—2023年间老旧小区改造任务进展如何」问的是这三年干了什么，不是"只要这三年发的文件"。
+# 区间此前是无条件命中的，于是这类问句会在检索前被缩成一个没有任何文件的年份范围——
+# 又是不可恢复的静默否决。
+_RANGE_NOT_DOC = re.compile(r"^\s*(?:间|期间|年度|内|以来|之后|以后|之前|以前|底)")
 _AFTER = re.compile(r"(20\d{2})\s*年?\s*(?:以后|之后|以来|起)")
 _BEFORE = re.compile(r"(20\d{2})\s*年?\s*(?:以前|之前|前)")
 _RECENT = re.compile(r"近\s*([一二三四五六七八九十\d]+)\s*年")
@@ -99,6 +104,29 @@ def _single_year_span(question: str) -> tuple[int, int] | None:
     return min(years), max(years)
 
 
+def _range_span(question: str) -> tuple[int, int] | None:
+    """年份区间是否在说"资料是哪几年的"，是就返回跨度。
+
+    区间原来是无条件命中的，比单个年份那套判据更粗糙。两类不该命中的：
+
+    - 目标年区间：前面跟着「到/截至/目标」——「到2027年」那类说法的区间形态；
+    - 任务期：后面跟着「年间/期间/内/以来」——问的是这段时间发生了什么，
+      不是"只找这段时间发的文件"。专家复审给的原句就是这一类：
+      「到2027年，2021—2023年间老旧小区改造任务进展如何？」
+
+    仍然接受的：`2021—2023年的文件`、`2020-2023年的超限报告`（区间后面直接就是资料名词），
+    以及后面没有特殊标记的写法。放宽只会多带进候选，错杀不可恢复。
+    """
+    match = _RANGE.search(question)
+    if not match:
+        return None
+    if _TARGET_PREFIX.search(question[: match.start()]):
+        return None
+    if _RANGE_NOT_DOC.match(question[match.end() :]):
+        return None
+    return tuple(sorted((int(match.group(1)), int(match.group(2)))))  # type: ignore[return-value]
+
+
 def parse_filter(
     question: str, project_names: Sequence[str] = (), *, current_year: int = 2026
 ) -> Filter:
@@ -114,8 +142,8 @@ def parse_filter(
 
     year_from: int | None = None
     year_to: int | None = None
-    if m := _RANGE.search(question):
-        year_from, year_to = sorted((int(m.group(1)), int(m.group(2))))
+    if span := _range_span(question):
+        year_from, year_to = span
     elif m := _AFTER.search(question):
         year_from = int(m.group(1))
     elif m := _BEFORE.search(question):

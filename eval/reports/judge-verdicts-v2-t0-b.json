@@ -1,0 +1,792 @@
+{
+ "schema": 2,
+ "meta": {
+  "kind": "verdicts",
+  "judge": "v2",
+  "model": "Qwen/Qwen3.5-35B-A3B",
+  "provider": "api.siliconflow.com",
+  "thinking": "关",
+  "k": 8,
+  "prompt_sha": "5f5b2d28e3874b10",
+  "temperature": 0.0,
+  "corpus_ids_sha": "71381cdb8df476d4",
+  "partial": false
+ },
+ "hits": {
+  "4ff7dd6a0198ae12": {
+   "can_answer": false,
+   "reason": "片段未提及日本 SI 住宅体系，也无其部品化率的具体数值。",
+   "attempts": 1
+  },
+  "ba0dca07a3cd0ffc": {
+   "can_answer": false,
+   "reason": "片段仅涉及宁波、绍兴、台州等地，未包含北京市相关补贴标准。",
+   "attempts": 1
+  },
+  "607d0b9f1663d2e0": {
+   "can_answer": false,
+   "reason": "片段均为浙江省标准，未提供江苏省装配式建筑评价标准的装配率计算方法。",
+   "attempts": 1
+  },
+  "69a16f6c4db2e4b3": {
+   "can_answer": false,
+   "reason": "片段仅涉及浙江省规定，未包含上海地区的相关政策。",
+   "attempts": 1
+  },
+  "4f52c6c007c7dc5d": {
+   "can_answer": false,
+   "reason": "片段仅涉及浙江省、绍兴市及宁波市鄞州区政策，未包含广东省相关信息。",
+   "attempts": 1
+  },
+  "5074f5ab66e27600": {
+   "can_answer": false,
+   "reason": "片段仅包含浙江省及国家通用标准，未提供成都市的具体验收规定。",
+   "attempts": 1
+  },
+  "ecd05d37da86ed9d": {
+   "can_answer": false,
+   "reason": "片段仅提及宜采用装配式装修，未列出2020年装配式内装修标准的具体变化内容。",
+   "attempts": 1
+  },
+  "ad30a3eaf3af9fc1": {
+   "can_answer": false,
+   "reason": "片段仅涉及浙江省（省、宁波、绍兴、鄞州）试点企业，未提及深圳市相关信息。",
+   "attempts": 1
+  },
+  "cd9e1aa926fd788b": {
+   "can_answer": false,
+   "reason": "片段未提供2019年浙江省装配式装修的政策要求，仅涉及2023年及以后的文件。",
+   "attempts": 1
+  },
+  "29c0d05040732459": {
+   "can_answer": false,
+   "reason": "片段仅提及消防审批文件需落实及委托有资质单位，未明确消防验收的具体负责部门。",
+   "attempts": 1
+  },
+  "e26e2234690e0da9": {
+   "can_answer": true,
+   "reason": "片段[2]明确提及建筑业企业增值税留抵税额退还及高新技术企业15%所得税优惠，但未直接给出装配化装修工程开票的增值税税率。",
+   "attempts": 1
+  },
+  "bd7ba30393417d73": {
+   "can_answer": false,
+   "reason": "片段仅提及需培训考核上岗及未来需通过国家标准认证，未说明具体考证流程。",
+   "attempts": 1
+  },
+  "69d0cd28965ab567": {
+   "can_answer": false,
+   "reason": "片段未提供装配化装修工人的日工资具体数值，仅提及需培训培育人才及价格参考信息。",
+   "attempts": 1
+  },
+  "de424f30804eaf21": {
+   "can_answer": true,
+   "reason": "片段明确施工单位需依法取得相应等级的资质证书，并在资质等级许可范围内承揽工程。",
+   "attempts": 1
+  },
+  "2c9b83feab4fb793": {
+   "can_answer": false,
+   "reason": "片段仅提及工程保险费用由谁办理支付，未包含具体的保险费率数值。",
+   "attempts": 1
+  },
+  "e6960a26e85e4e7f": {
+   "can_answer": false,
+   "reason": "片段未提及试点带动就业的具体人数或相关数据。",
+   "attempts": 1
+  },
+  "6352e46ba6ca21e3": {
+   "can_answer": false,
+   "reason": "片段未提及任何具体的吊顶龙骨品牌名称。",
+   "attempts": 1
+  },
+  "46b83598cf662e53": {
+   "can_answer": false,
+   "reason": "片段未提及取暖电费的具体数值或节省比例，仅涉及碳排放计算标准。",
+   "attempts": 1
+  },
+  "dfc03674e44c44a3": {
+   "can_answer": false,
+   "reason": "片段仅提及样板房一周完工，未提供一百平普通住宅的通用工期数据。",
+   "attempts": 1
+  },
+  "3962b46c9a36eac0": {
+   "can_answer": false,
+   "reason": "片段仅包含施工验收标准和质量指标，未提及投诉渠道或责任部门。",
+   "attempts": 1
+  },
+  "f2e518a5ef2aba09": {
+   "can_answer": false,
+   "reason": "片段仅列出试点城市名单及项目数据，未提及任何考核排名信息。",
+   "attempts": 1
+  },
+  "8fb22355d4180439": {
+   "can_answer": false,
+   "reason": "片段未提及“模块化率”这一指标，仅提供了“内装装配率”的计算公式。",
+   "attempts": 1
+  },
+  "46e2f6744afc8af0": {
+   "can_answer": false,
+   "reason": "片段仅提及资金奖励、奖补及补贴，未提及“贷款贴息”相关内容。",
+   "attempts": 1
+  },
+  "800439550b70b65d": {
+   "can_answer": false,
+   "reason": "片段未提及装配化装修工人社保的缴纳主体或相关规定。",
+   "attempts": 1
+  },
+  "24fa47b2851061f5": {
+   "can_answer": false,
+   "reason": "片段仅提及试点项目面积及占比，未包含产业产值数据。",
+   "attempts": 1
+  },
+  "1795585cc7a6f1e1": {
+   "can_answer": false,
+   "reason": "片段仅提及奖励金额范围及补贴比例，未提供财政资金总投入的具体数值。",
+   "attempts": 1
+  },
+  "4e854a2a6860fd36": {
+   "can_answer": false,
+   "reason": "片段未提及住房公积金贷款相关内容，仅涉及财政补贴、金融促消费等。",
+   "attempts": 1
+  },
+  "4e4dafafd4e98bbc": {
+   "can_answer": false,
+   "reason": "片段未提及装配化装修工人的具体日安装面积数值或定额标准。",
+   "attempts": 1
+  },
+  "8621e6852716c157": {
+   "can_answer": false,
+   "reason": "片段仅提及特种作业人员需持证上岗，未明确施工员具体需考取何种证书。",
+   "attempts": 1
+  },
+  "daefc7bfcde3691a": {
+   "can_answer": true,
+   "reason": "片段[1]规定室内环境质量验收应在工程完工不少于7d后进行，验收合格后方可交付使用。",
+   "attempts": 1
+  },
+  "4d8bcd661aab9963": {
+   "can_answer": true,
+   "reason": "片段中多处明确给出了装配式内装修的定义，如采用干式工法、工厂生产部品部件、现场组合安装等。",
+   "attempts": 1
+  },
+  "ff04a9d6b096584e": {
+   "can_answer": true,
+   "reason": "片段明确新建建筑装配式内装修设计与建筑设计应同步协同进行。",
+   "attempts": 1
+  },
+  "c69da2e2896ad4ac": {
+   "can_answer": true,
+   "reason": "片段明确记载双层条板隔墙两侧墙面竖向接缝错开距离不应小于200mm。",
+   "attempts": 1
+  },
+  "ac7e7f4438f19c80": {
+   "can_answer": true,
+   "reason": "片段提及使用公式(2)及实证数据，并给出了劳动力碳排放因子等核算依据。",
+   "attempts": 1
+  },
+  "7b94f760ad04da75": {
+   "can_answer": true,
+   "reason": "片段明确记载检修口宜设置在不影响正常使用的隐蔽位置。",
+   "attempts": 1
+  },
+  "32135e78a8d7ba50": {
+   "can_answer": true,
+   "reason": "片段[1]明确列出可采用干挂集成墙面板系统和粘贴式集成墙面板两类。",
+   "attempts": 1
+  },
+  "8b36c923c115fe59": {
+   "can_answer": true,
+   "reason": "片段明确列出装配式吊顶系统可采用明龙骨、暗龙骨或无龙骨吊顶。",
+   "attempts": 1
+  },
+  "563970261e707920": {
+   "can_answer": true,
+   "reason": "片段明确说明：有无障碍设计要求时，门槛石和挡水条位置应设置方便轮椅通过的过渡斜坡。",
+   "attempts": 1
+  },
+  "f85a83977b3a9e79": {
+   "can_answer": true,
+   "reason": "片段明确记载整体卫生间的选型和预留安装空间应在建筑设计阶段确定。",
+   "attempts": 1
+  },
+  "0ce3b7c16ecdc1af": {
+   "can_answer": false,
+   "reason": "片段仅规定装配式建筑需委托第三方检测，未明确甲醛检测的具体机构名称或资质要求。",
+   "attempts": 1
+  },
+  "4f318ada5d93cccd": {
+   "can_answer": true,
+   "reason": "片段明确给出“设备管线与结构分离”的原则。",
+   "attempts": 1
+  },
+  "898e85255235cc65": {
+   "can_answer": true,
+   "reason": "片段明确记载装配式内装修设计应采用建筑信息模型（BIM）技术构建相关专业的内装修模型。",
+   "attempts": 1
+  },
+  "9f90555e74512c69": {
+   "can_answer": true,
+   "reason": "片段[1]第3.0.1条明确写明“既有建筑可参照执行”。",
+   "attempts": 1
+  },
+  "a07c5b3c47009018": {
+   "can_answer": true,
+   "reason": "片段明确说明计算装配式墙面应用比例时可不扣除门、窗及预留洞口等的面积。",
+   "attempts": 1
+  },
+  "3bbc44703b2065ef": {
+   "can_answer": true,
+   "reason": "片段明确记载单层条板隔墙用作分户墙时，厚度不应小于 120mm。",
+   "attempts": 1
+  },
+  "5676f151004018c6": {
+   "can_answer": true,
+   "reason": "片段[1]明确给出采用同层排水后排式座便器时结构降板高度不宜小于150毫米。",
+   "attempts": 1
+  },
+  "174fce449e225e23": {
+   "can_answer": true,
+   "reason": "片段[6]明确列出施工图审查评分表中Q1（装配式内装设计）的满分是20分。",
+   "attempts": 1
+  },
+  "477e652036ae1382": {
+   "can_answer": true,
+   "reason": "片段明确记载高度超过4米的隔墙，其强度应进行验算。",
+   "attempts": 1
+  },
+  "25376cb9abe6b945": {
+   "can_answer": true,
+   "reason": "片段明确记载装配式墙面应与基层墙体进行可靠连接，并宜采用插接、型材件连接或专用连接件固定。",
+   "attempts": 1
+  },
+  "270c064005132e1f": {
+   "can_answer": true,
+   "reason": "片段[1]明确给出“灯槽线条距离低位板边缘不应小于10毫米”。",
+   "attempts": 1
+  },
+  "7bcc79522464ac5e": {
+   "can_answer": true,
+   "reason": "片段明确记载：吊柜安装在墙面板上时，墙板应在工厂预制开孔。",
+   "attempts": 1
+  },
+  "e80aea1b18be0ed9": {
+   "can_answer": true,
+   "reason": "片段[1]4.3.3第2条明确卫生间吊顶宜采用燃烧性能A级装修材料。",
+   "attempts": 1
+  },
+  "0b6ea4ea48b4af0e": {
+   "can_answer": true,
+   "reason": "片段[1]和[2]详细列出了申领补贴所需提交的具体材料清单。",
+   "attempts": 1
+  },
+  "3fff569904a566f2": {
+   "can_answer": true,
+   "reason": "片段明确记载厨卫换新时，厨房吊柜悬挂在轻质隔墙上应采取加强措施。",
+   "attempts": 1
+  },
+  "29a0af99ee6692f3": {
+   "can_answer": true,
+   "reason": "片段明确说明若自行拟订或修改格式条款，不得使用示范文本样式及名义签约。",
+   "attempts": 1
+  },
+  "bba40cb07fa6dfea": {
+   "can_answer": true,
+   "reason": "片段明确约定“所有日期均指自自然日”，说明了工期天数的计算方式。",
+   "attempts": 1
+  },
+  "03fa0ce665de6117": {
+   "can_answer": false,
+   "reason": "片段仅提及国家和浙江省现行标准，未涉及国际标准相关内容。",
+   "attempts": 1
+  },
+  "03cf0beaa0a88f83": {
+   "can_answer": true,
+   "reason": "片段[1]和[3]明确说明集成吊顶不含电器设备。",
+   "attempts": 1
+  },
+  "35f74b18493e2d48": {
+   "can_answer": true,
+   "reason": "片段明确记载灌浆必须采用机械压力注浆法从下口灌注。",
+   "attempts": 1
+  },
+  "746b414b201b8c03": {
+   "can_answer": true,
+   "reason": "片段明确记载安装施工前宜选择有代表性的单元进行预制构件试安装。",
+   "attempts": 1
+  },
+  "74c2770803a34d0b": {
+   "can_answer": true,
+   "reason": "片段明确列出杭州、宁波、绍兴、台州等 4 个设区市为试点市。",
+   "attempts": 1
+  },
+  "0d0580234afd8e0d": {
+   "can_answer": true,
+   "reason": "片段详细列出了钢结构、混凝土、型钢混凝土及内装修等不同类型隐蔽工程验收记录应包含的具体内容。",
+   "attempts": 1
+  },
+  "2ab6fdcba26909b8": {
+   "can_answer": true,
+   "reason": "片段提供了2024年第二季度省级参考价估算的厨房换新费用区间（约1.2万—2.2万元）。",
+   "attempts": 1
+  },
+  "4881898e6890ba38": {
+   "can_answer": true,
+   "reason": "片段定义了装配式装修为工厂生产、现场干式工法装配，并指出其与传统装修在湿作业、管线结构分离及固废人工减少等方面的区别。",
+   "attempts": 1
+  },
+  "27f8f295a4b1fcbc": {
+   "can_answer": true,
+   "reason": "片段[1]明确给出2024Q2参考价下，5.5m²厨房基本型造价约1.2万—1.4万元。",
+   "attempts": 1
+  },
+  "e3bfc9602f6a145b": {
+   "can_answer": true,
+   "reason": "片段明确列出2024年厨房不少于6000元、卫生间不少于4000元，以及最高2万元等具体补贴金额。",
+   "attempts": 1
+  },
+  "9893195d78beb688": {
+   "can_answer": true,
+   "reason": "片段[1][2][4][7]均列出了申领补贴所需的具体材料清单。",
+   "attempts": 1
+  },
+  "72dcca8e0f2efd88": {
+   "can_answer": false,
+   "reason": "片段未提及无窗厨房是否允许设置燃气表，仅规定了有燃气设施时的通风要求。",
+   "attempts": 1
+  },
+  "cb519107228515dd": {
+   "can_answer": true,
+   "reason": "片段规定了非承重墙安装吊柜需采取加强措施，电视背景墙较重面层需基层加固。",
+   "attempts": 1
+  },
+  "8f4a5c2eecee7db4": {
+   "can_answer": true,
+   "reason": "片段明确说明无障碍卫生间门槛石和挡水条位置应设置方便轮椅通过的过渡斜坡。",
+   "attempts": 1
+  },
+  "26e49721852fd435": {
+   "can_answer": true,
+   "reason": "片段明确说明居住建筑套内部品维修更换不应影响公共区域，且设计应便于易更换。",
+   "attempts": 1
+  },
+  "646d5322c59f1d94": {
+   "can_answer": true,
+   "reason": "片段规定了灯具重量限制、需固定在承重结构上及满足荷载计算要求，可判断安全性。",
+   "attempts": 1
+  },
+  "4f617a5993eb9d02": {
+   "can_answer": true,
+   "reason": "片段明确“竣工验收后即可投入使用”及“基本具备使用功能”的判定条件。",
+   "attempts": 1
+  },
+  "86071623245d2757": {
+   "can_answer": true,
+   "reason": "片段明确说明装配式内装评价标准适用于既有建筑，且试点项目包含旧房改造。",
+   "attempts": 1
+  },
+  "64e20cbb5883ae04": {
+   "can_answer": true,
+   "reason": "片段[3]和[5]明确列出集成厨房/卫生间价格包含“开关灯具”。",
+   "attempts": 1
+  },
+  "e0dc3be1e6debf74": {
+   "can_answer": true,
+   "reason": "片段规定经营者修改格式条款不得使用示范文本样式，且需在启用后三十日内向市场监管部门备案。",
+   "attempts": 1
+  },
+  "5b4ed33ebab7bf0e": {
+   "can_answer": true,
+   "reason": "片段[1]明确说明：如补贴资金额度提前用完，应及时发布政策结束公告，超出部分由地方自行承担。",
+   "attempts": 1
+  },
+  "22044f1334433f5a": {
+   "can_answer": true,
+   "reason": "片段提供了装配式墙面、楼地面、集成厨房等部位的验收标准、允许偏差及检查方法。",
+   "attempts": 1
+  },
+  "c0aae3dc455bb9d9": {
+   "can_answer": true,
+   "reason": "片段明确记载整体卫生间在工厂组装完成，经检验合格后运至现场安装。",
+   "attempts": 1
+  },
+  "5aafe6bb84befe2a": {
+   "can_answer": true,
+   "reason": "片段[1]6.5.1和片段[2]4.2.9均明确记载：设置燃气表的橱柜应具有自然通风功能。",
+   "attempts": 1
+  },
+  "dac93e30bfb4dbf9": {
+   "can_answer": true,
+   "reason": "片段定义了模数及基本模数数值，并规定了装修网格选用原则和尺寸协调方法。",
+   "attempts": 1
+  },
+  "17f80976642ecdc6": {
+   "can_answer": true,
+   "reason": "片段明确说明装配式墙面由饰面模块、调平模块等模块组成，且存在墙板、饰面板等板块拼接构造。",
+   "attempts": 1
+  },
+  "83bca7f6c72cbc9a": {
+   "can_answer": true,
+   "reason": "片段给出了地柜台面完成面高度宜为800mm、850mm、900mm等具体数值。",
+   "attempts": 1
+  },
+  "c1111ea6679444d6": {
+   "can_answer": true,
+   "reason": "片段提供了浙江省装配式建筑及内装的具体计算公式、变量定义及计算规则。",
+   "attempts": 1
+  },
+  "f78fa28d2eeb2619": {
+   "can_answer": true,
+   "reason": "片段明确记载墙板、地板等由厂家预制，现场直接拼装，无需切割加工。",
+   "attempts": 1
+  },
+  "8df7ef086a8f771d": {
+   "can_answer": true,
+   "reason": "片段明确给出装配式装修工程整体质量保修期限不应低于 5 年。",
+   "attempts": 1
+  },
+  "7d918aa049499488": {
+   "can_answer": true,
+   "reason": "片段提供了轻质条板、装配式墙面、涂料及美术涂饰等多种墙面的允许偏差数值。",
+   "attempts": 1
+  },
+  "222c68ce75017070": {
+   "can_answer": true,
+   "reason": "片段明确给出蓄水试验、淋水试验等检验方法及合格标准（无渗漏）。",
+   "attempts": 1
+  },
+  "146f29c694eca5d8": {
+   "can_answer": true,
+   "reason": "片段提供了禁止随意打孔、需确认管线走向、重物需多点固定及加固措施等具体注意事项。",
+   "attempts": 1
+  },
+  "b5e66552015fbcb5": {
+   "can_answer": true,
+   "reason": "片段给出了接缝防裂的具体措施（如加网、柔性材料等），可据此判断防裂做法。",
+   "attempts": 1
+  },
+  "465b1d73152f91ea": {
+   "can_answer": true,
+   "reason": "片段 [7] 明确约定甲方负责办理施工手续并承担垃圾清运等物业管理费用。",
+   "attempts": 1
+  },
+  "7cd101204f858c8c": {
+   "can_answer": true,
+   "reason": "片段[1]明确规定卫生间地面应有坡向地漏的排水坡，且坡度不应小于 1%。",
+   "attempts": 1
+  },
+  "5eb756698d40873e": {
+   "can_answer": true,
+   "reason": "片段明确列出装修材料燃烧性能需符合GB 50222、GB 50016等现行国家标准，部分场所要求为A级。",
+   "attempts": 1
+  },
+  "4b81d1dac906d5a5": {
+   "can_answer": true,
+   "reason": "片段给出了燃气热水器与燃气灶具水平净距不得小于300mm的规定。",
+   "attempts": 1
+  },
+  "b901f170f656082b": {
+   "can_answer": true,
+   "reason": "片段[1]和[3]明确记载条板接缝处理及门窗框安装应在隔墙安装完成7d后进行。",
+   "attempts": 1
+  },
+  "d94deab2de62961d": {
+   "can_answer": true,
+   "reason": "片段明确给出吊顶内敷设设备管线时，应在管线密集和接口集中的位置设置检修口。",
+   "attempts": 1
+  },
+  "aa070d8d2ba03de3": {
+   "can_answer": true,
+   "reason": "片段明确给出完工不少于7d后、交付使用前进行检测的要求。",
+   "attempts": 1
+  },
+  "e5a5e252d2955ff7": {
+   "can_answer": true,
+   "reason": "片段明确禁止在二次装修中对抗承重结构造成损害，并规定不得私自拆卸破坏结构。",
+   "attempts": 1
+  },
+  "0136bb320e6e47ef": {
+   "can_answer": true,
+   "reason": "片段提供了等电位联结、漏电保护装置、安全型插座及防水溅措施等具体保护做法。",
+   "attempts": 1
+  },
+  "936d2b77e4e04e93": {
+   "can_answer": true,
+   "reason": "片段明确住宅电源插座回路应加设剩余电流动作保护电器（漏电保护器）。",
+   "attempts": 1
+  },
+  "5232b57ba2c2d3c7": {
+   "can_answer": true,
+   "reason": "片段[1]明确记载核验通过后30个工作日内拨付资金。",
+   "attempts": 1
+  },
+  "60e143ecb3c13bb9": {
+   "can_answer": true,
+   "reason": "片段明确禁止截留、挤占、挪用补贴资金，并规定发现此类行为将依法依规严肃处理。",
+   "attempts": 1
+  },
+  "40428d98c7673ad3": {
+   "can_answer": true,
+   "reason": "片段明确说明补贴申请人、合同委托方、发票购买方及银行账号均应统一为房屋产权人。",
+   "attempts": 1
+  },
+  "50d0f74458fbcbdd": {
+   "can_answer": true,
+   "reason": "片段明确列出不同政策对应的房屋交付或竣工年份要求（如2010年前、2022年前、2023年前、2005年前）。",
+   "attempts": 1
+  },
+  "abec607e7b454445": {
+   "can_answer": true,
+   "reason": "片段[1]明确列出服务包含“旧厨房拆除、垃圾清运”等内容。",
+   "attempts": 1
+  },
+  "f7bdd490b6e29e6a": {
+   "can_answer": true,
+   "reason": "片段明确说明本细则激励对象是市县财政，居民端补贴见另行印发的购置补贴类文件。",
+   "attempts": 1
+  },
+  "7190c90f872e0109": {
+   "can_answer": true,
+   "reason": "片段明确说明对存在问题的发票应作退回处理，已发补贴予以追回，涉嫌违规的移交查处。",
+   "attempts": 1
+  },
+  "dad3d45b240942e7": {
+   "can_answer": true,
+   "reason": "片段[2]详细列出了申报时间、条件及具体流程（提交材料、审核报送等）。",
+   "attempts": 1
+  },
+  "8e93b646d66239c4": {
+   "can_answer": true,
+   "reason": "片段规定了防止坠物的措施（如及时移除、固定、设置防护棚等），可回答如何防止及是否允许坠物。",
+   "attempts": 1
+  },
+  "3e8b41a55fcf387d": {
+   "can_answer": true,
+   "reason": "片段明确列出合同需填写开工日期、竣工日期及总工期。",
+   "attempts": 1
+  },
+  "12bf7a1bf309aa1e": {
+   "can_answer": true,
+   "reason": "片段明确说明导则适用于浙江省装配式“厨卫换新”工程，且试点方案仅确定部分市县为试点，二者适用范围不同。",
+   "attempts": 1
+  },
+  "670cf105d4b2d1dc": {
+   "can_answer": true,
+   "reason": "片段[1]明确约定甲方（业主）应参加中间工序及竣工验收，并规定了缺席时的处理规则。",
+   "attempts": 1
+  },
+  "b7ee3ec72cc02c2f": {
+   "can_answer": true,
+   "reason": "片段明确说明实际落地重心是公共建筑，而非住宅，并指出省级方案要求重点在保障房和公建领域。",
+   "attempts": 1
+  },
+  "536b1017ed14eb07": {
+   "can_answer": true,
+   "reason": "片段明确给出内隔墙采用墙体与管线、装修一体化技术的评价项最高分值为 8 分。",
+   "attempts": 1
+  },
+  "438cc4d3cf9cfe0a": {
+   "can_answer": true,
+   "reason": "片段明确说明装饰装修设计文件应作为施工图设计文件的组成部分通过审查，且未经审查批准不得使用。",
+   "attempts": 1
+  },
+  "e3261acb16b002c6": {
+   "can_answer": true,
+   "reason": "片段明确双层条板隔墙两侧墙面竖向接缝错开距离不应小于200mm，即不能对齐。",
+   "attempts": 1
+  },
+  "df70fa0d55035bc8": {
+   "can_answer": true,
+   "reason": "片段明确给出装配式吊顶检验批抽查比例及最少间数（至少 10% 且不少于 3 间）。",
+   "attempts": 1
+  },
+  "099d82a3b807b93c": {
+   "can_answer": true,
+   "reason": "片段明确区分了结构网格宜采用扩大模数网格，装修网格宜采用基本模数或分模数网格。",
+   "attempts": 1
+  },
+  "8894e249dbc6484f": {
+   "can_answer": true,
+   "reason": "片段明确说明除本导则外，尚应符合国家和浙江省现行有关标准的规定。",
+   "attempts": 1
+  },
+  "12eb3bb9b55b4ee6": {
+   "can_answer": true,
+   "reason": "片段[2]表A.0.2明确列出了宾馆用整体卫生间带淋浴功能的最小尺寸要求。",
+   "attempts": 1
+  },
+  "c48ace8b8c93f7a4": {
+   "can_answer": true,
+   "reason": "片段[3]明确列出了人造木板主要包括胶合板、纤维板、刨花板及其表面装饰板等产品。",
+   "attempts": 1
+  },
+  "94ba6a890dbb7b9b": {
+   "can_answer": true,
+   "reason": "片段[1]明确记载：平开窗扇高度大于900mm时，窗扇锁闭点不应少于2个。",
+   "attempts": 1
+  },
+  "7f20a64764f25267": {
+   "can_answer": false,
+   "reason": "片段未完整阐述“为什么要这么做”（本质目的），且部分关键句被截断。",
+   "attempts": 1
+  },
+  "c5cd937369aec215": {
+   "can_answer": true,
+   "reason": "片段[6]给出了内装装配率的具体计算公式及各项参数定义。",
+   "attempts": 1
+  },
+  "9d06600c020a3b86": {
+   "can_answer": true,
+   "reason": "片段明确列出了承诺书需承诺的内容，包括首次申领、未享受其他补贴、信息真实及接受核查等。",
+   "attempts": 1
+  },
+  "3ec228c4ce35d475": {
+   "can_answer": true,
+   "reason": "片段明确给出了老旧住宅电梯的报废更新、大修改造、安全评估及推进模式等具体处理措施。",
+   "attempts": 1
+  },
+  "4e22aff48de91e79": {
+   "can_answer": true,
+   "reason": "片段[4]和[7]明确宁波鄞州区装配化装修补贴标准为合同价25%，单户最高3万元。",
+   "attempts": 1
+  },
+  "988d9726477418bd": {
+   "can_answer": true,
+   "reason": "片段明确提及对建设回收分拣中心给予财政资金支持，并支持优化回收网络。",
+   "attempts": 1
+  },
+  "9d2057c53190ea3c": {
+   "can_answer": true,
+   "reason": "片段[2]明确列出了不保修的三种情况：人为损坏、不可抗力、业主自行改造。",
+   "attempts": 1
+  },
+  "8fe06e2a0990689a": {
+   "can_answer": true,
+   "reason": "片段提及开展现场会、交流会、讲座、展览等宣传展示活动，并选树典型示范。",
+   "attempts": 1
+  },
+  "b7fdb3ce7c4d220f": {
+   "can_answer": true,
+   "reason": "片段明确列出以住宅电梯、施工设备、建筑节能改造为重点推进更新。",
+   "attempts": 1
+  },
+  "6b82b63cde42bd95": {
+   "can_answer": true,
+   "reason": "片段明确说明价格信息为参考信息，非强制性计价依据，正式结算应执行当期计价依据。",
+   "attempts": 1
+  },
+  "7207e210630ccbe0": {
+   "can_answer": false,
+   "reason": "片段仅提及最高补助1.5万元及30%比例，未明确“套餐超过2万”这一特定条件下的具体补贴金额。",
+   "attempts": 1
+  },
+  "4cc9aa13d0c99f7d": {
+   "can_answer": true,
+   "reason": "片段[1]明确说明门窗维修按门窗洞口面积计算。",
+   "attempts": 1
+  },
+  "729f93b980826b2d": {
+   "can_answer": true,
+   "reason": "片段明确记载嵊州试点300余户，最高补助1.5万元。",
+   "attempts": 1
+  },
+  "5f27266e68fb1b9c": {
+   "can_answer": true,
+   "reason": "片段[2]和[4]明确列出了十五五期间绍兴在装配式装修试点、项目开工面积及企业占比等关键举措。",
+   "attempts": 1
+  },
+  "e3ea2f16208125fb": {
+   "can_answer": true,
+   "reason": "片段明确列出湖州入选首批省级试点的3个项目名称。",
+   "attempts": 1
+  },
+  "5c4fb7053eb3ee32": {
+   "can_answer": true,
+   "reason": "片段明确说明该项目是宁波市首个开工的全钢结构住宅项目，也是宁波首批装配化装修试点创建项目。",
+   "attempts": 1
+  },
+  "476fd08159a378e4": {
+   "can_answer": true,
+   "reason": "片段[1]明确记载莫干山医疗中心病房墙面采用抗菌树脂装饰板施工。",
+   "attempts": 1
+  },
+  "a5eca9553c12e21f": {
+   "can_answer": false,
+   "reason": "片段未提及水印成因，仅列出防水、收口等通用要求，无法定位具体缺失步骤。",
+   "attempts": 1
+  },
+  "c616bf2e79e88b2c": {
+   "can_answer": true,
+   "reason": "片段[1]明确列出了2026年全省建筑业工作会议在优化市场环境、质量安全、科技创新及人工智能等六大领域的具体监管安排。",
+   "attempts": 1
+  },
+  "20200099dc7772de": {
+   "can_answer": true,
+   "reason": "片段[4]明确装配式吊顶系统满足“可逆安装要求”，即支持拆卸后重新安装。",
+   "attempts": 1
+  },
+  "8213fffbcde0cbab": {
+   "can_answer": true,
+   "reason": "片段详细列出了干挂瓷砖与复合墙板（硫氧镁覆砖）在构造方式、调平组件及收口做法上的具体区别。",
+   "attempts": 1
+  },
+  "513b213c9df651f8": {
+   "can_answer": true,
+   "reason": "片段给出了地漏应具阻止臭气功能、宜采用成套配件及设置泄水口等做法。",
+   "attempts": 1
+  },
+  "ba21c2d41e50d528": {
+   "can_answer": true,
+   "reason": "片段明确给出“不采用架空楼层地面构造”的做法，即可以不抬高地面。",
+   "attempts": 1
+  },
+  "b7a41968a5a1a108": {
+   "can_answer": true,
+   "reason": "片段提及墙体连接优先采用可拆装结构，便于后期维护与更换。",
+   "attempts": 1
+  },
+  "cdfee5295b980a74": {
+   "can_answer": true,
+   "reason": "片段[1]规定高度低于3米安装一道贯通龙骨，3米至5米安装两道，隐含最大高度为5米。",
+   "attempts": 1
+  },
+  "68e84ecdc48cb04f": {
+   "can_answer": true,
+   "reason": "片段明确提及需与“有资质的装修企业”签订合同，并规定建设单位应发包给具有相应资质的单位。",
+   "attempts": 1
+  },
+  "2764c70be25a45d5": {
+   "can_answer": true,
+   "reason": "片段明确记载了“瓷砖干挂墙面”、“干挂瓷砖”及“薄贴瓷砖”等做法，证明可以贴。",
+   "attempts": 1
+  },
+  "8b84415301e5d8c6": {
+   "can_answer": true,
+   "reason": "片段明确定义集成卫生间由防水盘、壁板等构成，其中防水盘为底部盘形组件，表明地面整体成型。",
+   "attempts": 1
+  },
+  "af938a7ee1238ab0": {
+   "can_answer": true,
+   "reason": "片段明确给出人造木板及其制品的甲醛释放量限值（如 0.124mg/m³）及检测要求。",
+   "attempts": 1
+  },
+  "4c7380cda77e301e": {
+   "can_answer": true,
+   "reason": "片段[4]提供了排烟管接入排气道的安装示意及坡度要求（2%～3%），包含具体做法。",
+   "attempts": 1
+  },
+  "b1811daa24b8ab2b": {
+   "can_answer": true,
+   "reason": "片段明确禁止在装配式墙面安装后二次开洞，即不能事后改动插座位置。",
+   "attempts": 1
+  },
+  "cf3ffc5ae9e4349c": {
+   "can_answer": false,
+   "reason": "片段仅列出岩棉填充的构造做法，未说明隔音失效的具体原因或排查方法。",
+   "attempts": 1
+  },
+  "5d3b4457f46fc3ea": {
+   "can_answer": true,
+   "reason": "片段提及资金奖补、招投标机制、设计引领、监督机制、数字赋能及宣传推广等支持手段。",
+   "attempts": 1
+  }
+ }
+}

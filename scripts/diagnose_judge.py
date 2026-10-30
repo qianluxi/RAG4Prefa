@@ -45,20 +45,25 @@ def load_rows(path: Path) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dump", default="eval/reports/judge-20261030.json")
-    ap.add_argument("--cache", default="eval/reports/judge-hits.json")
+    ap.add_argument("--dump", default="eval/reports/judge-v1-k8-20261030.json")
+    ap.add_argument("--cache", default="eval/reports/judge-hits-k8.json")
     ap.add_argument("--positive", nargs="*", default=[
         "eval/dataset.jsonl", "eval/dataset.paraphrase.jsonl",
         "eval/dataset.independent.jsonl", "eval/dataset.independent-b.jsonl",
     ])
     ap.add_argument("--db", default=str(ROOT / "data" / "app.db"))
-    ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--k", type=int, default=8)
     ap.add_argument("--save", default="")
     args = ap.parse_args()
 
     ev = _eval_module()
     saved = json.loads(Path(args.dump).read_text(encoding="utf-8"))
-    cache = json.loads(Path(args.cache).read_text(encoding="utf-8"))["hits"]
+    # 缓存格式 v2 之后 key 是"问题+Filter"的哈希，条目里才带问句。这里统一拆成
+    # 问句 → 候选列表，脚本其余部分不必知道 key 长什么样。
+    cache = {}
+    for entry in json.loads(Path(args.cache).read_text(encoding="utf-8"))["hits"].values():
+        if isinstance(entry, dict) and "question" in entry:
+            cache.setdefault(entry["question"], entry.get("hits", []))
     row_by_q = {}
     for path in args.positive:
         for row in load_rows(Path(path)):

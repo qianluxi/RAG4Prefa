@@ -92,3 +92,26 @@ def test_probe_also_carries_the_switch() -> None:
     llm, calls = _fake(_settings(llm_enable_thinking=False))
     assert llm.probe() == "可\n依据片段 1。"
     assert calls[0]["extra_body"] == {"enable_thinking": False}
+
+
+# ── 采样温度：判官必须定温 ──────────────────────────────────
+
+
+def test_complete_uses_configured_temperature_by_default() -> None:
+    """不传就是配置值：问答用 0.2 是有意的（措辞别太死板），不能被顺手改掉。"""
+    llm, calls = _fake(_settings(llm_temperature=0.2))
+    llm.complete("系统", "用户")
+    assert calls[0]["temperature"] == 0.2
+
+
+def test_complete_accepts_explicit_temperature() -> None:
+    """评估链路传 0 时必须是 0，不能落回配置。
+
+    这不是洁癖：同一份冻结候选连跑两次（0.2），155 题里 11 题结论翻转、库内误拒 6→8，
+    比"换个判官版本"的差异还大。不定温，版本之间的边际差异就没法解释。
+    """
+    llm, calls = _fake(_settings(llm_temperature=0.2))
+    llm.complete("系统", "用户", temperature=0.0)
+    assert calls[0]["temperature"] == 0.0
+    # 0.0 是假值：写成 `or self._settings.llm_temperature` 会静默落回 0.2。
+    assert calls[0]["temperature"] != 0.2

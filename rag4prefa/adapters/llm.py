@@ -59,11 +59,19 @@ class LLM:
                 yield delta.content
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=15), reraise=True)
-    def complete(self, system: str, user: str, *, max_tokens: int | None = None) -> str:
+    def complete(self, system: str, user: str, *, max_tokens: int | None = None,
+                 temperature: float | None = None) -> str:
+        """一次对话补全。`temperature` 显式传入时覆盖配置值。
+
+        为什么要能覆盖：问答用 0.2 让措辞自然一点无所谓，但**判官/评估要定温**。
+        实测（2026-10-30）同一份冻结候选、同一个模型、同一套提示词连跑两次，155 题里
+        11 题结论翻转、库内误拒 6→8——这个量级比版本之间的差异还大，不定温做的 A/B
+        分不清是版本变了还是采样变了。
+        """
         resp = self._sync.chat.completions.create(
             model=self._settings.llm_model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=self._settings.llm_temperature,
+            temperature=self._settings.llm_temperature if temperature is None else temperature,
             max_tokens=max_tokens or self._settings.llm_max_tokens,
             **self._thinking(),
         )

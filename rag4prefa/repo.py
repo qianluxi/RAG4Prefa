@@ -534,6 +534,13 @@ def fts_search(
     return [(r["chunk_id"], -float(r["rank"])) for r in rows]
 
 
+def document_count(conn: sqlite3.Connection) -> int:
+    """文档总数。只服务语料指纹（`scripts/cache_identity.py`）：判断"库变了没"需要
+    一个便宜且稳定的量，片段 id 摘要负责精确那半，这个数负责"连 id 都没了"那半。"""
+    row = conn.execute("SELECT COUNT(*) FROM documents").fetchone()
+    return int(row[0])
+
+
 def documents_mentioning(conn: sqlite3.Connection, needle: str) -> int:
     """有多少份文档的**文件名**里出现 `needle`。
 

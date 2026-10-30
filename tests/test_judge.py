@@ -145,12 +145,15 @@ def test_judge_prompt_registry_has_two_distinct_versions() -> None:
     取值型与做法型不能用同一把尺子。所以断言落在"分型的标志性文字"上，
     而不是"两段字符串不相等"——后者改个错字也会通过。
     """
-    assert set(prompts.JUDGE_PROMPTS) == {"v1", "v2"}
-    v1, v2 = prompts.JUDGE_PROMPTS["v1"], prompts.JUDGE_PROMPTS["v2"]
-    assert "取值型" not in v1 and "做法/结论型" not in v1
+    assert set(prompts.JUDGE_PROMPTS) == {"v1", "v2", "v3"}
+    v1, v2, v3 = (prompts.JUDGE_PROMPTS[v] for v in ("v1", "v2", "v3"))
+    assert "取值型" not in v1
     assert "取值型" in v2 and "做法/结论型" in v2
+    # v3 的两处改动都要在文本里可辨认：三条并列条件 + 输出前自检。
+    assert "同对象" in v3 and "同适用条件" in v3
+    assert "自检" in v3 and "改成「不可」" in v3
     # 共同的那条不能丢：库外拦截全靠"别的地区/年份/项目"
-    for text in (v1, v2):
+    for text in (v1, v2, v3):
         assert "别的地区" in text
 
 

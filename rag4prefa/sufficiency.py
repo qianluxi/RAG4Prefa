@@ -59,6 +59,32 @@ PLACES: tuple[str, ...] = (
 )
 
 
+# 城市 → 所属省级行政区。存在的唯一理由：**省级文件的适用范围覆盖省内城市**。
+#
+# 2026-10-30 专家复审第四节：文件名里没有"杭州"就拒答，会把一个明明答得出的问题拒掉
+# ——库里只有《浙江省…标准》，而省标适用于省内城市。这是误拒，比漏拒更贵。
+#
+# 直辖市（北京/天津/上海/重庆）故意**不在这里**：它们的上级是全国，而"全国标准符合要求"
+# 不等于"某市的申报口径就是这么定的"。把它们挂到全国会让 7/7 的地域拒答全部失效——
+# 库外集里问"北京市的补贴标准"，语料里有国家标准，但没有一份关于北京的文件。
+PROVINCE_OF: dict[str, str] = {
+    "浙江": "浙江",
+    "杭州": "浙江", "宁波": "浙江", "温州": "浙江", "绍兴": "浙江", "湖州": "浙江",
+    "嘉兴": "浙江", "金华": "浙江", "台州": "浙江", "丽水": "浙江", "衢州": "浙江",
+    "舟山": "浙江",
+    "南京": "江苏", "苏州": "江苏", "无锡": "江苏", "常州": "江苏",
+    "广州": "广东", "深圳": "广东", "珠海": "广东", "佛山": "广东", "东莞": "广东",
+    "济南": "山东", "青岛": "山东", "烟台": "山东",
+    "沈阳": "辽宁", "大连": "辽宁",
+    "长春": "吉林", "哈尔滨": "黑龙江", "西安": "陕西", "成都": "四川",
+    "武汉": "湖北", "长沙": "湖南", "合肥": "安徽", "福州": "福建", "厦门": "福建",
+    "南昌": "江西", "郑州": "河南", "石家庄": "河北", "太原": "山西",
+    "昆明": "云南", "贵阳": "贵州", "南宁": "广西", "兰州": "甘肃",
+    "乌鲁木齐": "新疆", "呼和浩特": "内蒙古", "银川": "宁夏", "西宁": "青海",
+    "拉萨": "西藏", "海口": "海南", "三亚": "海南",
+}
+
+
 @dataclass(frozen=True)
 class Signal:
     """一条判据。`blocking` 为真才会导致拒答，其余只写进审计信息。"""
@@ -92,6 +118,12 @@ def find_places(question: str) -> list[str]:
     return [name for name in PLACES if name in question]
 
 
+def coverage_place(name: str) -> str | None:
+    """这个名字靠哪一级文件才是"有资料"。自己就是省级/直辖市级时返回 None。"""
+    parent = PROVINCE_OF.get(name)
+    return parent if parent and parent != name else None
+
+
 def _top_score(hits: Sequence[Hit]) -> tuple[float | None, str]:
     """最相关那条候选的分数，以及它是哪种分。
 
@@ -122,15 +154,37 @@ def judge(
         return Verdict(True, signals)
 
     mentions = corpus_mentions or (lambda needle: repo.documents_mentioning(conn, needle))
-    absent = [name for name in find_places(question) if mentions(name) <= 0]
+    # 城市问题先看本市，再看省：省级文件适用于省内城市，这一条不成立就会误拒一类
+    # 本来答得出的问题（见 `PROVINCE_OF`）。
+    by_upper: list[tuple[str, str]] = []
+    absent: list[str] = []
+    for name in find_places(question):
+        if mentions(name) > 0:
+            continue
+        parent = coverage_place(name)
+        if parent and mentions(parent) > 0:
+            by_upper.append((name, parent))
+        else:
+            absent.append(name)
     if absent:
         listed = "、".join(absent)
         signals.append(
             Signal(
                 "geo_absent",
                 True,
-                f"问句问的是「{listed}」，而库里没有一份资料是关于它的；"
+                f"问句问的是「{listed}」，而库里没有一份关于它的文件，也没有覆盖它的上级文件；"
                 "只凭主题相近的片段作答，会把别处的规定当成这个地域的规定",
+            )
+        )
+    for name, parent in by_upper:
+        # 非阻断信号：拒答是错的，但"这是省级口径"必须让用户看见——否则答案会被读成
+        # 该市自己的规定。
+        signals.append(
+            Signal(
+                "geo_upper_level",
+                False,
+                f"库里没有关于{name}的文件，只有{parent}的资料；下面这些片段是省级口径，"
+                f"未必是{name}本地的具体规定",
             )
         )
 
