@@ -33,7 +33,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from . import repo
+from . import prompts, repo
 from .domain import Hit
 
 # 地域名表。用途只有一个：判断"库里有没有这个地域的资料"，不参与任何语义判断。
@@ -154,3 +154,106 @@ def explain(verdict: Verdict) -> str:
     if not verdict.refuse:
         return ""
     return "资料不足，暂不能据此作答：" + "；".join(verdict.reasons) + "。"
+
+
+# ── 第二层：让模型自己判"这批片段够不够" ─────────────────────
+#
+# 规则层只能判"能命名理由"的三类，`near_topic`（主题相近、缺的正是被问的那个事实）
+# 在规则层做不到——那需要语义蕴含。所以补一个判官：不回答，只回答"够不够"。
+#
+# **它比"在回答提示词里求模型别猜"强的地方只有一个，但很关键**：判官的输出是结构化
+# 的两行，可以逐题核对、误判能归因；提示词的效果只能从最终答案里间接体会。
+#
+# 代价同样明确：每题多一次模型调用，且判官本身会错。所以它默认**不参与生产判定**
+# （`refuse_mode` 不含 judge），先由 `scripts/judge_sufficiency.py` 在冻结候选上量
+# 漏拒与误拒，数字过关才谈接入。
+
+_NO = ("不可", "不能", "不可以", "不足以", "不够", "无法", "否")
+_YES = ("可", "能", "是")
+
+
+@dataclass(frozen=True)
+class JudgeReply:
+    """判官的一次回答。`can_answer` 为 None 表示格式不可解析（不是"判了不可"）。"""
+
+    can_answer: bool | None
+    reason: str
+    raw: str = ""
+    attempts: int = 1
+
+
+def _first_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped.strip("*#「」『』[]【】（）() -—·\t　")
+    return ""
+
+
+def parse_judge_reply(text: str, *, attempts: int = 1) -> JudgeReply:
+    """解析成 (能不能答, 理由)。
+
+    `can_answer is None` 与 `False` 必须分开：前者是"输出不合格式，什么都没判"，
+    后者是"判了不可"。把两者合成一个布尔，格式故障会被当成一次成功的拒答，
+    报告上的拒答率就会因为模型话多而虚高。
+
+    先判否定词再判肯定词：`不可` 与 `可`、`不能` 与 `能` 在 `str.startswith` 下本来
+    不会互相吃掉（前者的首字是「不」），但这层顺序加上 `不…` 兜底，才挡得住
+    「不可以」「不足」这类三个字的变体。
+    """
+    head = _first_line(text)
+    if not head:
+        return JudgeReply(None, "", text, attempts)
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    reason = lines[1] if len(lines) > 1 else ""
+
+    if head.startswith(_NO):
+        return JudgeReply(False, reason, text, attempts)
+    if head.startswith(_YES):
+        return JudgeReply(True, reason, text, attempts)
+    # 首行不是判断词（模型先说了别的），退回整段找判断词——但只认开头那几个词，
+    # 免得「不可」出现在理由里被当成否定结论。
+    if head.startswith("不"):
+        return JudgeReply(False, reason, text, attempts)
+    return JudgeReply(None, "", text, attempts)
+
+
+def judge_by_llm(
+    question: str,
+    hits: Sequence[Hit],
+    complete: Callable[[str, str], str],
+    *,
+    top_n: int = 5,
+    per_snippet: int = 400,
+    retry: bool = True,
+    system: str | None = None,
+) -> JudgeReply:
+    """问一次判官。`complete(system, user) -> str` 由调用方注入，便于离线测试。
+
+    没有候选片段时不问模型：这是规则层已经能判的事，多一次调用只会多一个出错的机会。
+
+    `system` 用来切换判官版本（`prompts.JUDGE_PROMPTS`）：v1 只有一条口径，
+    v2 按"取值型/做法型"分开判。**重试沿用同一个 system**，否则判了两次却是两把尺子。
+    """
+    if not hits:
+        return JudgeReply(False, "没有候选片段")
+    system = system or prompts.SYSTEM_JUDGE
+    reply = parse_judge_reply(
+        complete(
+            system,
+            prompts.build_judge_prompt(question, list(hits), top_n=top_n,
+                                      per_snippet=per_snippet),
+        )
+    )
+    if reply.can_answer is None and retry:
+        # 只重问格式，不换判据：换了判据，两次回答就不再是同一把尺子。
+        again = parse_judge_reply(
+            complete(
+                system,
+                prompts.build_judge_retry_prompt(question, list(hits), top_n=top_n,
+                                                 per_snippet=per_snippet),
+            ),
+            attempts=2,
+        )
+        return JudgeReply(again.can_answer, again.reason, again.raw, again.attempts)
+    return reply

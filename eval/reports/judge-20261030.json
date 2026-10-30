@@ -1,0 +1,3495 @@
+{
+ "summary": {
+  "refuse": {
+   "geo": {
+    "n": 7,
+    "rule": 7,
+    "judge": 7,
+    "undecided": 0,
+    "either": 7
+   },
+   "time": {
+    "n": 2,
+    "rule": 0,
+    "judge": 2,
+    "undecided": 0,
+    "either": 2
+   },
+   "missing_topic": {
+    "n": 3,
+    "rule": 0,
+    "judge": 3,
+    "undecided": 0,
+    "either": 3
+   },
+   "near_topic": {
+    "n": 21,
+    "rule": 0,
+    "judge": 21,
+    "undecided": 0,
+    "either": 21
+   }
+  },
+  "positive": {
+   "dataset": {
+    "n": 31,
+    "rule": 0,
+    "judge": 3,
+    "undecided": 0,
+    "either": 3
+   },
+   "paraphrase": {
+    "n": 50,
+    "rule": 0,
+    "judge": 19,
+    "undecided": 0,
+    "either": 19
+   },
+   "independent": {
+    "n": 27,
+    "rule": 0,
+    "judge": 7,
+    "undecided": 0,
+    "either": 7
+   },
+   "independent-b": {
+    "n": 14,
+    "rule": 0,
+    "judge": 12,
+    "undecided": 0,
+    "either": 12
+   }
+  }
+ },
+ "results": [
+  {
+   "kind": "refuse",
+   "question": "上海对新建民用建筑的装配式实施范围是怎么规定的？",
+   "category": "geo",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": true,
+   "rule_reasons": [
+    "问句问的是「上海」，而库里没有一份资料是关于它的；只凭主题相近的片段作答，会把别处的规定当成这个地域的规定"
+   ],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段均为浙江省或国家标准，未包含上海市装配式实施范围的规定。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "05_浙江省装配化装修工程施工质量验收暂行规定.pdf",
+    "score": 0.9450065518410788
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "北京市装配化装修的补贴标准是多少？",
+   "category": "geo",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": true,
+   "rule_reasons": [
+    "问句问的是「北京」，而库里没有一份资料是关于它的；只凭主题相近的片段作答，会把别处的规定当成这个地域的规定"
+   ],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段为宁波和绍兴政策，缺失北京市装配化装修补贴标准的具体事实。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A3_宁波市鄞州区装配化装修试点实施方案_2025-12-17.pdf",
+    "score": 2.930207705039658
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "日本 SI 住宅体系的部品化率要求是多少？",
+   "category": "geo",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": true,
+   "rule_reasons": [
+    "问句问的是「日本」，而库里没有一份资料是关于它的；只凭主题相近的片段作答，会把别处的规定当成这个地域的规定"
+   ],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段均为中国标准，未提及日本 SI 住宅体系及其部品化率具体要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32a_装配式内装评价标准换版对照摘要_2021vs2025.md",
+    "score": 2.7307370012341923
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "江苏省装配式建筑评价标准的装配率怎么算？",
+   "category": "geo",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": true,
+   "rule_reasons": [
+    "问句问的是「江苏」，而库里没有一份资料是关于它的；只凭主题相近的片段作答，会把别处的规定当成这个地域的规定"
+   ],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段均为浙江省标准，缺失江苏省装配式建筑评价标准的具体计算规则。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "10_浙江省装配式建筑评价标准_DBJ33T1165-2024.pdf",
+    "score": 1.7933140748661287
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "深圳市装配化装修试点企业有哪些？",
+   "category": "geo",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": true,
+   "rule_reasons": [
+    "问句问的是「深圳」，而库里没有一份资料是关于它的；只凭主题相近的片段作答，会把别处的规定当成这个地域的规定"
+   ],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "所有片段涉及浙江或宁波地区，未提供深圳市试点企业名单。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D6_省建设厅公布第一批装配化装修试点企业12家_浙建管发2024-56号_2024-04-01.md",
+    "score": 4.015189343889655
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "广东省对装配式装修有哪些补贴？",
+   "category": "geo",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": true,
+   "rule_reasons": [
+    "问句问的是「广东」，而库里没有一份资料是关于它的；只凭主题相近的片段作答，会把别处的规定当成这个地域的规定"
+   ],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段均为浙江省政策，未提及广东省装配式装修补贴具体事实。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "24_浙江省家装厨卫换新惠民工程实施细则_浙建管发2024-80号.md",
+    "score": 0.0
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "成都市装配式装修的验收规定是什么？",
+   "category": "geo",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": true,
+   "rule_reasons": [
+    "问句问的是「成都」，而库里没有一份资料是关于它的；只凭主题相近的片段作答，会把别处的规定当成这个地域的规定"
+   ],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料为浙江省及国家标准，缺失成都市具体验收规定内容。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "05_浙江省装配化装修工程施工质量验收暂行规定.pdf",
+    "score": 1.6182480053716033
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "2019年浙江省装配式装修的政策要求是什么？",
+   "category": "time",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段均为 2024 年及以后文件，未包含 2019 年浙江省装配式装修的具体政策要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 0.4820327758587049
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "2020年发布的装配式内装修标准有哪些变化？",
+   "category": "time",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段为室内环境污染控制标准，未提供装配式内装修标准的具体变化内容。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "21_GB50325-2020_民用建筑工程室内环境污染控制标准.pdf",
+    "score": 5.343732202177277
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配式装修的消防验收由哪个部门负责？",
+   "category": "missing_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未明确具体负责消防验收的部门名称，仅提及消防主管部门。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 2.132438083531791
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配式装修工人的培训证书怎么考？",
+   "category": "missing_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅提及需考核上岗，缺失证书考取的具体步骤、发证机构及考试方式。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32_装配式内装评价标准报批稿_DBJ33T1259-202x_2026-10公示.pdf",
+    "score": 3.840008951043385
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配式装修的碳排放怎么核算？",
+   "category": "missing_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅提及依据公式(2)计算，未展示公式内容及具体核算步骤。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P02_装配式装修减碳_住宅案例_碳排放.pdf",
+    "score": 2.036862643977814
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配化装修的工人一天工钱是多少？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未提供工人日工资具体数值，仅提及系统市场参考价及单价差异。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D4a_装配化装修市场价格数据摘要_2024Q2.md",
+    "score": 3.2191149607704537
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配化装修工程开票的增值税税率是多少？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未直接给出增值税税率数值，仅提及含税信息或企业所得税政策。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D4_浙江省装配化装修系统工程市场价格参考信息_2024年第2季度_浙建站推2024-3号.pdf",
+    "score": 1.0285936886921507
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "承接装配化装修施工需要什么等级的资质？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅提及“相应等级”，未明确承接装配化装修所需的具体资质等级名称。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 0.10858786324348359
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配式装修做完以后甲醛检测该找哪家机构？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅规定应委托有资质机构，未提供具体机构名称或名单。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 4.616775922864244
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配化装修项目的保险费率是多少？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未提供具体保险费率数值，仅提及费用承担主体及最低保额要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32a_装配式内装评价标准换版对照摘要_2021vs2025.md",
+    "score": 0.2753811812635862
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "浙江搞装配化装修试点一共带动了多少人就业？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段中无关于试点带动就业人数的具体数据或统计信息。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D2_省住建厅对省十四届人大二次会议绍32号建议的答复_2024-09-30.md",
+    "score": 5.220588155086654
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配化装修的吊顶龙骨用哪个品牌的？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅提及材料类型，未提供吊顶龙骨的具体品牌名称。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P12_湖州3个首批试点项目逐项目面积与工艺详情_2024-12.md",
+    "score": 1.424388455871964
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "一套一百平的房子做装配化装修要多少天完工？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅提及厨卫翻新工期为一周，未提供百平住宅整体装修天数。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P2_海盐两项目入选省首批装配化装修试点_海盐县政府_2024-12-25.md",
+    "score": 2.926509002442062
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配化装修的房子冬天取暖能省多少电费？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "缺少冬季取暖节省电费的具体数值，片段仅涉及固废及人工减少比例。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P02_装配式装修减碳_住宅案例_碳排放.pdf",
+    "score": 0.07352082467505706
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配式装修的墙板接缝开裂了找谁投诉？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段只规定了施工验收标准，未说明质量问题投诉对象或联系方式。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "05_浙江省装配化装修工程施工质量验收暂行规定.pdf",
+    "score": 1.8986415562491348
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配式内装有没有对应的国际标准？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅涉及国内及地方标准，未提供国际标准是否存在的具体事实。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "04_浙江省装配式内装评价标准_DB33T1259-2021.pdf",
+    "score": 0.7781706126674552
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "浙江各市装配化装修试点考核排名第一的是哪个市？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未提及各市考核排名，仅含试点名单与项目详情，缺失关键信息。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P6_浙江省首批装配化装修试点项目公布_杭州6个项目上榜_杭州网_2024-12-06.md",
+    "score": 2.662342475210693
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配式内装的模块化率怎么算？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料未提供模块化率定义及算法，仅包含内装装配率计算。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32_装配式内装评价标准报批稿_DBJ33T1259-202x_2026-10公示.pdf",
+    "score": 2.7856200054605544
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "绍兴的装配化装修试点有没有贷款贴息？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未提及“贷款贴息”相关信息，仅涉及资金奖励及奖补，无法确认。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P3_绍兴深入推进装配式装修试点_省经济信息中心_2025-03-11.md",
+    "score": 0.7075575843220281
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配化装修工人的社保由谁来缴？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段中无关于工人社保缴纳责任主体的具体规定。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32_装配式内装评价标准报批稿_DBJ33T1259-202x_2026-10公示.pdf",
+    "score": 0.5790274528028261
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "浙江省装配化装修现在的产业规模有多少产值？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅提及项目面积、占比及政策，未提供产业产值的具体数值。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P7_杭州6个首批省级装配化装修试点项目技术做法详情_杭州建设_2024-12.md",
+    "score": 0.0
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "浙江省装配化装修试点的财政资金一共投了多少？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未提供浙江省装配化装修试点的财政投入总金额数据。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P3_绍兴深入推进装配式装修试点_省经济信息中心_2025-03-11.md",
+    "score": 0.0
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "做装配化装修能不能用住房公积金贷款？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未提及住房公积金贷款相关政策，缺失该具体事实依据。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A3_宁波市鄞州区装配化装修试点实施方案_2025-12-17.pdf",
+    "score": 0.0
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配化装修的工人一天能装多少平方米？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段缺失工人每日安装效率的具体数值，仅提供了项目面积与进度信息。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P7_杭州6个首批省级装配化装修试点项目技术做法详情_杭州建设_2024-12.md",
+    "score": 2.3916447140391126
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装配化装修项目的施工员上岗要考什么证？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未提及装配化装修项目施工员上岗所需的具体证书名称。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 0.3505896490907646
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "refuse",
+   "question": "装修完多久能住进去？",
+   "category": "near_topic",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "缺失装修完成后允许入住的具体时长，仅提及验收时间要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "21_GB50325-2020_民用建筑工程室内环境污染控制标准.pdf",
+    "score": 4.708390581855328
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式内装修的定义是什么？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [1][4][5] 明确定义了“装配式内装”，与问题术语实质一致。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32_装配式内装评价标准报批稿_DBJ33T1259-202x_2026-10公示.pdf",
+    "score": 2.5893979656222026
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "新建建筑的装配式内装修设计与建筑设计应如何衔接？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确说明新建装配式内装修应与建筑设计同步协同进行。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 5.877981672403182
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "双层条板隔墙两侧墙面竖向接缝的错开距离不应小于多少？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "多个片段均明确双层条板隔墙两侧竖向接缝错开距离不小于 200mm。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "03_浙江省装配式内装修施工图设计文件技术审查要点.pdf",
+    "score": 4.891949080973629
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨房橱柜内设置燃气表时，橱柜应具备什么功能？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [1] 第 6.5.1 条规定设置燃气表的橱柜应具有自然通风功能。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 9.14172628664091
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "架空楼地面内敷设管线时，检修口宜设置在什么位置？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确说明检修口宜设置在不影响正常使用的隐蔽位置。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 7.337508455324662
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式墙面可采用哪两类集成墙面板系统？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 第 5.3.1 条直接列出了干挂集成墙面板系统和粘贴式集成墙面板两类。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 8.709549398241066
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式吊顶按龙骨形式可分为哪几类？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 第 4.3.12 条明确列出明龙骨、暗龙骨、无龙骨吊顶分类。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 1.69078784152644
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "集成卫生间有无障碍设计要求时，门槛石位置应如何处理？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 第 5.6.4 条规定，无障碍设计时门槛石位置应设置方便轮椅通过的过渡斜坡。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 10.825080637014892
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "整体卫生间的选型和预留安装空间应在哪个设计阶段确定？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [1][2][3] 明确说明应在建筑设计阶段确定。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "13_JGJT467-2018_装配式整体卫生间应用技术标准.pdf",
+    "score": 7.215457379562652
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式内装修的设备和管线与主体结构的关系应遵循什么原则？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段中多处明确说明应遵循设备管线与结构分离的原则。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 1.4727687232422293
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式内装修设计应采用什么技术构建内装修模型？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [2] 第 7.0.1 条明确规定应采用建筑信息化（BIM）模型技术构建模型。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 4.406065451298865
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "既有建筑的装配式内装修是否可以参照本导则执行？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 第 3.0.1 条直接规定既有建筑可参照执行。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 3.794450335588616
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "单层条板隔墙用作分户墙时厚度不应小于多少？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1、2、3 均直接规定了单层条板隔墙作分户墙时厚度不应小于 120mm。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "03_浙江省装配式内装修施工图设计文件技术审查要点.pdf",
+    "score": 5.19471011297483
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "施工图审查时装配式墙面应用比例 Q5 的计算是否扣除门窗洞口面积？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确施工图审查时 Q5 计算可不扣除门窗洞口面积。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "03_浙江省装配式内装修施工图设计文件技术审查要点.pdf",
+    "score": 6.0789466715656815
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "施工图审查评分表中装配式内装设计 Q1 项的满分是多少？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段均为评价标准，非施工图审查评分表，缺少该特定表格中 Q1 项满分数据。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32a_装配式内装评价标准换版对照摘要_2021vs2025.md",
+    "score": 1.255216263318009
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "集成卫生间采用同层排水后排式座便器时结构降板高度不宜小于多少？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段数值冲突（150mm/200mm），且术语不完全一致，无法确定唯一答案。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "02_浙江省装配式内装修施工技术要点_浙建管发2024-55号.pdf",
+    "score": 7.625350710337943
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式隔墙高度超过多少米时其强度应进行验算？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确规定“高度超过 4 米的隔墙，其强度应进行验算”。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "02_浙江省装配式内装修施工技术要点_浙建管发2024-55号.pdf",
+    "score": 5.511452932082336
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "跌级吊顶的灯槽线条距离低位板边缘不应小于多少？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确规定灯槽线条距离低位板边缘不应小于 10 毫米。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "02_浙江省装配式内装修施工技术要点_浙建管发2024-55号.pdf",
+    "score": 2.6709896737510332
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式墙面与基层墙体的连接应采用什么方式？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅规定“可靠连接”或系统类型，未明确具体连接构造或固定方式。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "02_浙江省装配式内装修施工技术要点_浙建管发2024-55号.pdf",
+    "score": 4.545008685699372
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨房吊柜安装在墙面板上时，墙板应在哪里开孔？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 第 5 条明确规定墙板应在工厂预制开孔。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "02_浙江省装配式内装修施工技术要点_浙建管发2024-55号.pdf",
+    "score": 3.422834008992234
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨卫换新时卫生间吊顶宜采用什么燃烧性能等级的材料？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 第 4.3.3 条明确规定卫生间吊顶宜采用燃烧性能 A 级材料。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "09_浙江省装配式厨卫换新工程技术导则_试行_浙建管发2024-119号.pdf",
+    "score": 5.742658021383381
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨卫换新时厨房吊柜悬挂在轻质隔墙上应采取什么措施？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [2] 为厨卫换新导则，条款明确悬挂轻质隔墙时应采取加强措施。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 7.848847863500534
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "申领旧房装修厨卫改造补贴需要提交哪些材料？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确列出了申领所需的具体材料清单，含身份证、合同、发票等。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "28_浙江省旧房装修厨卫改造物品材料购置补贴操作细则_浙建管发2024-130号.pdf",
+    "score": 4.199407531861812
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "2025 年补贴物品材料品类中的集成吊顶是否包含电器设备？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 和 3 明确 2025 年补贴细则规定集成吊顶不含电器设备。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "29_2025年浙江省旧房装修和厨卫局部改造补贴实施细则.pdf",
+    "score": 3.8830626446229486
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "经营者自行修改合同格式条款后还能否以示范文本名义签约？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确说明修改格式条款后不得以示范文本名义签订合同。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 11.692229034755304
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "合同示范文本中工期天数的日期计算方式是什么？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 注明“所有日期均指自然日”，明确了工期天数的计算方式。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 5.6276448559447
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "按 2024 年二季度参考价，5.5 平方米厨房基本型的装修造价大致多少？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 含 2024Q2 5.5㎡厨房基本型总价约 1.2 万—1.4 万元。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D4a_装配化装修市场价格数据摘要_2024Q2.md",
+    "score": 8.708984710499777
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "浙江省装配化装修试点包括哪几个设区市？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 5 明确列出杭州、宁波、绍兴、台州 4 个设区市为试点市。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A6_宁波市装配化装修试点工作实施方案_甬建发2023-53号.docx",
+    "score": 3.3784306187445226
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "预制墙板底部灌浆应采用什么方式灌注？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确记载“灌浆必须采用机械压力注浆法从下口灌注”。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 8.348820664535692
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "预制构件安装施工前宜先进行哪项工作？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确说明安装施工前宜进行预制构件试安装，还应进行测量放线等工作。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 7.496816187469703
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "隐蔽工程验收记录应包含哪些内容？",
+   "category": "dataset",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1-3 分别列出了钢结构、混凝土等隐蔽验收记录的具体包含内容。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 5.408697544987008
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式装修到底是个啥？和传统装修有啥不一样？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段有明确定义，且含工厂生产、固废人工减少比例等与传统装修的对比事实。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "05_浙江省装配化装修工程施工质量验收暂行规定.pdf",
+    "score": 1.4417641579673448
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "我家厨房想换新，大概要花多少钱？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅给出特定面积的估算价，缺失用户厨房面积及装修标准，无法确定花费。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D4a_装配化装修市场价格数据摘要_2024Q2.md",
+    "score": 3.2535699113219385
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "老房子翻新能补多少钱？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段提供了浙江省及绍兴市旧房装修补贴的具体比例、上限及固定金额标准。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D4a_装配化装修市场价格数据摘要_2024Q2.md",
+    "score": 2.304495818204037
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修完想拿补贴，得先准备哪些材料？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 和 2 均明确列出了申领补贴所需提交的具体材料清单。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "28_浙江省旧房装修厨卫改造物品材料购置补贴操作细则_浙建管发2024-130号.pdf",
+    "score": 4.842542134317406
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨房没窗户，还能装燃气表吗？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未明确无窗厨房是否允许安装燃气表，仅规定了橱柜通风及空间要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 7.7341875393696515
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "墙上想挂电视和吊柜，会不会掉下来？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段针对厨房或背景墙场景，缺失电视吊柜通用固定要求及墙体承重具体数值。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 2.8190875433193927
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "卫生间想装成轮椅能进去的，门口那个坎怎么做？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确卫生间门槛高差不大于 0.015m，且应以斜坡过渡。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 9.434105537247742
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "墙里的电线以后坏了能换吗？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未明确墙内电线损坏后能否更换，仅涉及安装施工及日常维护联系要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 3.8581431659316414
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "吊顶上面还要装灯装风机，会不会塌？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "仅规定需满足荷载计算要求，未提供具体承重数值或坍塌判定依据。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 1.094780625274236
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修完怎么判断能不能住进去？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅涉及装配式建筑评价标准，缺失入住验收的具体判定依据。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "10_浙江省装配式建筑评价标准_DBJ33T1165-2024.pdf",
+    "score": 0.0
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "不是新盖的老房子，也能用这套做法吗？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确适用范围包含既有建筑，可直接确认老房子适用。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32a_装配式内装评价标准换版对照摘要_2021vs2025.md",
+    "score": 7.778262794829674
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修合同的格式条款有什么规定？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确记载格式条款需 30 日内备案，且修改后不得使用示范文本样式。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 10.560143458909113
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "补贴的钱要是提前发完了怎么办？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确规定资金提前用完需发布结束公告，超出部分由地方承担。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "28_浙江省旧房装修厨卫改造物品材料购置补贴操作细则_浙建管发2024-130号.pdf",
+    "score": 7.814302123977065
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "集成吊顶里头包不包含灯具？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅说明集成厨房/卫生间系统包含灯具，未明确单独“集成吊顶”产品是否包含。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 3.9270673600051373
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "同一个部位装修完，怎么知道自己做得好不好？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段多引用外部标准或仅限特定场景，缺失通用装修质量验收的具体判定标准。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 0.8955256833378629
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修的墙面是不是一块块板拼起来的？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确提及装配式墙面采用饰面板、墙面板及条板，存在板块接缝，由板材拼接而成。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "05_浙江省装配化装修工程施工质量验收暂行规定.pdf",
+    "score": 1.975755855201061
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "卫生间能不能在厂里整个做好，再推进去？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确记载“工厂组装完成的整体卫生间”运至施工现场就位，可证实。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "13_JGJT467-2018_装配式整体卫生间应用技术标准.pdf",
+    "score": 3.999647684446617
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨房台面做多高才不累腰？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料仅规定标准尺寸，未说明何种高度可避免累腰，缺乏对应人体工学依据。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "16_JGJT445-2018_工业化住宅尺寸协调标准.pdf",
+    "score": 4.169500290741992
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修老讲“模数”，是不是跟拼积木一样得先对好尺寸？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段含模数定义及数值，明确其用于尺度协调，可确认需按标准尺寸对齐。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "15_GBT50002-2013_建筑模数协调标准.pdf",
+    "score": 3.760717177798026
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "板材是厂里做好送来的，还是师傅现场做？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确说明墙板等材料由厂家预制，运至现场拼装，无需现场制作。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P2_海盐两项目入选省首批装配化装修试点_海盐县政府_2024-12-25.md",
+    "score": 3.7623472355999983
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配率是怎么算出来的？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 5 提供计算公式及变量定义，片段 3 说明总装配率含加分项，信息完整。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "10_浙江省装配式建筑评价标准_DBJ33T1165-2024.pdf",
+    "score": 1.9732532910667282
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修好的东西以后坏了，保修多久？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段 1 数值缺失，且不同文件保修期规定不一致（2 年与 5 年），无法确定。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 4.623245822416804
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修完想在墙上打个孔挂东西，要注意什么？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 4 明确禁止随意打孔，规定打孔前需联系确认管线走向，信息充分。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "02_浙江省装配式内装修施工技术要点_浙建管发2024-55号.pdf",
+    "score": 0.692384093338883
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "两块板拼的缝，以后会不会裂开？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅规定防裂措施，未明确接缝后期是否会开裂的结论。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 1.907010302412367
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "卫生间做完防水，怎么验才知道不漏？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 2 明确规定了防水层完成后蓄水高度、时间及淋水试验时长等具体要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "05_浙江省装配化装修工程施工质量验收暂行规定.pdf",
+    "score": 2.860033978843415
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "验收时墙面误差允许多少算合格？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料对不同墙体类型规定不同，缺少具体墙面类型，无法确定对应允许偏差数值。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "14_JGJT157-2014_建筑轻质条板隔墙技术规程.pdf",
+    "score": 1.4758178483685311
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "吊顶里走了管子，以后怎么检修？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅规定应预留检修口，未说明具体检修操作步骤或方法。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 2.095696939500799
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修垃圾谁负责清运？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未明确装修垃圾清运的具体责任主体，仅提及清理现场或设置投放点。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 5.3936641682591855
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "卫生间地面要不要往地漏那边找坡？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 第 4.1.9 条明确规定卫生间地面应有坡向地漏的排水坡。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "19_GB55038-2025_住宅项目规范.pdf",
+    "score": 4.850098544500202
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "墙板装完要等几天才能做接缝收尾？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料未直接给出墙板安装后等待接缝的天数，仅分别规定了与门窗框安装的时间间隔。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "14_JGJT157-2014_建筑轻质条板隔墙技术规程.pdf",
+    "score": 3.08041980008376
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修材料防火有没有硬性要求？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [2] 规定消防通道等区域装修材料燃烧性能应为 A 级，属硬性要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "18_GB50210-2018_建筑装饰装修工程质量验收标准.pdf",
+    "score": 6.527776597249003
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "燃气热水器跟灶台离多近算危险？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确规定燃气热水器与燃气灶具水平净距不得小于 300mm 的具体数值。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "12_JGJT477-2018_装配式整体厨房应用技术标准.pdf",
+    "score": 5.712025715047371
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "卫生间里洗澡老是怕触电，有什么保护措施？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确提及等电位联结、漏电保护装置及插座高度等具体防护措施。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "19_GB55038-2025_住宅项目规范.pdf",
+    "score": 4.8808332911968195
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修能不能把承重墙砸掉？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [3] 规定住户在二次装修改造中不应对抗承重结构造成损害。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "12_JGJT477-2018_装配式整体厨房应用技术标准.pdf",
+    "score": 3.4567427247746454
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修完什么时候能做室内空气检测？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确给出工程完工不少于 7d 后进行检测的具体时间要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "21_GB50325-2020_民用建筑工程室内环境污染控制标准.pdf",
+    "score": 2.3947541186354964
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "楼上装修，东西会不会掉下来砸到人？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料针对装配式建筑施工，非住宅装修场景，无法对应回答。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "X1_浙江省装配式建筑施工质量安全监督要点_浙建管发2024-71号.pdf",
+    "score": 0.0
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "家里的配电箱要不要装漏电保护？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段[1]规定住宅家居配电箱电源插座回路应加设剩余电流动作保护电器。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "19_GB55038-2025_住宅项目规范.pdf",
+    "score": 5.5401009146853255
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "补贴批下来多久能到账？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确写明核验通过后 30 个工作日内将补贴资金拨付至账户。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A3_宁波市鄞州区装配化装修试点实施方案_2025-12-17.pdf",
+    "score": 3.490964574956105
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "房子哪年交的才能补？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料含多地政策，补贴年限标准不一，未明确适用政策，无法确定。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A3_宁波市鄞州区装配化装修试点实施方案_2025-12-17.pdf",
+    "score": 0.6806670459194966
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "补贴的钱会不会被截留挪用？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [2] 明确提及多部门监督检查及发现截留挪用行为的处罚规定。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "29_2025年浙江省旧房装修和厨卫局部改造补贴实施细则.pdf",
+    "score": 5.675059492276895
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "合同、发票、收款账号必须是同一个人吗？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 规定合同委托方、发票购买方、银行账号应统一为房屋产权人。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "29_2025年浙江省旧房装修和厨卫局部改造补贴实施细则.pdf",
+    "score": 3.665475744074431
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "发票有问题会怎么样？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确说明存在问题发票应退回，补贴追回，线索移交查处。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "29_2025年浙江省旧房装修和厨卫局部改造补贴实施细则.pdf",
+    "score": 2.6909452942758785
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "省里给的这个奖补，是直接发给居民的吗？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确说明激励对象是市县财政，而非直接发给居民。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "24_浙江省家装厨卫换新惠民工程实施细则_浙建管发2024-80号.md",
+    "score": 3.4434029098961494
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨房换新套餐包不包拆旧和清运？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [1] 明确说明“厨房换新”包含旧厨房拆除、垃圾清运等一站式服务。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A10_绍兴市家装厨房换新补助标准_绍兴日报_2024-08-16.md",
+    "score": 4.296401107666018
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "这套导则是全省都得照做，还是只管试点？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1.0.2 明确适用于浙江省，1.0.3 规定应符合，未限定试点范围。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "09_浙江省装配式厨卫换新工程技术导则_试行_浙建管发2024-119号.pdf",
+    "score": 1.5642108659065765
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式装修主要用在住宅还是公共建筑？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [1] 含具体项目数据及结论，指出浙江装配化装修落地重心是公共建筑而非住宅。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P10_嘉兴市第一批装配化装修试点项目清单25个_完整名单_2024-04-01.md",
+    "score": 4.785720828062441
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "企业想参与试点，怎么申报？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅宁波项目试点申报流程，未提供企业参试申报的具体步骤与条件。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D6_省建设厅公布第一批装配化装修试点企业12家_浙建管发2024-56号_2024-04-01.md",
+    "score": 3.180280563434639
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修合同要不要写明开工和竣工日期？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [1] 合同模板第（八）条列有“工程开工日期”及“竣工日期”填写项。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 3.9351117153212707
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "验收的时候业主必须到场吗？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确约定“甲乙双方均应参加”竣工验收，甲方即业主，可回答是否必须到场。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 3.7505245420410924
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修也要把图送审吗？",
+   "category": "paraphrase",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料仅规定“装配式内装修”需审查，未提及普通装修是否需送审。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "03_浙江省装配式内装修施工图设计文件技术审查要点.pdf",
+    "score": 1.1778708011654637
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "双层条板隔墙，两边的板缝要不要对齐？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确规定双层条板隔墙两侧竖向接缝错开距离不应小于 200mm。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "03_浙江省装配式内装修施工图设计文件技术审查要点.pdf",
+    "score": 0.8220451780875973
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "浙江这轮厨卫换新，除了省里的导则还得守别的规范吗？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1.0.3 明确：除符合本导则外，尚应符合国家和浙江省现行有关标准规定。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "09_浙江省装配式厨卫换新工程技术导则_试行_浙建管发2024-119号.pdf",
+    "score": 4.808451365496666
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "隔墙把管线和饰面一起在厂里做好，评价时能多拿几分？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确给出该技术评价项最高分值为 8 分，且描述了工厂制作饰面板的要求，可作答。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "10_浙江省装配式建筑评价标准_DBJ33T1165-2024.pdf",
+    "score": 4.533439445455077
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式吊顶验收，一个检验批要抽多少间？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [2][4] 明确给出装配式吊顶检验批抽查比例及最少房间数。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "05_浙江省装配化装修工程施工质量验收暂行规定.pdf",
+    "score": 4.765187896382368
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "宾馆里做一个带淋浴的整体卫生间，最小要多大？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [2] 为宾馆用整体卫生间平面布局表，含淋浴功能的最小面积及尺寸数据。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "13_JGJT467-2018_装配式整体卫生间应用技术标准.pdf",
+    "score": 7.225640713864825
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "结构用的网格和装修用的网格是一回事吗？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确区分了结构网格与装修网格，并规定了不同的优先尺寸系列。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "15_GBT50002-2013_建筑模数协调标准.pdf",
+    "score": 4.355013949768537
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "平开窗做得高一点，窗扇上锁点要几个？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 6.4.8 规定平开窗扇高度大于 900mm 时，锁闭点不应少于 2 个。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "18_GB50210-2018_建筑装饰装修工程质量验收标准.pdf",
+    "score": 8.076995880277314
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "人造木板到底包括哪几种板？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [3] 2.1.7 条明确列出胶合板、纤维板、刨花板等具体种类。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "21_GB50325-2020_民用建筑工程室内环境污染控制标准.pdf",
+    "score": 0.22420218191261992
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "啥叫管线分离？为什么要这么做？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段 3 解释原因的句子截断（“之间取”后无内容），缺少完整目的说明。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "10_浙江省装配式建筑评价标准_DBJ33T1165-2024.pdf",
+    "score": 5.63145094208414
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "内装装配率是怎么算出来的？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅说明采用内装装配率指标及评价单元，缺失具体计算公式或计算步骤。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "32a_装配式内装评价标准换版对照摘要_2021vs2025.md",
+    "score": 2.1078966183797894
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "省里对试点地区给了哪些支持手段？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确提及省级财政统筹资金奖补市县，及印发政策通知等具体举措。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "24_浙江省家装厨卫换新惠民工程实施细则_浙建管发2024-80号.md",
+    "score": 3.6154865169529184
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "老旧住宅电梯这类设备，接下来要怎么处理？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 明确给出处理方式（报废更新或大修改造）及目标数量和时间节点。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "25_浙江省推动大规模设备更新和消费品以旧换新若干举措_浙政发2024-10号.pdf",
+    "score": 4.524661313337323
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "申请旧房装修补贴，要签字承诺哪些事？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段含承诺书全文，明确列出首次申领、无违规搭建、信息真实等具体承诺内容。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "29_2025年浙江省旧房装修和厨卫局部改造补贴实施细则.pdf",
+    "score": 5.18522172540804
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式装修哪些情况是不给保修的？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [2] 明确列出“不保修情况”，含人为损坏、不可抗力、业主自行改造等情形。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 5.718475105312419
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "宁波鄞州这边装修，补贴能补多少钱？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段 4 为鄞州文件但未写明补贴金额，其他片段非鄞州地区。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "24_浙江省家装厨卫换新惠民工程实施细则_浙建管发2024-80号.md",
+    "score": 0.7402574338394214
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "绍兴回收旧家电有什么扶持？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "缺失具体补贴金额及回收扶持细则，仅提及支持家电以旧换新。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A5_绍兴市推动消费品以旧换新行动方案_2024-07-15.md",
+    "score": 4.729575582455695
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "宁波试点在宣传动员上做了什么安排？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 3 为宁波市实施方案，明确列出开展现场会、讲座等宣传措施。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P8_宁波北仑工业园区宿舍楼改造_装配化装修试点项目_2024-02-29.md",
+    "score": 4.230851981254826
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "台州这轮设备更新主要抓哪几块？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确列出重点为住宅电梯、施工设备、建筑节能改造。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A8_台州市推进建筑和市政工程设施设备更新实施方案_2024-07.md",
+    "score": 3.6705139411123593
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配化装修的价格信息能直接拿来结算吗？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确说明该价格信息为参考信息价，非强制性计价依据，正式计价需执行当期依据。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D4a_装配化装修市场价格数据摘要_2024Q2.md",
+    "score": 4.27689382799871
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "门窗维修的工程量按什么面积算？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 中第四条明确规定“门窗维修按门窗洞口面积以㎡计算”。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D5_浙江省2018版计价依据综合解释及动态调整补充六_含装配化装修补充定额_浙建站计2023-8号.pdf",
+    "score": 7.7493399428452125
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "十五五期间绍兴在住房上要干哪几件事？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅涉及装配式装修试点，缺失绍兴“十五五”住房全面任务清单。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "Z3_浙江省十五五住房和城乡建设规划_浙政办发_2026.md",
+    "score": 3.8681125380826944
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "绍兴厨房换新，套餐超过2万的补多少？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "缺失套餐超 2 万对应的具体补贴数值，仅知最低 6000 元或最高 1.5 万。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A10_绍兴市家装厨房换新补助标准_绍兴日报_2024-08-16.md",
+    "score": 2.653483794897355
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "嵊州厨房换新试点了多少户？能补多少钱？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 1 和 2 明确记载嵊州厨房换新试点 300 余户，最高补助 1.5 万元。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A9_嵊州市厨房换新惠民工程试点_300户_最高补1.5万_2024-09.md",
+    "score": 5.963799073469975
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "湖州那个医疗中心的病房墙面用的什么材料？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料未明确莫干山医疗中心病房墙面材料，仅提及通用墙面，无病房专项说明。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P12_湖州3个首批试点项目逐项目面积与工艺详情_2024-12.md",
+    "score": 6.920993695966644
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "宁波镇海那个保障性租赁住房是什么来头？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确该项目为宁波市首个开工全钢结构住宅项目及首批装配化装修试点项目。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P13_宁波镇海ZH10-03-03地块保障性租赁住房_宁波首批试点_2023-11-17.md",
+    "score": 7.145035185194585
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "湖州有哪几个项目进了省里第一批试点？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 2、3 直接列出了湖州入选的三个试点项目名称，信息完整。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "P1_湖州三项目入选全省首批装配化装修试点_浙江省政府网_2024-12-09.md",
+    "score": 3.1641036606254134
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "2026年省里对建筑业监管有什么安排？",
+   "category": "independent",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 [1] 明确 2026 年会议部署，含招投标、造价、质量安全及消防审查等监管安排",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "Z2_2026年全省建筑业工作会议_2026-01-23.md",
+    "score": 4.922131327582061
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "我家卫生间老是从楼下看到水印，是哪一步没做好？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅为施工规范，未提供导致楼下水印的具体故障步骤及原因。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 2.3407318520062432
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨房吊顶拆下来还能再装回去吗？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "资料未明确厨房吊顶是否支持可逆安装，仅提及通用吊顶系统设计要求。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "01_装配式内装修设计导则_浙建管发2024-72号.pdf",
+    "score": 0.0
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修公司说墙板是干挂的，这跟贴瓷砖有啥区别？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未直接对比干挂墙板与贴瓷砖差异，仅规定干式工法需设空腔，薄贴不算干式工法。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A4_绍兴市住宅厨卫换新装配化装修图集_2024-07-15试行.pdf",
+    "score": 5.061593492172386
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "卫生间地漏那块总有一股味道上来，怎么弄？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅规定地漏需具备防臭功能，未提供解决现有异味问题的具体处理步骤。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A4_绍兴市住宅厨卫换新装配化装修图集_2024-07-15试行.pdf",
+    "score": 1.145085028870144
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "老楼加装卫生间，地面能不能不抬高？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未明确老楼加装卫生间是否必须抬高地面，仅涉及装配式装修构造及排水坡度规定。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "09_浙江省装配式厨卫换新工程技术导则_试行_浙建管发2024-119号.pdf",
+    "score": 4.9818065052196605
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨房和卫生间的墙能不能先做好，以后想改位置还能改吗？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未明确说明墙面安装后能否更改位置，关键信息缺失。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 2.006803494359297
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "石膏板隔墙里塞了岩棉，隔音还是不行，是哪里没做对？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅规定隔墙构造及材料选用要求，未提供隔音失效原因或排查方法。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 3.5126867677817284
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "轻钢龙骨隔墙最多能做多高？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅给出轻钢龙骨 3-5 米施工要求，未明确最大高度限值，其余为条板隔墙。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "02_浙江省装配式内装修施工技术要点_浙建管发2024-55号.pdf",
+    "score": 4.097749815633635
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修企业要有什么资质才能接试点项目？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅提及“相应资质”或能力，未明确承接试点项目所需的具体资质名称。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "D6_省建设厅公布第一批装配化装修试点企业12家_浙建管发2024-56号_2024-04-01.md",
+    "score": 3.1435813305113025
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装配式装修的墙面能不能贴瓷砖？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段明确提及“瓷砖干挂墙面”及“饰面层安装瓷砖”，证实装配式墙面可使用瓷砖。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "A2_绍兴市住宅建筑装配化装修图集_2024.pdf",
+    "score": 2.9495226728842407
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "集成卫生间的地面是整体成型的吗？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未直接说明集成卫生间地面是否整体成型，仅提及防水底盘。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "06_浙江省装配化装修工程质量安全监督要点.pdf",
+    "score": 4.827928836311331
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "装修用的板材有没有甲醛释放限值？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段未给出装修用板材（人造木板）的甲醛释放量具体限值数值。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "21_GB50325-2020_民用建筑工程室内环境污染控制标准.pdf",
+    "score": 2.2279244080978837
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "厨房排烟管怎么接到公共烟道？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": false,
+   "judge_refuse": true,
+   "judge_reason": "片段仅限地方图集及集成灶，未提供通用厨房排烟管连接公共烟道的具体步骤与标准。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "11_JGJT491-2021_装配式内装修技术标准.pdf",
+    "score": 1.435944089822089
+   },
+   "n_hits": 5
+  },
+  {
+   "kind": "positive",
+   "question": "墙面插座的位置能不能事后改？",
+   "category": "independent-b",
+   "filter": {
+    "projects": [
+     "装配式内装"
+    ]
+   },
+   "rule_refuse": false,
+   "rule_reasons": [],
+   "judge_can_answer": true,
+   "judge_refuse": false,
+   "judge_reason": "片段 2 中规定插座面板开洞部位不得在安装后二次开洞。",
+   "judge_attempts": 1,
+   "judge_raw": "",
+   "top": {
+    "filename": "31_浙江省家庭居室装配式装修合同示范文本_HT33SF022-2026_浙建管发2026-30号.pdf",
+    "score": 1.4533272738748568
+   },
+   "n_hits": 5
+  }
+ ],
+ "mode": "rerank",
+ "k": 5,
+ "cache": "eval\\reports\\judge-hits.json",
+ "judge": "v1",
+ "fetched": 0
+}
