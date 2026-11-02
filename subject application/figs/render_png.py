@@ -17,6 +17,10 @@ CHROME = [
 # 目标像素宽度，按原图 viewBox 宽度等比放大，保证 300dpi 左右的印刷清晰度
 TARGET_W = 3000
 
+# Chrome 的截图区域是视口，比 --window-size 小：宽少 16px、高少 94px（窗口边框与标题栏）。
+# 不补偿会把图右侧 0.5%、底部 6% 裁掉——底部注释行会被切一半。实测校准值见 README。
+PAD_W, PAD_H = 16, 94
+
 
 def browser() -> str:
     for p in CHROME:
@@ -39,14 +43,14 @@ def render(svg: Path) -> Path:
     out_h = round(out_w * vh / vw)
 
     # 用 HTML 包一层，固定画布尺寸，避免浏览器滚动条/默认边距影响截图
+    raw = re.sub(r'\swidth="[^"]*"', "", raw, count=1)
+    raw = re.sub(r'\sheight="[^"]*"', "", raw, count=1)
     html = (
         "<html><head><meta charset='utf-8'><style>"
-        "html,body{margin:0;padding:0;background:#fff;}"
+        "html,body{margin:0;padding:0;background:#fff;overflow:hidden;}"
         f"svg{{display:block;width:{out_w}px;height:{out_h}px;}}"
         "</style></head><body>"
-        + re.sub(r'\swidth="[^"]*"', "", raw, count=1).replace(
-            "<svg", f'<svg width="{out_w}" height="{out_h}"', 1
-        )
+        + raw.replace("<svg", f'<svg width="{out_w}" height="{out_h}"', 1)
         + "</body></html>"
     )
     tmp_dir = Path(tempfile.mkdtemp())
@@ -64,7 +68,7 @@ def render(svg: Path) -> Path:
         "--hide-scrollbars",
         "--force-device-scale-factor=1",
         f"--user-data-dir={profile}",
-        f"--window-size={out_w},{out_h}",
+        f"--window-size={out_w + PAD_W},{out_h + PAD_H}",
         "--default-background-color=FFFFFFFF",
         f"--screenshot={png.resolve()}",
         html_path.as_uri(),
