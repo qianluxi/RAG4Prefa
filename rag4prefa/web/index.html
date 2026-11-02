@@ -714,7 +714,9 @@ async function ask() {
   const bubble = el("div", "bubble md", "");
   botMsg.appendChild(bubble);
   const thinking = el("div", "thinking");
-  thinking.appendChild(el("span", "", "正在检索回答中"));
+  // 这句文案会在检索完成时换成"正在生成回答"，所以留个引用，不去猜 span 的序号
+  const thinkingLabel = el("span", "", "正在检索资料");
+  thinking.appendChild(thinkingLabel);
   thinking.appendChild(el("span", "dot"));
   thinking.appendChild(el("span", "dot"));
   thinking.appendChild(el("span", "dot"));
@@ -748,7 +750,11 @@ async function ask() {
     }
     for await (const { event, data } of readEvents(res)) {
       if (event === "meta") {
-        thinking.remove();
+        // 这里**不摘动画**。meta 只说明"检索完了、开始生成"，正文要等模型吐出第一个
+        // token；远程接口这一段常有三五秒甚至更久，摘掉动画就是一段完全没动静的空白，
+        // 用户会以为卡死（2026-11-02 反馈"动画一会儿就没了，很长时间什么都没反应"）。
+        // 正确做法是让动画一路覆盖到第一个字落下，中途只换文案，不留空档。
+        thinkingLabel.textContent = "正在生成回答";
         refusalInfo = data.refusal || null;
         candidateCount = data.candidates;
         $("status").textContent =
@@ -786,6 +792,12 @@ async function ask() {
   } finally {
     state.busy = false;
     $("send").disabled = false;
+    // 兜底：正常路径在第一个 token 处就摘掉动画。但模型一个字都没吐时（空回复、
+    // 连接被掐断），那三个小圆点会一直转下去——比"没动静"更像卡死。
+    if (thinking.isConnected) thinking.remove();
+    if (!answer && !bubble.classList.contains("err")) {
+      bubble.textContent = "模型这次没有返回内容，可以重试或换个问法。";
+    }
     $("messages").scrollTop = $("messages").scrollHeight;
     // quiet：只刷新页头徽标与开关，不改底部这行——它还留着这次回答的候选数与耗时
     await loadHealth({ quiet: true });
