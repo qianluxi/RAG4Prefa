@@ -121,6 +121,8 @@
     background: none; border: none; padding: 0; font: inherit;
   }
   .src-toggle:hover { text-decoration: underline; }
+  /* 没有引用片段时的说明。刻意做成灰字而不是按钮：它是"这次没有来源"，不是可点的入口。 */
+  .src-empty { margin-top: 6px; font-size: 12px; color: var(--muted); }
   .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
   .composer input { flex: 1; }
   .hint { color: var(--muted); font-size: 12px; padding: 0 18px 8px; }
@@ -433,7 +435,19 @@ function el(tag, cls, text) {
 }
 
 /* ── 健康状态 ─────────────────────────────── */
-async function loadHealth() {
+/* 服务端 notes 是给运维看的一句话，里面直接是环境变量名（`未配置 R4P_LLM_API_KEY`）,
+   原样贴在对话框底部像一条报错，而问答其实一切正常——它说的是"服务端那把 Key 没有"，
+   与访客填了自己的 Key 无关。这里只做翻译，不改事实：谁受影响、谁不受影响都留着。 */
+const NOTE_TEXT = {
+  "未配置 R4P_LLM_API_KEY":
+    "服务端未配大模型 Key（R4P_LLM_API_KEY）：问答走访客自己的 Key，检索与扫描件不受影响",
+};
+
+function noteText(note) {
+  return NOTE_TEXT[note] || note;
+}
+
+async function loadHealth({ quiet = false } = {}) {
   const badge = $("health");
   try {
     const h = await api("/api/health");
@@ -459,8 +473,15 @@ async function loadHealth() {
       : `${issues.length ? "索引异常" : "配置缺失"} · ${backend}`;
     badge.classList.toggle("err", !h.ok);
     renderOcrBadge(h.ocr, h.server_key_fallback);
+    // 索引问题永远要说：那是"能跑但结果不可信"的状态，不能被"正在回答"盖掉。
     if (issues.length) $("status").textContent = issues.join("；");
-    else if (h.notes && h.notes.length) $("status").textContent = h.notes.join("；");
+    // 问答结束后会安静地刷一次健康状态（quiet）。这时 #status 正显示这次回答的
+    // "候选 n · 各段耗时 · 拒答理由"（见 ask() 里的 meta 分支），让服务端配置提示
+    // 盖掉它，等于答完就把检索过程抹了——用户看到的就是底部突然变成一句
+    // "未配置 R4P_LLM_API_KEY"，还以为这一问出了错。
+    else if (!quiet && h.notes && h.notes.length) {
+      $("status").textContent = h.notes.map(noteText).join("；");
+    }
   } catch (err) {
     badge.textContent = "服务不可用";
     badge.classList.add("err");
@@ -706,6 +727,10 @@ async function ask() {
 
   let answer = "";
   let firstToken = false;
+  // 回答有没有引用片段，取决于这次检索/闸门走了哪条分支。把这两样留在作用域里，
+  // 才能在没有来源时说出"为什么没有"，而不是只把按钮藏起来（见 renderCitations）。
+  let refusalInfo = null;
+  let candidateCount = null;
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -724,6 +749,8 @@ async function ask() {
     for await (const { event, data } of readEvents(res)) {
       if (event === "meta") {
         thinking.remove();
+        refusalInfo = data.refusal || null;
+        candidateCount = data.candidates;
         $("status").textContent =
           `候选 ${data.candidates} · ${data.filter_desc || "全库"} · ` +
           (data.terms && data.terms.length ? `术语通道 ${data.terms.join("、")} · ` : "") +
@@ -740,7 +767,10 @@ async function ask() {
         bubble.innerHTML = renderAnswer(answer);
         $("messages").scrollTop = $("messages").scrollHeight;
       } else if (event === "citations") {
-        renderCitations(data.items || [], botMsg, srcToggle);
+        // 空分支那两条（候选为空、闸门拒答）后端发的是裸数组 `[]`，正常分支发的是
+        // `{items: [...]}`。这里统一收一下，别让两种形状在渲染层再分叉一次。
+        const items = Array.isArray(data) ? data : (data.items || []);
+        renderCitations(items, botMsg, srcToggle, noSourceReason(refusalInfo, candidateCount));
       } else if (event === "error") {
         thinking.remove();
         bubble.classList.add("err");
@@ -757,7 +787,8 @@ async function ask() {
     state.busy = false;
     $("send").disabled = false;
     $("messages").scrollTop = $("messages").scrollHeight;
-    await loadHealth();
+    // quiet：只刷新页头徽标与开关，不改底部这行——它还留着这次回答的候选数与耗时
+    await loadHealth({ quiet: true });
   }
 }
 
@@ -926,11 +957,28 @@ function renderAnswer(text) {
 }
 /* MD-RENDER-END */
 
-/* 当前这条回答的引用来源。抽屉是全局单例（见 #sources），但每次问答的引用
-   独立：这里只负责"把来源渲染进抽屉、让本条消息的『查看来源』能打开抽屉、
-   让答案里的 [n] 角标能定位到对应卡片"。 */
-function renderCitations(items, botMsg, srcToggle) {
-  if (!items.length) return;
+/* SRC-PANEL-START ── 引用来源面板 ────────────────────────────────
+   抽屉是全局单例（见 #sources），但每次问答的引用独立：这里负责"把来源渲染进
+   抽屉、让本条消息的『查看来源』能打开抽屉、让答案里的 [n] 角标能定位到卡片"。 */
+
+/* 没有片段时**必须说一句**。早期这里直接 return，于是「查看来源」凭空消失，看起来
+   像功能被删了——真实原因通常是这次没走"有候选"那条分支：超范围问题被证据闸门拒答，
+   或者筛选条件把候选筛空。`citations` 空数组本身不带原因，原因在 meta 里
+   （`candidates` 与 `refusal`），所以由调用方算好传进来。 */
+function noSourceReason(refusal, candidates) {
+  if (refusal && refusal.refuse) {
+    const why = (refusal.reasons || []).join("；");
+    return `资料不足已拒答${why ? `：${why}` : ""}`;
+  }
+  if (candidates === 0) return "当前筛选范围内没有检索到片段";
+  return "这次回答没有标注引用";
+}
+
+function renderCitations(items, botMsg, srcToggle, emptyReason = "") {
+  if (!items.length) {
+    botMsg.appendChild(el("div", "src-empty", `未引用片段${emptyReason ? `：${emptyReason}` : ""}`));
+    return;
+  }
 
   const body = $("sources-body");
   body.innerHTML = "";
@@ -985,6 +1033,7 @@ function renderCitations(items, botMsg, srcToggle) {
     };
   });
 }
+/* SRC-PANEL-END */
 
 function openSources() {
   $("sources").classList.add("open");
