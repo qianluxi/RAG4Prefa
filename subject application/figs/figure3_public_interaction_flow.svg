@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="170mm" height="105.4mm" viewBox="0 0 2000 1240">
+<defs><marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M1,1 L11,6 L1,11 z" fill="#718096"/></marker><marker id="arrowTeal" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M1,1 L11,6 L1,11 z" fill="#176B5B"/></marker><marker id="arrowWarm" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M1,1 L11,6 L1,11 z" fill="#C08A2E"/></marker></defs>
+<rect width="2000" height="1240" fill="#FFFFFF"/>
+<text x="62" y="58" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="34" font-weight="700" fill="#173A5E" text-anchor="start">典型公众咨询的多轮交互与可信处置流程</text>
+<text x="64" y="97" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="18" font-weight="400" fill="#607286" text-anchor="start">以“我在宁波，2026 年准备进行旧房厨卫改造，有哪些政策支持？”为例</text>
+<rect x="1372" y="42" width="156" height="34" rx="17.0" fill="#F4F8FB" stroke="#D3E0EA" stroke-width="1.2"/>
+<text x="1450.0" y="64.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="700" fill="#315A7C" text-anchor="middle">前期已具备能力</text>
+<rect x="1544" y="42" width="160" height="34" rx="17.0" fill="#E9F6F2" stroke="#C4DED6" stroke-width="1.2"/>
+<text x="1624.0" y="64.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="700" fill="#176B5B" text-anchor="middle">本课题拟研究</text>
+<rect x="1720" y="42" width="220" height="34" rx="17.0" fill="#FFF6E6" stroke="#EBD9B6" stroke-width="1.2"/>
+<text x="1830.0" y="64.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="700" fill="#8A5A12" text-anchor="middle">判断与证据处置节点</text>
+<line x1="60" y1="122" x2="1940" y2="122" stroke="#E6EDF1" stroke-width="2"/>
+<rect x="55" y="150" width="360" height="320" rx="16" fill="#F7FAFC" stroke="#D3E0EA" stroke-width="1.8"/>
+<text x="78" y="186" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="19" font-weight="700" fill="#315A7C" text-anchor="start">① 用户提问</text>
+<line x1="78" y1="200" x2="392" y2="200" stroke="#E4EBF0" stroke-width="1.4"/>
+<rect x="75" y="214" width="320" height="100" rx="10" fill="#FFFFFF" stroke="#DFE8ED" stroke-width="1.2"/>
+<text x="92" y="246" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14.5" font-weight="400" fill="#2F4B60" text-anchor="start">
+<tspan x="92" dy="0">“我在宁波，2026 年准备进行</tspan>
+<tspan x="92" dy="26">旧房厨卫改造，有哪些</tspan>
+<tspan x="92" dy="26">政策支持？”</tspan>
+</text>
+<text x="75" y="342" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13" font-weight="400" fill="#6D7E90" text-anchor="start">自然语言中显式给出的条件</text>
+<rect x="75" y="352" width="68" height="32" rx="16.0" fill="#EAF1F8" stroke="#CFDDE9" stroke-width="1.2"/>
+<text x="109.0" y="373.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#315A7C" text-anchor="middle">宁波</text>
+<rect x="151" y="352" width="92" height="32" rx="16.0" fill="#EAF1F8" stroke="#CFDDE9" stroke-width="1.2"/>
+<text x="197.0" y="373.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#315A7C" text-anchor="middle">2026 年</text>
+<rect x="251" y="352" width="68" height="32" rx="16.0" fill="#EAF1F8" stroke="#CFDDE9" stroke-width="1.2"/>
+<text x="285.0" y="373.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#315A7C" text-anchor="middle">旧房</text>
+<rect x="75" y="392" width="108" height="32" rx="16.0" fill="#EAF1F8" stroke="#CFDDE9" stroke-width="1.2"/>
+<text x="129.0" y="413.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#315A7C" text-anchor="middle">厨卫改造</text>
+<rect x="191" y="392" width="108" height="32" rx="16.0" fill="#EAF1F8" stroke="#CFDDE9" stroke-width="1.2"/>
+<text x="245.0" y="413.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#315A7C" text-anchor="middle">政策支持</text>
+<text x="75" y="448" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="400" fill="#7A8B99" text-anchor="start">意图清晰，但“政策支持”未指向具体类别。</text>
+<rect x="470" y="150" width="380" height="320" rx="16" fill="#E9F6F2" stroke="#C4DED6" stroke-width="1.8"/>
+<text x="492" y="186" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="19" font-weight="700" fill="#176B5B" text-anchor="start">② 意图识别与条件抽取</text>
+<rect x="712" y="166" width="118" height="28" rx="14.0" fill="#FFFFFF" stroke="#BFD9D1" stroke-width="1.2"/>
+<text x="771.0" y="185.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="700" fill="#176B5B" text-anchor="middle">本课题拟研究</text>
+<line x1="492" y1="200" x2="828" y2="200" stroke="#D3E6DF" stroke-width="1.4"/>
+<circle cx="497" cy="232" r="4.5" fill="#176B5B"/>
+<text x="509" y="236" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#176B5B" text-anchor="start">意图判定</text>
+<text x="509" y="260" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13" font-weight="400" fill="#3B5566" text-anchor="start">政策咨询（补贴申领 / 提取）</text>
+<circle cx="497" cy="294" r="4.5" fill="#176B5B"/>
+<text x="509" y="298" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#176B5B" text-anchor="start">槽位抽取</text>
+<text x="509" y="322" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13" font-weight="400" fill="#3B5566" text-anchor="start">地域、年份、房屋类型、部位</text>
+<circle cx="497" cy="356" r="4.5" fill="#176B5B"/>
+<text x="509" y="360" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#176B5B" text-anchor="start">口语归一</text>
+<text x="509" y="384" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13" font-weight="400" fill="#3B5566" text-anchor="start">厨卫改造→厨房卫生间装修</text>
+<circle cx="497" cy="418" r="4.5" fill="#176B5B"/>
+<text x="509" y="422" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="700" fill="#176B5B" text-anchor="start">类别识别</text>
+<text x="509" y="446" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13" font-weight="400" fill="#3B5566" text-anchor="start">“政策支持”→拆为三个类别</text>
+<rect x="900" y="150" width="280" height="320" rx="16" fill="#FFF6E6" stroke="#EBD9B6" stroke-width="1.8"/>
+<text x="922" y="186" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="19" font-weight="700" fill="#8A5A12" text-anchor="start">③ 条件是否缺失</text>
+<line x1="922" y1="200" x2="1158" y2="200" stroke="#EFE0C4" stroke-width="1.4"/>
+<path d="M1040 208 L1150 260 L1040 312 L930 260 z" fill="#FFFFFF" stroke="#D8B87C" stroke-width="2"/>
+<text x="1040" y="267" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="17" font-weight="700" fill="#8A5A12" text-anchor="middle">条件缺失？</text>
+<text x="922" y="340" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#8A5A12" text-anchor="start">是：仅追问缺失槽位，</text>
+<text x="922" y="364" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#8A5A12" text-anchor="start">保留已确认条件</text>
+<text x="922" y="400" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">否：进入政策类型查询</text>
+<text x="922" y="438" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12" font-weight="400" fill="#96703A" text-anchor="start">追问不重问已知条件</text>
+<path d="M898 356 C880 356, 872 356, 858 356" fill="none" stroke="#C08A2E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 6" marker-end="url(#arrowWarm)"/>
+<rect x="1230" y="150" width="715" height="320" rx="16" fill="#F7FAFC" stroke="#D3E0EA" stroke-width="1.8"/>
+<text x="1253" y="186" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="19" font-weight="700" fill="#315A7C" text-anchor="start">④ 政策类型识别与属地知识查询</text>
+<line x1="1253" y1="200" x2="1922" y2="200" stroke="#E4EBF0" stroke-width="1.4"/>
+<rect x="1250" y="210" width="222" height="82" rx="10" fill="#FFFFFF" stroke="#DCE6EC" stroke-width="1.2"/>
+<text x="1361" y="240" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14.5" font-weight="700" fill="#173A5E" text-anchor="middle">材料购置补贴</text>
+<text x="1361" y="264" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="400" fill="#64798A" text-anchor="middle">
+<tspan x="1361" dy="0">装修材料</tspan>
+<tspan x="1361" dy="21">按比例补贴</tspan>
+</text>
+<rect x="1486" y="210" width="222" height="82" rx="10" fill="#FFFFFF" stroke="#DCE6EC" stroke-width="1.2"/>
+<text x="1597" y="240" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14.5" font-weight="700" fill="#173A5E" text-anchor="middle">智能家居购新补贴</text>
+<text x="1597" y="264" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="400" fill="#64798A" text-anchor="middle">
+<tspan x="1597" dy="0">按品类与额度</tspan>
+<tspan x="1597" dy="21">限额补贴</tspan>
+</text>
+<rect x="1722" y="210" width="222" height="82" rx="10" fill="#FFFFFF" stroke="#DCE6EC" stroke-width="1.2"/>
+<text x="1833" y="240" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14.5" font-weight="700" fill="#173A5E" text-anchor="middle">公积金装修提取</text>
+<text x="1833" y="264" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="400" fill="#64798A" text-anchor="middle">
+<tspan x="1833" dy="0">自住住房装修</tspan>
+<tspan x="1833" dy="21">提取公积金</tspan>
+</text>
+<text x="1253" y="328" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="400" fill="#3B5566" text-anchor="start">检索范围：浙江省与宁波市现行文件，按地域、年份与类型过滤</text>
+<text x="1253" y="362" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="400" fill="#3B5566" text-anchor="start">逐条校验：</text>
+<rect x="1352" y="342" width="112" height="32" rx="16.0" fill="#FFFFFF" stroke="#D8E4EC" stroke-width="1.2"/>
+<text x="1408.0" y="363.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="700" fill="#315A7C" text-anchor="middle">有效时间</text>
+<rect x="1474" y="342" width="112" height="32" rx="16.0" fill="#FFFFFF" stroke="#D8E4EC" stroke-width="1.2"/>
+<text x="1530.0" y="363.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="700" fill="#315A7C" text-anchor="middle">适用对象</text>
+<rect x="1596" y="342" width="140" height="32" rx="16.0" fill="#FFFFFF" stroke="#D8E4EC" stroke-width="1.2"/>
+<text x="1666.0" y="363.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="700" fill="#315A7C" text-anchor="middle">来源权威等级</text>
+<rect x="1746" y="342" width="132" height="32" rx="16.0" fill="#FFFFFF" stroke="#D8E4EC" stroke-width="1.2"/>
+<text x="1812.0" y="363.0" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="700" fill="#315A7C" text-anchor="middle">文件状态</text>
+<text x="1253" y="412" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="400" fill="#96703A" text-anchor="start">同一句“政策支持”对应三类政策，适用条件与办理渠道各异，须分类型检索与作答。</text>
+<text x="1253" y="440" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="400" fill="#96703A" text-anchor="start">文件状态取“实施 / 截止 / 废止”，无失效日期者不默认有效。</text>
+<path d="M852 260 H894" fill="none" stroke="#718096" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M1182 260 H1224" fill="none" stroke="#718096" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="1204" y="248" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="400" fill="#7A8B99" text-anchor="middle">否</text>
+<path d="M1588 470 V546 H1010 V564" fill="none" stroke="#718096" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M1000 566 L1230 616 L1000 666 L770 616 z" fill="#FFF6E6" stroke="#D8B87C" stroke-width="2.2"/>
+<text x="1000" y="606" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="16.5" font-weight="700" fill="#8A5A12" text-anchor="middle">⑤ 适用性与证据充分性判断</text>
+<text x="1000" y="634" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12" font-weight="400" fill="#96703A" text-anchor="middle">依据是否存在 → 是否适用 → 是否充分</text>
+<path d="M930 640 C760 662, 520 664, 355 694" fill="none" stroke="#C08A2E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowWarm)"/>
+<path d="M1000 668 V694" fill="none" stroke="#C08A2E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowWarm)"/>
+<path d="M1070 640 C1240 662, 1460 664, 1595 694" fill="none" stroke="#C08A2E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowWarm)"/>
+<rect x="55" y="700" width="600" height="250" rx="14" fill="#F3FAF7" stroke="#C4DED6" stroke-width="1.6"/>
+<rect x="55" y="700" width="600" height="54" rx="14" fill="#FFFFFF" stroke="#C4DED6" stroke-width="1.4"/>
+<text x="79" y="735" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="17" font-weight="700" fill="#176B5B" text-anchor="start">证据充分</text>
+<text x="631" y="735" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="400" fill="#7A8B99" text-anchor="end">正常回答</text>
+<circle cx="83" cy="775" r="4" fill="#176B5B"/>
+<text x="97" y="780" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">解释适用条件、办理流程、所需材料与时限</text>
+<circle cx="83" cy="805" r="4" fill="#176B5B"/>
+<text x="97" y="810" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">附正式文件出处：文件名称、条款、生效状态</text>
+<circle cx="83" cy="835" r="4" fill="#176B5B"/>
+<text x="97" y="840" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">提示“最终资格以主管部门核验为准”</text>
+<rect x="675" y="700" width="600" height="250" rx="14" fill="#FFFBF2" stroke="#EBD9B6" stroke-width="1.6"/>
+<rect x="675" y="700" width="600" height="54" rx="14" fill="#FFFFFF" stroke="#EBD9B6" stroke-width="1.4"/>
+<text x="699" y="735" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="17" font-weight="700" fill="#8A5A12" text-anchor="start">相关但证据不足</text>
+<text x="1251" y="735" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="400" fill="#7A8B99" text-anchor="end">提示与追问</text>
+<circle cx="703" cy="775" r="4" fill="#8A5A12"/>
+<text x="717" y="780" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">说明已能确认的内容及其依据</text>
+<circle cx="703" cy="805" r="4" fill="#8A5A12"/>
+<text x="717" y="810" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">指出缺少哪些条件（面积、产权、施工主体）</text>
+<circle cx="703" cy="835" r="4" fill="#8A5A12"/>
+<text x="717" y="840" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">继续追问，或建议补充材料后再判断</text>
+<rect x="1295" y="700" width="600" height="250" rx="14" fill="#F7F9FB" stroke="#D8E2E8" stroke-width="1.6"/>
+<rect x="1295" y="700" width="600" height="54" rx="14" fill="#FFFFFF" stroke="#D8E2E8" stroke-width="1.4"/>
+<text x="1319" y="735" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="17" font-weight="700" fill="#4B6478" text-anchor="start">无依据或不适用</text>
+<text x="1871" y="735" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="400" fill="#7A8B99" text-anchor="end">安全处置</text>
+<circle cx="1323" cy="775" r="4" fill="#4B6478"/>
+<text x="1337" y="780" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">不猜测政策结论，不生成未收录条款</text>
+<circle cx="1323" cy="805" r="4" fill="#4B6478"/>
+<text x="1337" y="810" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">说明不适用原因：地域、时间或对象不符</text>
+<circle cx="1323" cy="835" r="4" fill="#4B6478"/>
+<text x="1337" y="840" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="14" font-weight="400" fill="#3B5566" text-anchor="start">提供主管部门与官方查询渠道</text>
+<rect x="55" y="985" width="1130" height="148" rx="14" fill="#F5F8FA" stroke="#DCE6EB" stroke-width="1.6"/>
+<text x="80" y="1022" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="17" font-weight="700" fill="#315A7C" text-anchor="start">多轮上下文持续保留</text>
+<text x="80" y="1054" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="400" fill="#4A6273" text-anchor="start">
+<tspan x="80" dy="0">地域、年份、房屋类型、改造部位一次确认后不在后续轮次重复询问；</tspan>
+<tspan x="80" dy="26">用户补充或更正时即时更新槽位，澄清轮数纳入交互效率指标。</tspan>
+</text>
+<rect x="1210" y="985" width="735" height="148" rx="14" fill="#F5F8FA" stroke="#DCE6EB" stroke-width="1.6"/>
+<text x="1235" y="1022" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="17" font-weight="700" fill="#315A7C" text-anchor="start">每次处置进入评测</text>
+<text x="1235" y="1054" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="13.5" font-weight="400" fill="#4A6273" text-anchor="start">
+<tspan x="1235" dy="0">按处置类型分别统计：拦截率、误拒率、</tspan>
+<tspan x="1235" dy="26">任务完成率、澄清轮数与引用可核验率。</tspan>
+</text>
+<line x1="60" y1="1168" x2="1940" y2="1168" stroke="#E6EDF1" stroke-width="1.5"/>
+<text x="62" y="1200" font-family="'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif" font-size="12.5" font-weight="400" fill="#7A8B99" text-anchor="start">注：蓝色为前期已具备的检索与生成能力，绿色为本课题拟研究内容，橙色为判断与证据处置节点。</text>
+</svg>
