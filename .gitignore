@@ -15,3 +15,5 @@ __pycache__/
 .idea/
 # agent 工作记忆与本地会话数据，不入库
 .workbuddy/
+# 临时工作目录（格式转换中间件、预览 PDF、原稿备份）
+.wb_tmp/
